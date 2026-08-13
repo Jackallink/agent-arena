@@ -26,6 +26,9 @@ if [[ -n "$declared_review_worktree" ]]; then
     arena_same_directory "$ARENA_REVIEW_WORKTREE" "$declared_review_worktree" || \
         arena_die 'review worktree differs from review manifest'
     arena_assert_worktree "$ARENA_REVIEW_WORKTREE"
+    arena_review_snapshot_is_intact "$ARENA_REVIEW_WORKTREE" "$ARENA_REVIEW_HEAD" \
+        "$ARENA_REVIEW_CURSOR_POLICY_HASH" "$ARENA_REVIEW_GATE_WRAPPER_HASH" || \
+        arena_die 'review snapshot is not an intact submitted checkpoint'
 fi
 
 case "${ARENA_LOG_PANES:-0}" in

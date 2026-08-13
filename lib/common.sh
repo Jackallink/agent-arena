@@ -94,8 +94,21 @@ arena_file_hash() {
     elif command -v sha256sum >/dev/null 2>&1; then
         sha256sum "$path" | awk '{print $1}'
     else
-        cksum "$path" | awk '{print $1 "-" $2}'
+        printf '%s\n' 'agent-arena: SHA-256 utility is required for review-policy integrity' >&2
+        return 1
     fi
+}
+
+arena_file_mode() {
+    local path="$1"
+    local mode
+
+    mode="$(stat -f '%Lp' "$path" 2>/dev/null || true)"
+    if [[ ! "$mode" =~ ^[0-7]{3,4}$ ]]; then
+        mode="$(stat -c '%a' "$path" 2>/dev/null)" || return 1
+    fi
+    [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+    printf '%s\n' "$mode"
 }
 
 arena_repo_id() {
@@ -139,7 +152,7 @@ arena_review_snapshot_is_intact() {
     local expected_head="$2"
     local expected_policy_hash="${3:-}"
     local expected_gate_hash="${4:-}"
-    local policy_file gate_wrapper actual_head worktree_status status_entry policy_mode gate_mode
+    local policy_file gate_wrapper actual_head worktree_status status_entry path policy_mode gate_mode
 
     if [[ ! -d "$worktree" ]]; then
         printf 'review snapshot is missing: %s\n' "$worktree" >&2
@@ -181,8 +194,8 @@ arena_review_snapshot_is_intact() {
         printf 'review snapshot generated policy files are missing\n' >&2
         return 1
     fi
-    policy_mode="$(stat -f '%Lp' "$policy_file" 2>/dev/null || stat -c '%a' "$policy_file" 2>/dev/null)" || return 1
-    gate_mode="$(stat -f '%Lp' "$gate_wrapper" 2>/dev/null || stat -c '%a' "$gate_wrapper" 2>/dev/null)" || return 1
+    policy_mode="$(arena_file_mode "$policy_file")" || return 1
+    gate_mode="$(arena_file_mode "$gate_wrapper")" || return 1
     if [[ "$policy_mode" != 600 || "$gate_mode" != 700 ]]; then
         printf 'review snapshot generated policy permissions changed\n' >&2
         return 1
@@ -206,6 +219,13 @@ arena_review_snapshot_is_intact() {
         esac
     done <<<"$worktree_status"
     for status_entry in '?? .cursor/cli.json' '?? .agent-arena-gate'; do
+        path="${status_entry#?? }"
+        # A project may already ignore its own Cursor or dot-file state. Do not
+        # alter shared Git excludes; the manifest hashes above still bind Arena's
+        # two generated files, while normal status catches every other change.
+        if git -C "$worktree" check-ignore -q -- "$path"; then
+            continue
+        fi
         if ! grep -Fqx "$status_entry" <<<"$worktree_status"; then
             printf 'review snapshot is missing generated local file: %s\n' "$status_entry" >&2
             return 1
@@ -327,6 +347,8 @@ arena_write_review_manifest() {
         [[ -n "$value" ]] || arena_die 'review manifest value must not be empty'
         arena_reject_control_characters "$value"
     done
+    [[ "$cursor_policy_hash" =~ ^[0-9a-fA-F]{64}$ && "$gate_wrapper_hash" =~ ^[0-9a-fA-F]{64}$ ]] || \
+        arena_die 'review manifest policy hashes must be SHA-256 values'
     tmp_file="$(mktemp "${run_dir}/.review.XXXXXX")"
     {
         printf 'review_head\t%s\n' "$review_head"
@@ -364,6 +386,9 @@ arena_read_review_manifest() {
     arena_reject_control_characters "$ARENA_REVIEW_WORKTREE"
     arena_reject_control_characters "$ARENA_REVIEW_CURSOR_POLICY_HASH"
     arena_reject_control_characters "$ARENA_REVIEW_GATE_WRAPPER_HASH"
+    [[ "$ARENA_REVIEW_CURSOR_POLICY_HASH" =~ ^[0-9a-fA-F]{64}$ && \
+        "$ARENA_REVIEW_GATE_WRAPPER_HASH" =~ ^[0-9a-fA-F]{64}$ ]] || \
+        arena_die "invalid review manifest policy hashes: $manifest"
 }
 
 arena_prepare_cursor_gate_policy() {

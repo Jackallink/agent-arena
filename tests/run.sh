@@ -250,6 +250,19 @@ printf '%s\n' '10. generated Cursor policy tampering rejects revalidation and re
 printf '%s\n' '{"tampered":true}' >"${review_worktree}/.cursor/cli.json"
 expect_failure run_arena validate run-one
 expect_failure run_arena submit run-one
+session_name="$(awk -F $'\t' '$1 == "session_name" { print $2 }' "${run_dir}/manifest.tsv")"
+expect_failure env \
+    PATH="${fake_bin}:${PATH}" \
+    FAKE_AGENT_LOG="$fake_agent_log" \
+    ARENA_REPOSITORY="$project" \
+    ARENA_RUN_ID=run-one \
+    ARENA_RUN_DIR="$run_dir" \
+    ARENA_WRITER_WORKTREE="$writer_worktree" \
+    ARENA_REVIEW_WORKTREE="$review_worktree" \
+    ARENA_SESSION_NAME="$session_name" \
+    ARENA_COMMAND="$arena" \
+    ARENA_CURSOR_BIN=agent \
+    "${source_root}/lib/pane.sh" reviewer
 printf '%s\n' '#!/usr/bin/env bash' >"${review_worktree}/.agent-arena-gate"
 chmod 700 "${review_worktree}/.agent-arena-gate"
 expect_failure run_arena decision run-one --verdict CHANGES_REQUESTED --summary 'gate changed' \
@@ -340,7 +353,36 @@ expect_failure run_arena status run-one
 ARENA_RUN_DIR="$run_dir" run_arena status run-one >"${tmp_root}/inherited-status.out"
 require_match "Run: run-one" "${tmp_root}/inherited-status.out"
 
-printf '%s\n' '15. local package and protected install'
+printf '%s\n' '15. project-owned ignore rules do not break generated gate integrity'
+project_ignored="${tmp_root}/project-ignored"
+mkdir -p "$project_ignored"
+git -C "$project_ignored" init --initial-branch=main >/dev/null
+git -C "$project_ignored" config user.name 'Agent Arena Test'
+git -C "$project_ignored" config user.email 'agent-arena@example.test'
+printf '%s\n' fixture >"${project_ignored}/README.md"
+printf '%s\n' '.cursor/' '.agent-arena-gate' >"${project_ignored}/.gitignore"
+git -C "$project_ignored" add README.md .gitignore
+git -C "$project_ignored" commit -m 'test: create ignored policy fixture' >/dev/null
+run_arena init --repo "$project_ignored" >/dev/null
+cat >"${project_ignored}/.agent-arena/validate.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+EOF
+chmod 755 "${project_ignored}/.agent-arena/validate.sh"
+git -C "$project_ignored" add .agent-arena
+git -C "$project_ignored" commit -m 'test: add ignored policy adapter' >/dev/null
+run_arena start run-ignored --repo "$project_ignored" --no-attach >/dev/null
+ignored_run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/run-ignored/manifest.tsv' -exec dirname {} \;)"
+ignored_writer="$(awk -F $'\t' '$1 == "writer_worktree" { print $2 }' "${ignored_run_dir}/manifest.tsv")"
+printf '%s\n' implementation >"${ignored_writer}/implementation.txt"
+git -C "$ignored_writer" add implementation.txt
+git -C "$ignored_writer" commit -m 'feat: add ignored policy fixture' >/dev/null
+run_arena submit run-ignored >/dev/null
+run_arena validate run-ignored >"${tmp_root}/ignored-validation.out"
+require_match 'RESULT: PASS' "${tmp_root}/ignored-validation.out"
+
+printf '%s\n' '16. local package and protected install'
 bash "${source_root}/packaging/test.sh" >"${tmp_root}/package.out"
 require_match 'package test: ok' "${tmp_root}/package.out"
 
