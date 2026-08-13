@@ -475,8 +475,11 @@ second_session="$(awk -F $'\t' '$1 == "session_name" { print $2 }' "${second_run
 first_session="$(awk -F $'\t' '$1 == "session_name" { print $2 }' "${run_dir}/manifest.tsv")"
 [[ "$first_session" != "$second_session" ]] || fail 'same run id crossed project tmux sessions'
 expect_failure run_arena status run-one
-ARENA_RUN_DIR="$run_dir" run_arena status run-one >"${tmp_root}/inherited-status.out"
+if ARENA_RUN_DIR="$run_dir" run_arena status run-one >"${tmp_root}/inherited-status.out" 2>&1; then
+    fail 'status accepted the tampered run-one review snapshot'
+fi
 require_match "Run: run-one" "${tmp_root}/inherited-status.out"
+require_match 'Integrity: FAILED' "${tmp_root}/inherited-status.out"
 
 printf '%s\n' '15. project-owned ignore rules do not break generated gate integrity'
 project_ignored="${tmp_root}/project-ignored"
@@ -857,5 +860,78 @@ require_match 'arg=--sandbox' "$fake_codex_log"
 printf '%s\n' '25. local package and protected install'
 bash "${source_root}/packaging/test.sh" >"${tmp_root}/package.out"
 require_match 'package test: ok' "${tmp_root}/package.out"
+
+printf '%s\n' '26. submit records a checkpoint when the reviewer pane is unavailable'
+run_arena start run-pane-dead --repo "$project" --no-attach >/dev/null
+pane_dead_run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f \
+    -name manifest.tsv -path '*/run-pane-dead/manifest.tsv' -exec dirname {} \;)"
+pane_dead_writer="$(manifest_value "${pane_dead_run_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' 'pane-dead checkpoint' >"${pane_dead_writer}/pane-dead.txt"
+git -C "$pane_dead_writer" add pane-dead.txt
+git -C "$pane_dead_writer" commit -m 'feat: add pane-dead checkpoint fixture' >/dev/null
+: >"$fake_tmux_log"
+export FAKE_TMUX_MODE=live
+export FAKE_TMUX_PANES=dead
+if ! run_arena submit run-pane-dead >"${tmp_root}/pane-dead-submit.out"; then
+    fail 'submit failed after state commit when the reviewer pane was unavailable'
+fi
+require_match 'submitted' "${tmp_root}/pane-dead-submit.out"
+require_match 'checkpoint recorded without' "${tmp_root}/pane-dead-submit.out"
+require_no_match 'respawn-pane' "$fake_tmux_log"
+[[ -f "${pane_dead_run_dir}/review.tsv" ]] || \
+    fail 'submit did not record the checkpoint when the reviewer pane was unavailable'
+export FAKE_TMUX_PANES=normal
+export FAKE_TMUX_MODE=offline
+
+printf '%s\n' '27. submit recreates a lost review snapshot'
+pane_dead_review="$(manifest_value "${pane_dead_run_dir}/review.tsv" review_worktree)"
+rm -rf "$pane_dead_review"
+if ! run_arena submit run-pane-dead >"${tmp_root}/pane-dead-resubmit.out"; then
+    fail 'submit could not recreate a lost review snapshot'
+fi
+[[ -d "$pane_dead_review" ]] || fail 'submit did not recreate the lost review snapshot'
+[[ "$(git -C "$pane_dead_review" rev-parse HEAD)" == \
+    "$(manifest_value "${pane_dead_run_dir}/review.tsv" review_head)" ]] || \
+    fail 'recreated review snapshot is not bound to the submitted checkpoint'
+[[ "$(manifest_value "${pane_dead_run_dir}/review.tsv" cursor_policy_hash)" =~ ^[0-9a-f]{64}$ ]] || \
+    fail 'recreated review manifest lacks fresh policy hashes'
+
+printf '%s\n' '28. submitting a new checkpoint invalidates stale validation and decision pointers'
+run_arena validate run-pane-dead >"${tmp_root}/pane-dead-validate.out" 2>/dev/null
+run_arena decision run-pane-dead --verdict APPROVE --summary 'approved' \
+    --next 'continue' --no-relay >/dev/null
+[[ -f "${pane_dead_run_dir}/validation.md" ]] || fail 'validation pointer missing before resubmit'
+[[ -f "${pane_dead_run_dir}/decision.md" ]] || fail 'decision pointer missing before resubmit'
+pane_dead_head="$(manifest_value "${pane_dead_run_dir}/review.tsv" review_head)"
+pane_dead_short="${pane_dead_head:0:12}"
+printf '%s\n' 'second checkpoint' >"${pane_dead_writer}/second.txt"
+git -C "$pane_dead_writer" add second.txt
+git -C "$pane_dead_writer" commit -m 'feat: add second checkpoint fixture' >/dev/null
+run_arena submit run-pane-dead >/dev/null
+[[ ! -e "${pane_dead_run_dir}/validation.md" ]] || \
+    fail 'submit did not invalidate the stale validation pointer'
+[[ ! -e "${pane_dead_run_dir}/decision.md" ]] || \
+    fail 'submit did not invalidate the stale decision pointer'
+[[ -f "${pane_dead_run_dir}/validation-${pane_dead_short}.md" ]] || \
+    fail 'submit removed the previous validation archive'
+[[ -f "${pane_dead_run_dir}/decision-${pane_dead_short}.md" ]] || \
+    fail 'submit removed the previous decision archive'
+
+printf '%s\n' '29. status verifies snapshot integrity and binds reports to the current checkpoint'
+run_arena status run-pane-dead >"${tmp_root}/pane-dead-status.out"
+require_match 'Integrity: OK' "${tmp_root}/pane-dead-status.out"
+require_match 'Validation: not run' "${tmp_root}/pane-dead-status.out"
+require_match 'Decision: not recorded' "${tmp_root}/pane-dead-status.out"
+pane_dead_review2="$(manifest_value "${pane_dead_run_dir}/review.tsv" review_worktree)"
+printf '%s\n' tampered >>"${pane_dead_review2}/README.md"
+if run_arena status run-pane-dead >"${tmp_root}/pane-dead-tampered-status.out" 2>&1; then
+    fail 'status accepted a tampered review snapshot'
+fi
+require_match 'Integrity: FAILED' "${tmp_root}/pane-dead-tampered-status.out"
+git -C "$pane_dead_review2" checkout -- README.md
+printf '%s\n' 'Latest validation report: validation-000000000000.md' >"${pane_dead_run_dir}/validation.md"
+chmod 600 "${pane_dead_run_dir}/validation.md"
+run_arena status run-pane-dead >"${tmp_root}/pane-dead-bound-status.out"
+require_match 'Validation: not run for current checkpoint' "${tmp_root}/pane-dead-bound-status.out"
 
 printf '%s\n' 'tests: ok'

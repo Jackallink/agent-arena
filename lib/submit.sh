@@ -76,6 +76,14 @@ if [[ -e "$review_worktree" || -L "$review_worktree" ]]; then
         arena_die 'existing review snapshot is not an intact submitted checkpoint'
 else
     arena_make_private_dir "$(dirname "$review_worktree")"
+    # A manually deleted review snapshot stays registered in the Git worktree
+    # list and blocks re-creation. Prune only the stale registry entry; this
+    # never deletes worktree data.
+    if [[ ! -e "$review_worktree" && ! -L "$review_worktree" ]] && \
+        git -C "$ARENA_MANIFEST_REPOSITORY" worktree list --porcelain | \
+            grep -Fqx "worktree ${review_worktree}"; then
+        git -C "$ARENA_MANIFEST_REPOSITORY" worktree prune
+    fi
     git -C "$ARENA_MANIFEST_REPOSITORY" worktree add --detach "$review_worktree" "$writer_head"
     arena_assert_clean_worktree "$review_worktree"
     arena_prepare_cursor_gate_policy "$review_worktree"
@@ -84,6 +92,9 @@ else
         arena_die 'review snapshot changed while installing Cursor gate policy'
     arena_write_review_manifest "$run_dir" "$writer_head" "$review_worktree" \
         "$ARENA_CURSOR_POLICY_HASH" "$ARENA_GATE_WRAPPER_HASH"
+    # The previous checkpoint's validation/decision pointers no longer describe
+    # this submission; the per-SHA archives remain for the audit trail.
+    rm -f "${run_dir}/validation.md" "${run_dir}/decision.md"
 fi
 
 refresh_live_session_environment() {
@@ -128,9 +139,14 @@ refresh_live_session_environment() {
 
 if command -v tmux >/dev/null 2>&1 && tmux has-session -t "=${ARENA_MANIFEST_SESSION_NAME}" 2>/dev/null; then
     refresh_live_session_environment
-    reviewer_pane="$(arena_find_live_pane "$ARENA_MANIFEST_SESSION_NAME" reviewer reviewer-agent)"
-    printf -v respawn_command 'exec %q reviewer' "${source_root}/lib/pane.sh"
-    tmux respawn-pane -k -t "$reviewer_pane" "$respawn_command"
+    # The reviewer pane refresh is best effort: the checkpoint is already
+    # recorded and immutable, so an unavailable pane must not fail the submit.
+    if reviewer_pane="$(arena_find_live_pane "$ARENA_MANIFEST_SESSION_NAME" reviewer reviewer-agent 2>/dev/null)"; then
+        printf -v respawn_command 'exec %q reviewer' "${source_root}/lib/pane.sh"
+        tmux respawn-pane -k -t "$reviewer_pane" "$respawn_command"
+    else
+        arena_note 'reviewer pane is unavailable; checkpoint recorded without a Cursor pane respawn'
+    fi
 fi
 
 arena_note "submitted ${ARENA_MANIFEST_WRITER_LABEL} checkpoint: $writer_head"

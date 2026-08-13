@@ -49,20 +49,41 @@ printf 'Writer worktree: %s\n' "$ARENA_MANIFEST_WRITER_WORKTREE"
 printf 'Branch: %s\n' "$ARENA_MANIFEST_BRANCH"
 printf 'Tmux session: %s\n' "$ARENA_MANIFEST_SESSION_NAME"
 printf 'State: %s\n' "$run_dir"
+integrity_status=0
 if [[ -f "${run_dir}/review.tsv" ]]; then
     arena_read_review_manifest "$run_dir"
     printf 'Review HEAD: %s\n' "$ARENA_REVIEW_HEAD"
     printf 'Review worktree: %s\n' "$ARENA_REVIEW_WORKTREE"
+    if arena_review_snapshot_is_intact "$ARENA_REVIEW_WORKTREE" "$ARENA_REVIEW_HEAD" \
+        "$ARENA_REVIEW_CURSOR_POLICY_HASH" "$ARENA_REVIEW_GATE_WRAPPER_HASH"; then
+        printf 'Integrity: OK\n'
+    else
+        printf 'Integrity: FAILED (review snapshot is missing, dirty, or tampered)\n'
+        integrity_status=1
+    fi
+    expected_short="$(arena_short_sha "$ARENA_REVIEW_HEAD")"
+    if [[ -f "${run_dir}/validation.md" ]]; then
+        pointer="$(<"${run_dir}/validation.md")"
+        if [[ "$pointer" == "Latest validation report: validation-${expected_short}.md" ]]; then
+            printf 'Validation: %s\n' "$pointer"
+        else
+            printf 'Validation: not run for current checkpoint\n'
+        fi
+    else
+        printf 'Validation: not run\n'
+    fi
+    if [[ -f "${run_dir}/decision.md" ]]; then
+        if grep -Fqx "Review HEAD: ${ARENA_REVIEW_HEAD}" "${run_dir}/decision.md"; then
+            printf 'Decision: %s\n' "${run_dir}/decision.md"
+        else
+            printf 'Decision: not recorded for current checkpoint\n'
+        fi
+    else
+        printf 'Decision: not recorded\n'
+    fi
 else
     printf 'Review: no checkpoint submitted\n'
-fi
-if [[ -f "${run_dir}/validation.md" ]]; then
-    printf 'Validation: %s\n' "$(<"${run_dir}/validation.md")"
-else
     printf 'Validation: not run\n'
-fi
-if [[ -f "${run_dir}/decision.md" ]]; then
-    printf 'Decision: %s\n' "${run_dir}/decision.md"
-else
     printf 'Decision: not recorded\n'
 fi
+exit "$integrity_status"
