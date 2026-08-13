@@ -250,6 +250,27 @@ require_match 'profile:pi-cursor' "${tmp_root}/doctor.out"
 require_match 'profile:codex-cursor' "${tmp_root}/doctor.out"
 require_match 'profile:opencode-cursor' "${tmp_root}/doctor.out"
 require_match 'profile:agy-cursor' "${tmp_root}/doctor.out"
+require_match 'Gates:' "${tmp_root}/doctor.out"
+require_match 'gate:cursor' "${tmp_root}/doctor.out"
+require_match 'gate:opencode' "${tmp_root}/doctor.out"
+# the default Cursor gate missing must not fail doctor while another gate is available
+if ARENA_CURSOR_BIN='agent-arena-test-missing-gate-cursor' \
+    run_arena doctor >"${tmp_root}/doctor-no-cursor.out" 2>&1; then :; else
+    fail 'doctor failed with the Cursor gate missing while the OpenCode gate is available'
+fi
+grep -F 'gate:cursor' "${tmp_root}/doctor-no-cursor.out" | grep -Fq 'missing' || \
+    fail 'doctor did not report the Cursor gate as missing'
+grep -F 'gate:opencode' "${tmp_root}/doctor-no-cursor.out" | grep -Fq 'enabled' || \
+    fail 'doctor did not report the OpenCode gate as enabled'
+require_match 'profile:pi-cursor' "${tmp_root}/doctor-no-cursor.out"
+require_match 'blocked' "${tmp_root}/doctor-no-cursor.out"
+# zero available gates must fail doctor with the gate matrix message
+if ARENA_CURSOR_BIN='agent-arena-test-missing-gate-cursor' \
+    ARENA_OPENCODE_BIN='agent-arena-test-missing-gate-opencode' \
+    run_arena doctor >"${tmp_root}/doctor-no-gate.out" 2>&1; then
+    fail 'doctor succeeded with no available gate adapter'
+fi
+require_match 'no available gate adapter' "${tmp_root}/doctor-no-gate.out"
 
 printf '%s\n' '2. init'
 run_arena init --repo "$project"
@@ -368,7 +389,7 @@ PATH="${fake_bin}:${PATH}" \
     ARENA_RUN_ID=run-one \
     ARENA_RUN_DIR="$run_dir" \
     ARENA_COMMAND="$arena" \
-    "${source_root}/adapters/cursor.sh" launch
+    "${source_root}/adapters/gate-cursor.sh" launch
 require_match "--sandbox enabled --workspace ${review_worktree}" "$fake_agent_log"
 if grep -Fq -- '--mode plan' "$fake_agent_log"; then
     fail 'Cursor review phase unexpectedly uses read-only plan mode'
@@ -384,22 +405,9 @@ PATH="${fake_bin}:${PATH}" \
     ARENA_RUN_ID=run-one \
     ARENA_RUN_DIR="$run_dir" \
     ARENA_COMMAND="$arena" \
-    "${source_root}/adapters/cursor.sh" launch
+    "${source_root}/adapters/gate-cursor.sh" launch
 require_match "--workspace ${writer_worktree} --mode plan" "$fake_agent_log"
 : >"$fake_agent_log"
-PATH="${fake_bin}:${PATH}" \
-    FAKE_AGENT_LOG="$fake_agent_log" \
-    ARENA_CURSOR_BIN=agent \
-    ARENA_CURSOR_WORKSPACE="$review_worktree" \
-    ARENA_CURSOR_PHASE=review \
-    ARENA_RUN_ID=run-one \
-    ARENA_RUN_DIR="$run_dir" \
-    ARENA_COMMAND="$arena" \
-    "${source_root}/adapters/cursor.sh" launch
-require_match "--sandbox enabled --workspace ${review_worktree}" "$fake_agent_log"
-if grep -Fq -- '--mode plan' "$fake_agent_log"; then
-    fail 'legacy Cursor reviewer env unexpectedly uses read-only plan mode'
-fi
 
 printf '%s\n' '7. validation binding and dirty snapshot rejection'
 run_arena validate run-one >"${tmp_root}/validation.out"
@@ -719,13 +727,13 @@ codex_writer_head="$(git -C "$codex_writer" rev-parse HEAD)"
 PATH="${fake_bin}:${PATH}" \
     FAKE_AGENT_LOG="$fake_agent_log" \
     ARENA_CURSOR_BIN=agent \
-    ARENA_CURSOR_WORKSPACE="$codex_review_worktree" \
-    ARENA_CURSOR_PHASE=review \
+    ARENA_GATE_WORKSPACE="$codex_review_worktree" \
+    ARENA_GATE_PHASE=review \
     ARENA_RUN_ID=profile-codex \
     ARENA_RUN_DIR="$codex_run_dir" \
     ARENA_WRITER_LABEL=Codex \
     ARENA_COMMAND="$arena" \
-    "${source_root}/adapters/cursor.sh" launch
+    "${source_root}/adapters/gate-cursor.sh" launch
 require_match "--sandbox enabled --workspace ${codex_review_worktree}" "$fake_agent_log"
 require_match 'Codex' "$fake_agent_log"
 require_no_match '--mode plan' "$fake_agent_log"

@@ -8,8 +8,9 @@ usage() {
     cat <<'EOF'
 Usage: agent-arena doctor
 
-Checks local prerequisites and writer-profile availability without starting a model
-or modifying a project. Cursor is required for every formal gate.
+Checks local prerequisites, writer-profile availability, and the gate adapter
+matrix without starting a model or modifying a project. Cursor is the default
+gate; --gate or a WRITER-GATE profile selects the reviewer.
 EOF
 }
 
@@ -36,11 +37,14 @@ failed=0
 probe_command git git required || failed=1
 probe_command tmux tmux required || failed=1
 probe_command tmuxp tmuxp required || failed=1
-if probe_command cursor "${ARENA_CURSOR_BIN:-agent}" required; then
+
+# The Cursor gate is the default, but its absence alone no longer fails
+# doctor: the gate matrix below decides, and writer-gate profiles report
+# their own blocked state through the profile probes.
+if "${source_root}/adapters/gate-cursor.sh" probe; then
     cursor_available=1
 else
     cursor_available=0
-    failed=1
 fi
 
 writer_count=0
@@ -62,6 +66,18 @@ for profile in $(arena_profile_list); do
     fi
 done
 
+printf '%s\n' 'Gates:'
+gate_count=0
+for gate in $(arena_gate_list); do
+    if "${source_root}/adapters/gate-${gate}.sh" probe; then
+        printf '%-20s %-12s %s\n' "gate:${gate}" enabled "$gate"
+        gate_count=$((gate_count + 1))
+    else
+        printf '%-20s %-12s %s\n' "gate:${gate}" missing "$gate"
+    fi
+done
+[[ "$gate_count" -gt 0 ]] || arena_die 'doctor found no available gate adapter'
+
 [[ "$writer_count" -gt 0 ]] || {
     printf '%s\n' 'agent-arena: no supported writer CLI is available' >&2
     failed=1
@@ -69,4 +85,4 @@ done
 if [[ "$failed" -ne 0 ]]; then
     arena_die 'doctor found missing required prerequisites or no usable writer profile'
 fi
-arena_note 'available profiles retain Cursor as the formal review, validation, and decision gate'
+arena_note 'doctor passed: at least one writer profile and one gate adapter are available'

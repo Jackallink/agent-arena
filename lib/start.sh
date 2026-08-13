@@ -180,8 +180,6 @@ else
     # Probe every selected executable before any state or worktree is created.
     "${source_root}/adapters/${writer_adapter}.sh" probe || \
         arena_die "${writer_label} executable not found for profile $profile"
-    "${source_root}/adapters/cursor.sh" probe || \
-        arena_die "Cursor Agent executable not found: ${ARENA_CURSOR_BIN:-agent}"
     "${source_root}/adapters/gate-${gate_adapter}.sh" probe || \
         arena_die "gate adapter is not available: ${gate_adapter}"
 
@@ -205,12 +203,10 @@ else
     review_worktree=''
 fi
 
-# Existing runs must also refuse to launch when their selected writer, the
-# mandatory Cursor gate, or the selected gate adapter is no longer available.
+# Existing runs must also refuse to launch when their selected writer or
+# gate adapter is no longer available.
 "${source_root}/adapters/${writer_adapter}.sh" probe || \
     arena_die "${writer_label} executable not found for profile $profile"
-"${source_root}/adapters/cursor.sh" probe || \
-    arena_die "Cursor Agent executable not found: ${ARENA_CURSOR_BIN:-agent}"
 "${source_root}/adapters/gate-${gate_adapter}.sh" probe || \
     arena_die "gate adapter is not available: ${gate_adapter}"
 arena_make_private_dir "$writer_session_dir"

@@ -63,4 +63,20 @@ for adapter in pi codex opencode agy; do
         exit 1
     }
 done
+
+for gate_adapter in cursor opencode; do
+    capabilities="$("${source_root}/adapters/gate-${gate_adapter}.sh" capabilities)"
+    grep -Fqx 'writer=false' <<<"$capabilities" || {
+        printf '%s\n' "gate-${gate_adapter}: adapter does not declare writer=false" >&2
+        exit 1
+    }
+    grep -Eq '^policy_path=' <<<"$capabilities" || {
+        printf '%s\n' "gate-${gate_adapter}: adapter does not declare policy_path" >&2
+        exit 1
+    }
+    grep -Eq '^wrapper_path=' <<<"$capabilities" || {
+        printf '%s\n' "gate-${gate_adapter}: adapter does not declare wrapper_path" >&2
+        exit 1
+    }
+done
 printf '%s\n' 'cli contract smoke: ok'

@@ -1,5 +1,5 @@
 ---
-status: planned
+status: review-ready
 created: '2026-08-13'
 owner: 'local owner'
 ---

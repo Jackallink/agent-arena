@@ -5,10 +5,12 @@ and a separate review, validation, and decision gate. `tmuxp` creates the four
 panes; Git worktrees isolate the handoff; `tmux` relays short messages directly
 between the agents.
 
-Every v0.2 profile pairs one writer with **Cursor Agent**, which is the only
-formal review, validation, and decision gate. Pi, Codex, OpenCode, and Agy
-are writers only. A direct relay is useful feedback, but the SHA-bound Cursor
-validation report and decision record remain the audit truth.
+Every profile pairs one writer with one gate. **Cursor Agent** is the default
+formal review, validation, and decision gate; `--gate opencode` or a
+`WRITER-GATE` profile such as `pi-opencode` selects the OpenCode gate instead.
+Pi, Codex, OpenCode, and Agy remain writers only. A direct relay is useful
+feedback, but the SHA-bound validation report and decision record remain the
+audit truth.
 
 > **Validation status:** v0.2 has hermetic adapter tests, tmuxp smoke coverage,
 > and no-model local CLI contract checks. It has not run a live model, used a
@@ -63,13 +65,39 @@ handoff, but are not a general operating-system, credential, or network sandbox.
 Keep credentials in each CLI's normal login/environment mechanism and never put
 them in project config or relay messages.
 
+### Gates
+
+`start RUN_ID --repo PATH --writer pi --gate opencode` splits the two
+selection dimensions explicitly; `--writer` and `--gate` require each other
+when either is given. `--profile pi-opencode` is the equivalent `WRITER-GATE`
+form. `--gate` defaults to `cursor`, so every v0.2 command line behaves
+identically, and Cursor remains the default gate.
+
+Each gate is an executable adapter at `adapters/gate-<name>.sh` implementing
+the gate adapter contract (see `adapters/README.md`): `probe` reports local
+availability, `capabilities` prints declared flags including `policy_path`
+and `wrapper_path`, `launch` starts the reviewer in its pane, and `policy`
+generates the project-level gate policy inside the review snapshot and prints
+the binding manifest (policy path, wrapper path, and both SHA-256 hashes)
+that binds the review manifest to those files. The `.agent-arena-gate`
+wrapper stays universal: it only execs the Arena command for
+`status|validate|decision|relay`.
+
+The OpenCode gate generates `opencode.json` in the review snapshot with a
+deny-first `arena_gate` agent policy: everything is denied except read,
+glob, grep, and `bash`. The only sanctioned bash use is the generated
+`.agent-arena-gate` wrapper, because OpenCode's policy layer cannot restrict
+which command an allowed `bash` permission runs — the wrapper-only bash
+convention is the enforcement boundary, not an OS sandbox. Project config and
+external skills are disabled for the gate pane.
+
 > **Threat model:** all provider CLIs run with the operator's user identity. A
 > writer that ignores its prompt can technically invoke the gate commands and
 > forge local report files, because the private run directory and the gate CLI
-> are reachable by the same user. The "Cursor-only gate" is therefore a role
-> declaration enforced by the Cursor-side allowlist policy and the writer's
-> prompt, not an operating-system capability boundary; the human operator
-> remains the ultimate authority over decision records.
+> are reachable by the same user. The gate is therefore a role declaration
+> enforced by the gate-side policy and the writer's prompt, not an operating-
+> system capability boundary; the human operator remains the ultimate
+> authority over decision records.
 
 ## Commands
 
@@ -90,20 +118,25 @@ model is mid-turn. Writers can send progress or a question to Cursor; Cursor can
 send review feedback and the next step back to the writer. The decision record,
 not a pane message, is the audit truth.
 
-## Cursor-only formal gate
+## Formal gate adapters
 
-Formal Cursor review runs in normal interactive mode so it can invoke only the
-generated gate wrapper for `validate`, `decision`, `relay`, and `status`. It does
-not use `--force`, `--yolo`, or plan mode. Version 0.1 deliberately refuses a
+Cursor remains the default formal gate and runs in normal interactive mode so
+it can invoke only the generated gate wrapper for `validate`, `decision`,
+`relay`, and `status`. It does not use `--force`, `--yolo`, or plan mode.
+Select another gate with `--gate` or a `WRITER-GATE` profile; `cursor` and
+`opencode` ship adapters. Version 0.1 deliberately refuses a
 checkpoint that tracks `.cursor/cli.json` or `.agent-arena-gate`: Cursor's array
 layering cannot be proven to preserve both a project policy and Arena's deny-first
 gate. Keep those paths untracked for an Arena run, or use a future adapter that
 supports a verified policy merge. Before relying on the gate, complete the manual
 authenticated Cursor smoke recorded in the implementation plan.
 
-Codex, OpenCode, and Agy must not be substituted for Cursor in this gate.
-Their advisory review capabilities do not establish permission to modify Arena
-reports or make a formal decision from an immutable snapshot.
+Codex and Agy must not be substituted as gates: Codex exposes no project-level
+policy file and Agy's policy is global rather than per project, so each needs
+its own design pass. OpenCode is a supported gate only through its adapter's
+deny-first project policy and the wrapper-only bash convention. Advisory
+review capabilities alone do not establish permission to modify Arena reports
+or make a formal decision from an immutable snapshot.
 
 Decisions bind to the checkpoint under review: `decision` requires the writer to
 stay exactly on the reviewed HEAD. If the writer commits a new checkpoint before
