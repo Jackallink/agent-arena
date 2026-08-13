@@ -56,9 +56,9 @@ for profile in $(arena_profile_list); do
         printf '%-20s %-12s %s\n' "$adapter" enabled "$label"
         writer_count=$((writer_count + 1))
         if [[ "$cursor_available" == 1 ]]; then
-            printf '%-20s %-12s %s\n' "profile:${profile}" enabled "${label} writer + Cursor gate"
+            printf '%-20s %-12s %s\n' "profile:${profile}" enabled "${label} writer + gate"
         else
-            printf '%-20s %-12s %s\n' "profile:${profile}" blocked 'Cursor gate is unavailable'
+            printf '%-20s %-12s %s\n' "profile:${profile}" blocked 'gate is unavailable'
         fi
     else
         printf '%-20s %-12s %s\n' "$adapter" missing "$label"

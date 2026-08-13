@@ -8,7 +8,7 @@ usage() {
     cat <<'EOF'
 Usage: agent-arena decision RUN_ID --verdict VERDICT --summary TEXT --next TEXT [options]
 
-Record Cursor's SHA-bound review result. APPROVE requires a passing validation report;
+Record the gate's SHA-bound review result. APPROVE requires a passing validation report;
 CHANGES_REQUESTED and BLOCKED may document a failed validation report.
 
 Options:

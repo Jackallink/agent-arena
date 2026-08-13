@@ -119,9 +119,9 @@ Agent Arena validation pane
 After the writer commits and submits a checkpoint, run:
   $ARENA_COMMAND validate $ARENA_RUN_ID
 
-Cursor owns the review/validation/decision gate. This pane is a deterministic
-human-operated fallback for inspecting reports or rerunning the project check; it
-does not replace Cursor's formal SHA-bound decision.
+The gate adapter owns the review/validation/decision record. This pane is a
+deterministic human-operated fallback for inspecting reports or rerunning the
+project check; it does not replace the gate's formal SHA-bound decision.
 EOF
         launch_shell
         ;;

@@ -243,6 +243,11 @@ run_arena() {
         "$arena" "$@"
 }
 
+printf '%s\n' '0. help text reflects the pluggable gate'
+run_arena help >"${tmp_root}/help.out"
+require_match 'writer + gate' "${tmp_root}/help.out"
+require_match 'gate.s formal decision' "${tmp_root}/help.out"
+
 printf '%s\n' '1. doctor'
 run_arena doctor >"${tmp_root}/doctor.out"
 require_match 'cursor' "${tmp_root}/doctor.out"
