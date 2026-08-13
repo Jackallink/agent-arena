@@ -7,3 +7,4 @@ dist/
 # Runtime state is deliberately external; keep accidental local copies out of Git.
 state/
 worktrees/
+.worktrees/
