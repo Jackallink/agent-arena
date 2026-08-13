@@ -524,9 +524,12 @@ arena_read_review_manifest() {
         esac
     done <"$manifest"
     [[ -n "$ARENA_REVIEW_HEAD" && -n "$ARENA_REVIEW_WORKTREE" && \
-        -n "$ARENA_REVIEW_GATE_ADAPTER" && \
         -n "$ARENA_REVIEW_CURSOR_POLICY_HASH" && -n "$ARENA_REVIEW_GATE_WRAPPER_HASH" ]] || \
         arena_die "incomplete review manifest: $manifest"
+    # v0.2-era review manifests predate the gate_adapter column; mirror the
+    # run-manifest read and default them to the Cursor gate adapter
+    [[ -n "$ARENA_REVIEW_GATE_ADAPTER" ]] || ARENA_REVIEW_GATE_ADAPTER='cursor'
+    arena_gate_resolve "$ARENA_REVIEW_GATE_ADAPTER"
     arena_reject_control_characters "$ARENA_REVIEW_HEAD"
     arena_reject_control_characters "$ARENA_REVIEW_WORKTREE"
     arena_reject_control_characters "$ARENA_REVIEW_GATE_ADAPTER"

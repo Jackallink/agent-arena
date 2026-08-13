@@ -302,6 +302,25 @@ require_match '?? .agent-arena-gate' <(printf '%s\n' "$review_status")
 [[ -x "${review_worktree}/.agent-arena-gate" ]] || fail 'review snapshot lacks gate wrapper'
 [[ "$(manifest_value "${run_dir}/review.tsv" gate_adapter)" == 'cursor' ]] || \
     fail 'review manifest did not record gate_adapter=cursor'
+# legacy-safety: a v0.2-era review.tsv carries no gate_adapter line; reading it
+# must succeed and default the gate adapter to cursor
+legacy_review_backup="${tmp_root}/review.tsv.with-gate-adapter"
+cp "${run_dir}/review.tsv" "$legacy_review_backup"
+awk -F $'\t' '$1 != "gate_adapter"' "${run_dir}/review.tsv" >"${run_dir}/review.tsv.legacy"
+mv "${run_dir}/review.tsv.legacy" "${run_dir}/review.tsv"
+[[ "$(manifest_value "${run_dir}/review.tsv" gate_adapter)" == '' ]] || \
+    fail 'legacy fixture still carries a gate_adapter line'
+run_arena status run-one >"${tmp_root}/legacy-review-status.out"
+require_match 'Integrity: OK' "${tmp_root}/legacy-review-status.out"
+legacy_gate_adapter="$(ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$ARENA_SOURCE_ROOT/lib/common.sh"
+    arena_read_review_manifest "$1"
+    printf "%s" "$ARENA_REVIEW_GATE_ADAPTER"
+' _ "$run_dir")"
+[[ "$legacy_gate_adapter" == cursor ]] || \
+    fail 'legacy review.tsv without gate_adapter did not default to the cursor gate'
+mv "$legacy_review_backup" "${run_dir}/review.tsv"
 require_match '"permissions"' "${review_worktree}/.cursor/cli.json"
 require_match '"allow"' "${review_worktree}/.cursor/cli.json"
 require_match '"deny"' "${review_worktree}/.cursor/cli.json"
