@@ -90,7 +90,7 @@ arena_read_manifest "$run_dir"
 arena_read_review_manifest "$run_dir"
 arena_review_snapshot_is_intact "$ARENA_REVIEW_WORKTREE" "$ARENA_REVIEW_HEAD" \
     "$ARENA_REVIEW_CURSOR_POLICY_HASH" "$ARENA_REVIEW_GATE_WRAPPER_HASH" \
-    "$ARENA_REVIEW_GATE_POLICY_PATH" || \
+    "$ARENA_REVIEW_GATE_POLICY_PATH" "$ARENA_REVIEW_GATE_WRAPPER_PATH" || \
     arena_die 'review snapshot is not an intact submitted checkpoint'
 arena_assert_clean_worktree "$ARENA_MANIFEST_WRITER_WORKTREE"
 

@@ -13,6 +13,9 @@ gate_cursor_policy() {
 
     : "${ARENA_COMMAND:?missing ARENA_COMMAND}"
     arena_assert_worktree "$review_worktree"
+    if [[ -e "$policy_file" || -L "$policy_file" || -e "$gate_wrapper" || -L "$gate_wrapper" ]]; then
+        arena_die 'review snapshot already has local gate files without a verified manifest'
+    fi
     if [[ -L "$cursor_dir" || ( -e "$cursor_dir" && ! -d "$cursor_dir" ) ]]; then
         arena_die "review snapshot has an unsafe .cursor path: $cursor_dir"
     fi

@@ -9,13 +9,13 @@ usage() {
     cat <<'EOF'
 Usage: agent-arena start RUN_ID [options]
 
-Create or resume one isolated writer + Cursor gate run.
+Create or resume one isolated writer + gate run.
 
 Options:
   --run-id ID             Alternative to the positional RUN_ID
   --repo PATH             Integration Git worktree (default: current directory)
-  --profile NAME          pi-cursor, codex-cursor, opencode-cursor, or agy-cursor
-                           (default: pi-cursor)
+  --profile NAME          WRITER-GATE combination such as pi-cursor or
+                           pi-opencode (default: pi-cursor)
   --writer NAME           Writer adapter: pi, codex, opencode, or agy (with --gate)
   --gate NAME             Gate adapter: cursor or opencode (with --writer)
   --state-root PATH       Private run-state root override
@@ -101,9 +101,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$writer_explicit" == 1 || "$gate_explicit" == 1 ]]; then
-    [[ "$writer_explicit" == 1 && "$gate_explicit" == 1 ]] || \
-        arena_die '--writer and --gate must be given together'
     [[ "$profile_explicit" == 0 ]] || arena_die '--profile cannot be combined with --writer/--gate'
+fi
+if [[ "$writer_explicit" == 1 && "$gate_explicit" == 1 ]]; then
     profile="${writer_arg}-${gate_arg}"
 fi
 
@@ -147,6 +147,15 @@ if [[ -e "$run_dir" || -L "$run_dir" ]]; then
     if [[ "$profile_explicit" == 1 && "$profile" != "$ARENA_MANIFEST_PROFILE" ]]; then
         arena_die "existing run uses profile ${ARENA_MANIFEST_PROFILE}, not $profile"
     fi
+    if [[ "$writer_explicit" == 1 || "$gate_explicit" == 1 ]]; then
+        requested_writer="${writer_arg:-$ARENA_MANIFEST_WRITER_ADAPTER}"
+        requested_gate="${gate_arg:-$ARENA_MANIFEST_GATE_ADAPTER}"
+        arena_profile_resolve "${requested_writer}-${requested_gate}"
+        if [[ "$ARENA_PROFILE_WRITER_ADAPTER" != "$ARENA_MANIFEST_WRITER_ADAPTER" || \
+            "$ARENA_PROFILE_GATE_ADAPTER" != "$ARENA_MANIFEST_GATE_ADAPTER" ]]; then
+            arena_die "existing run uses writer ${ARENA_MANIFEST_WRITER_ADAPTER} with gate ${ARENA_MANIFEST_GATE_ADAPTER}, not ${requested_writer}-${requested_gate}"
+        fi
+    fi
     profile="$ARENA_MANIFEST_PROFILE"
     arena_profile_resolve "$profile"
     writer_adapter="$ARENA_PROFILE_WRITER_ADAPTER"
@@ -169,6 +178,10 @@ if [[ -e "$run_dir" || -L "$run_dir" ]]; then
         review_worktree=''
     fi
 else
+    if [[ "$writer_explicit" == 1 || "$gate_explicit" == 1 ]]; then
+        [[ "$writer_explicit" == 1 && "$gate_explicit" == 1 ]] || \
+            arena_die '--writer and --gate must be given together'
+    fi
     arena_profile_resolve "$profile"
     writer_adapter="$ARENA_PROFILE_WRITER_ADAPTER"
     writer_label="$ARENA_PROFILE_WRITER_LABEL"

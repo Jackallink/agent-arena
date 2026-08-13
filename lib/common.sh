@@ -197,14 +197,28 @@ arena_short_sha() {
     printf '%s' "${1:0:12}"
 }
 
+arena_validate_review_declared_path() {
+    local path="$1"
+    local field_name="$2"
+
+    [[ -n "$path" ]] || arena_die "$field_name must not be empty"
+    [[ "$path" != /* ]] || \
+        arena_die "$field_name must be relative to the review snapshot: $path"
+    if [[ "$path" == .. || "$path" == ../* || "$path" == */.. || "$path" == */../* ]]; then
+        arena_die "$field_name may not contain '..' path components: $path"
+    fi
+    arena_reject_control_characters "$path"
+}
+
 arena_review_snapshot_is_intact() {
     local worktree="$1"
     local expected_head="$2"
     local expected_policy_hash="${3:-}"
     local expected_gate_hash="${4:-}"
     local gate_policy_path="${5:-.cursor/cli.json}"
-    local policy_file policy_parent gate_wrapper actual_head worktree_status status_entry
-    local policy_status_entry path policy_mode gate_mode
+    local gate_wrapper_path="${6:-.agent-arena-gate}"
+    local policy_file policy_parent gate_wrapper wrapper_parent actual_head worktree_status
+    local policy_status_entry wrapper_status_entry status_entry path policy_mode gate_mode
 
     if [[ ! -d "$worktree" ]]; then
         printf 'review snapshot is missing: %s\n' "$worktree" >&2
@@ -237,17 +251,22 @@ arena_review_snapshot_is_intact() {
     fi
 
     policy_file="${worktree}/${gate_policy_path}"
+    gate_wrapper="${worktree}/${gate_wrapper_path}"
     policy_parent="$worktree"
+    wrapper_parent="$worktree"
     if [[ "$(dirname "$gate_policy_path")" != '.' ]]; then
         policy_parent="${worktree}/$(dirname "$gate_policy_path")"
     fi
+    if [[ "$(dirname "$gate_wrapper_path")" != '.' ]]; then
+        wrapper_parent="${worktree}/$(dirname "$gate_wrapper_path")"
+    fi
     policy_status_entry="?? ${gate_policy_path}"
-    gate_wrapper="${worktree}/.agent-arena-gate"
-    if [[ -L "$policy_parent" || -L "$policy_file" || -L "$gate_wrapper" ]]; then
+    wrapper_status_entry="?? ${gate_wrapper_path}"
+    if [[ -L "$policy_parent" || -L "$policy_file" || -L "$wrapper_parent" || -L "$gate_wrapper" ]]; then
         printf 'review snapshot generated policy path is a symbolic link\n' >&2
         return 1
     fi
-    if [[ ! -d "$policy_parent" || ! -f "$policy_file" || ! -f "$gate_wrapper" ]]; then
+    if [[ ! -d "$policy_parent" || ! -f "$policy_file" || ! -d "$wrapper_parent" || ! -f "$gate_wrapper" ]]; then
         printf 'review snapshot generated policy files are missing\n' >&2
         return 1
     fi
@@ -268,14 +287,14 @@ arena_review_snapshot_is_intact() {
     while IFS= read -r status_entry; do
         [[ -n "$status_entry" ]] || continue
         case "$status_entry" in
-            "$policy_status_entry"|'?? .agent-arena-gate') ;;
+            "$policy_status_entry"|"$wrapper_status_entry") ;;
             *)
                 printf 'review snapshot has unexpected change: %s\n' "$status_entry" >&2
                 return 1
                 ;;
         esac
     done <<<"$worktree_status"
-    for status_entry in "$policy_status_entry" '?? .agent-arena-gate'; do
+    for status_entry in "$policy_status_entry" "$wrapper_status_entry"; do
         path="${status_entry#?? }"
         # A project may already ignore its own gate-policy or dot-file state.
         # Do not alter shared Git excludes; the manifest hashes above still bind
@@ -490,21 +509,25 @@ arena_write_review_manifest() {
     local gate_policy_path="$5"
     local cursor_policy_hash="$6"
     local gate_wrapper_hash="$7"
+    local gate_wrapper_path="$8"
     local tmp_file value
 
     for value in "$review_head" "$review_worktree" "$gate_adapter" "$gate_policy_path" \
-        "$cursor_policy_hash" "$gate_wrapper_hash"; do
+        "$cursor_policy_hash" "$gate_wrapper_hash" "$gate_wrapper_path"; do
         [[ -n "$value" ]] || arena_die 'review manifest value must not be empty'
         arena_reject_control_characters "$value"
     done
     [[ "$cursor_policy_hash" =~ ^[0-9a-fA-F]{64}$ && "$gate_wrapper_hash" =~ ^[0-9a-fA-F]{64}$ ]] || \
         arena_die 'review manifest policy hashes must be SHA-256 values'
+    arena_validate_review_declared_path "$gate_policy_path" 'gate policy path'
+    arena_validate_review_declared_path "$gate_wrapper_path" 'gate wrapper path'
     tmp_file="$(mktemp "${run_dir}/.review.XXXXXX")"
     {
         printf 'review_head\t%s\n' "$review_head"
         printf 'review_worktree\t%s\n' "$review_worktree"
         printf 'gate_adapter\t%s\n' "$gate_adapter"
         printf 'gate_policy_path\t%s\n' "$gate_policy_path"
+        printf 'gate_wrapper_path\t%s\n' "$gate_wrapper_path"
         printf 'cursor_policy_hash\t%s\n' "$cursor_policy_hash"
         printf 'gate_wrapper_hash\t%s\n' "$gate_wrapper_hash"
     } >"$tmp_file"
@@ -522,6 +545,7 @@ arena_read_review_manifest() {
     ARENA_REVIEW_WORKTREE=''
     ARENA_REVIEW_GATE_ADAPTER=''
     ARENA_REVIEW_GATE_POLICY_PATH=''
+    ARENA_REVIEW_GATE_WRAPPER_PATH=''
     ARENA_REVIEW_CURSOR_POLICY_HASH=''
     ARENA_REVIEW_GATE_WRAPPER_HASH=''
     while IFS=$'\t' read -r key value; do
@@ -530,6 +554,7 @@ arena_read_review_manifest() {
             review_worktree) ARENA_REVIEW_WORKTREE="$value" ;;
             gate_adapter) ARENA_REVIEW_GATE_ADAPTER="$value" ;;
             gate_policy_path) ARENA_REVIEW_GATE_POLICY_PATH="$value" ;;
+            gate_wrapper_path) ARENA_REVIEW_GATE_WRAPPER_PATH="$value" ;;
             cursor_policy_hash) ARENA_REVIEW_CURSOR_POLICY_HASH="$value" ;;
             gate_wrapper_hash) ARENA_REVIEW_GATE_WRAPPER_HASH="$value" ;;
             *) arena_die "unknown review manifest key '$key' in $manifest" ;;
@@ -538,11 +563,14 @@ arena_read_review_manifest() {
     [[ -n "$ARENA_REVIEW_HEAD" && -n "$ARENA_REVIEW_WORKTREE" && \
         -n "$ARENA_REVIEW_CURSOR_POLICY_HASH" && -n "$ARENA_REVIEW_GATE_WRAPPER_HASH" ]] || \
         arena_die "incomplete review manifest: $manifest"
-    # v0.2-era review manifests predate the gate_adapter and gate_policy_path
-    # columns; mirror the run-manifest read and default them to the Cursor gate
-    # adapter and its .cursor/cli.json policy
+    # v0.2-era review manifests predate the gate_adapter, gate_policy_path, and
+    # gate_wrapper_path columns; mirror the run-manifest read and default them
+    # to the Cursor gate adapter and its .cursor/cli.json policy
     [[ -n "$ARENA_REVIEW_GATE_ADAPTER" ]] || ARENA_REVIEW_GATE_ADAPTER='cursor'
     [[ -n "$ARENA_REVIEW_GATE_POLICY_PATH" ]] || ARENA_REVIEW_GATE_POLICY_PATH='.cursor/cli.json'
+    [[ -n "$ARENA_REVIEW_GATE_WRAPPER_PATH" ]] || ARENA_REVIEW_GATE_WRAPPER_PATH='.agent-arena-gate'
+    arena_validate_review_declared_path "$ARENA_REVIEW_GATE_POLICY_PATH" 'gate policy path'
+    arena_validate_review_declared_path "$ARENA_REVIEW_GATE_WRAPPER_PATH" 'gate wrapper path'
     arena_gate_resolve "$ARENA_REVIEW_GATE_ADAPTER"
     [[ "$ARENA_REVIEW_GATE_ADAPTER" == "$ARENA_MANIFEST_GATE_ADAPTER" ]] || \
         arena_die 'review gate adapter differs from the run manifest'
@@ -550,6 +578,7 @@ arena_read_review_manifest() {
     arena_reject_control_characters "$ARENA_REVIEW_WORKTREE"
     arena_reject_control_characters "$ARENA_REVIEW_GATE_ADAPTER"
     arena_reject_control_characters "$ARENA_REVIEW_GATE_POLICY_PATH"
+    arena_reject_control_characters "$ARENA_REVIEW_GATE_WRAPPER_PATH"
     arena_reject_control_characters "$ARENA_REVIEW_CURSOR_POLICY_HASH"
     arena_reject_control_characters "$ARENA_REVIEW_GATE_WRAPPER_HASH"
     [[ "$ARENA_REVIEW_CURSOR_POLICY_HASH" =~ ^[0-9a-fA-F]{64}$ && \
@@ -561,21 +590,43 @@ arena_prepare_gate_policy() {
     local review_worktree="$1"
     local gate_adapter="$2"
     local adapter="${ARENA_SOURCE_ROOT:-$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}/adapters/gate-${gate_adapter}.sh"
-    local bindings gate_policy_path gate_policy_hash gate_wrapper_hash
+    local binding_pattern=$'^(policy|wrapper)\t[^\t]+\t[0-9a-fA-F]{64}$'
+    local bindings binding_line binding_key binding_path binding_hash
+    local gate_policy_path='' gate_policy_hash='' gate_wrapper_path='' gate_wrapper_hash=''
 
     arena_assert_worktree "$review_worktree"
     [[ -x "$adapter" ]] || arena_die "gate adapter is missing: $adapter"
     bindings="$("$adapter" policy "$review_worktree")" || \
         arena_die "gate adapter $gate_adapter failed to generate its policy"
-    gate_policy_path="$(printf '%s\n' "$bindings" | awk -F $'\t' '$1 == "policy" { print $2; exit }')"
-    gate_policy_hash="$(printf '%s\n' "$bindings" | awk -F $'\t' '$1 == "policy" { print $3; exit }')"
-    gate_wrapper_hash="$(printf '%s\n' "$bindings" | awk -F $'\t' '$1 == "wrapper" { print $3; exit }')"
-    [[ -n "$gate_policy_path" && -n "$gate_policy_hash" && -n "$gate_wrapper_hash" ]] || \
+    while IFS= read -r binding_line; do
+        [[ -n "$binding_line" ]] || continue
+        if [[ ! "$binding_line" =~ $binding_pattern ]]; then
+            arena_die 'gate adapter printed a malformed policy binding line'
+        fi
+        IFS=$'\t' read -r binding_key binding_path binding_hash <<<"$binding_line"
+        case "$binding_key" in
+            policy)
+                [[ -z "$gate_policy_path" && -z "$gate_policy_hash" ]] || \
+                    arena_die 'gate adapter printed duplicate policy binding lines'
+                gate_policy_path="$binding_path"
+                gate_policy_hash="$binding_hash"
+                ;;
+            wrapper)
+                [[ -z "$gate_wrapper_path" && -z "$gate_wrapper_hash" ]] || \
+                    arena_die 'gate adapter printed duplicate wrapper binding lines'
+                gate_wrapper_path="$binding_path"
+                gate_wrapper_hash="$binding_hash"
+                ;;
+        esac
+    done <<<"$bindings"
+    [[ -n "$gate_policy_path" && -n "$gate_policy_hash" && \
+        -n "$gate_wrapper_path" && -n "$gate_wrapper_hash" ]] || \
         arena_die 'gate adapter printed an incomplete policy binding manifest'
-    [[ "$gate_policy_hash" =~ ^[0-9a-fA-F]{64}$ && "$gate_wrapper_hash" =~ ^[0-9a-fA-F]{64}$ ]] || \
-        arena_die 'gate adapter printed invalid SHA-256 binding hashes'
+    arena_validate_review_declared_path "$gate_policy_path" 'gate policy path'
+    arena_validate_review_declared_path "$gate_wrapper_path" 'gate wrapper path'
     ARENA_GATE_POLICY_PATH="$gate_policy_path"
     ARENA_GATE_POLICY_HASH="$gate_policy_hash"
+    ARENA_GATE_WRAPPER_PATH="$gate_wrapper_path"
     ARENA_GATE_WRAPPER_HASH="$gate_wrapper_hash"
 }
 

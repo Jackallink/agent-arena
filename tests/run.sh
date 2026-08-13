@@ -325,18 +325,22 @@ require_match '?? .agent-arena-gate' <(printf '%s\n' "$review_status")
     fail 'review manifest did not record gate_adapter=cursor'
 [[ "$(manifest_value "${run_dir}/review.tsv" gate_policy_path)" == '.cursor/cli.json' ]] || \
     fail 'review manifest did not record gate_policy_path=.cursor/cli.json'
+[[ "$(manifest_value "${run_dir}/review.tsv" gate_wrapper_path)" == '.agent-arena-gate' ]] || \
+    fail 'review manifest did not record gate_wrapper_path=.agent-arena-gate'
 # legacy-safety: a v0.2-era review.tsv carries no gate_adapter or
 # gate_policy_path line; reading it must succeed and default them to the
 # Cursor gate adapter and its .cursor/cli.json policy
 legacy_review_backup="${tmp_root}/review.tsv.with-gate-adapter"
 cp "${run_dir}/review.tsv" "$legacy_review_backup"
-awk -F $'\t' '$1 != "gate_adapter" && $1 != "gate_policy_path"' \
+awk -F $'\t' '$1 != "gate_adapter" && $1 != "gate_policy_path" && $1 != "gate_wrapper_path"' \
     "${run_dir}/review.tsv" >"${run_dir}/review.tsv.legacy"
 mv "${run_dir}/review.tsv.legacy" "${run_dir}/review.tsv"
 [[ "$(manifest_value "${run_dir}/review.tsv" gate_adapter)" == '' ]] || \
     fail 'legacy fixture still carries a gate_adapter line'
 [[ "$(manifest_value "${run_dir}/review.tsv" gate_policy_path)" == '' ]] || \
     fail 'legacy fixture still carries a gate_policy_path line'
+[[ "$(manifest_value "${run_dir}/review.tsv" gate_wrapper_path)" == '' ]] || \
+    fail 'legacy fixture still carries a gate_wrapper_path line'
 run_arena status run-one >"${tmp_root}/legacy-review-status.out"
 require_match 'Integrity: OK' "${tmp_root}/legacy-review-status.out"
 legacy_review_fields="$(ARENA_SOURCE_ROOT="$source_root" bash -c '
@@ -344,14 +348,18 @@ legacy_review_fields="$(ARENA_SOURCE_ROOT="$source_root" bash -c '
     source "$ARENA_SOURCE_ROOT/lib/common.sh"
     arena_read_manifest "$1"
     arena_read_review_manifest "$1"
-    printf "%s\n%s\n" "$ARENA_REVIEW_GATE_ADAPTER" "$ARENA_REVIEW_GATE_POLICY_PATH"
+    printf "%s\n%s\n%s\n" "$ARENA_REVIEW_GATE_ADAPTER" "$ARENA_REVIEW_GATE_POLICY_PATH" \
+        "$ARENA_REVIEW_GATE_WRAPPER_PATH"
 ' _ "$run_dir")"
 legacy_gate_adapter="$(printf '%s\n' "$legacy_review_fields" | awk 'NR == 1')"
 legacy_gate_policy_path="$(printf '%s\n' "$legacy_review_fields" | awk 'NR == 2')"
+legacy_gate_wrapper_path="$(printf '%s\n' "$legacy_review_fields" | awk 'NR == 3')"
 [[ "$legacy_gate_adapter" == cursor ]] || \
     fail 'legacy review.tsv without gate_adapter did not default to the cursor gate'
 [[ "$legacy_gate_policy_path" == '.cursor/cli.json' ]] || \
     fail 'legacy review.tsv without gate_policy_path did not default to .cursor/cli.json'
+[[ "$legacy_gate_wrapper_path" == '.agent-arena-gate' ]] || \
+    fail 'legacy review.tsv without gate_wrapper_path did not default to .agent-arena-gate'
 mv "$legacy_review_backup" "${run_dir}/review.tsv"
 # the review gate must match the gate recorded in the run manifest
 mismatch_backup="${tmp_root}/review.tsv.pre-mismatch"
@@ -1000,6 +1008,23 @@ if run_arena start run-bad-combo --repo "$project" --writer pi --no-attach >/dev
     fail '--writer without --gate unexpectedly succeeded'
 fi
 assert_no_run_manifest run-bad-combo
+# AC2: a selected gate whose adapter file is missing must fail before any
+# state or worktree is created (the run-opencode-gate run already exists, so
+# use a fresh run id)
+mv "${source_root}/adapters/gate-opencode.sh" \
+    "${source_root}/adapters/gate-opencode.sh.missing"
+if run_arena start run-gate-missing --repo "$project" --writer pi --gate opencode --no-attach \
+    >"${tmp_root}/gate-missing.out" 2>&1; then
+    gate_missing_status=0
+else
+    gate_missing_status=$?
+fi
+mv "${source_root}/adapters/gate-opencode.sh.missing" \
+    "${source_root}/adapters/gate-opencode.sh"
+[[ "$gate_missing_status" -ne 0 ]] || \
+    fail 'start unexpectedly succeeded with the gate adapter file missing'
+require_match 'gate adapter is not available' "${tmp_root}/gate-missing.out"
+assert_no_run_manifest run-gate-missing
 run_arena start run-opencode-gate --repo "$project" --profile pi-opencode --no-attach >/dev/null
 ocg_manifest="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/run-opencode-gate/manifest.tsv' -exec dirname {} \;)/manifest.tsv"
 [[ "$(manifest_value "$ocg_manifest" gate_adapter)" == 'opencode' ]] || \
@@ -1007,6 +1032,19 @@ ocg_manifest="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name 
 [[ "$(manifest_value "$ocg_manifest" profile)" == 'pi-opencode' ]] || \
     fail 'pi-opencode did not record the combined profile'
 expect_failure run_arena start run-opencode-gate --repo "$project" --profile pi-opencode --gate cursor --no-attach
+# resume must not silently ignore explicit --writer/--gate selections
+if run_arena start run-opencode-gate --repo "$project" --gate cursor --no-attach \
+    >"${tmp_root}/resume-gate-mismatch.out" 2>&1; then
+    fail 'resume silently accepted a gate differing from the recorded run'
+fi
+require_match 'existing run uses writer' "${tmp_root}/resume-gate-mismatch.out"
+expect_failure run_arena start run-opencode-gate --repo "$project" --writer codex --gate opencode --no-attach
+run_arena start run-opencode-gate --repo "$project" --gate opencode --no-attach >/dev/null
+run_arena start --help >"${tmp_root}/start-help.out"
+require_match 'isolated writer + gate run' "${tmp_root}/start-help.out"
+require_match 'WRITER-GATE combination' "${tmp_root}/start-help.out"
+require_match '--writer NAME' "${tmp_root}/start-help.out"
+require_match '--gate NAME' "${tmp_root}/start-help.out"
 
 printf '%s\n' '31. reviewer pane dispatches the manifest gate adapter'
 : >"$fake_opencode_log"
@@ -1079,6 +1117,246 @@ require_match '"task":"deny"' "${ocg_review}/opencode.json"
 require_match '"external_directory":"deny"' "${ocg_review}/opencode.json"
 [[ "$(manifest_value "$(dirname "$ocg_manifest")/review.tsv" gate_adapter)" == 'opencode' ]] || \
     fail 'opencode gate review manifest is not bound to the opencode gate'
+[[ "$(manifest_value "$(dirname "$ocg_manifest")/review.tsv" gate_wrapper_path)" == '.agent-arena-gate' ]] || \
+    fail 'opencode gate review manifest is not bound to the declared wrapper path'
 expect_failure "${ocg_review}/.agent-arena-gate" start run-opencode-gate
+
+printf '%s\n' '34. gate policy binding strictness and declared-path validation'
+fixture_source="${tmp_root}/fixture-source"
+mkdir -p "${fixture_source}/adapters"
+binding_worktree="${tmp_root}/binding-snapshot"
+git -C "$project" worktree add --detach "$binding_worktree" HEAD >/dev/null
+hex64_a="$(printf 'a%.0s' {1..64})"
+hex64_b="$(printf 'b%.0s' {1..64})"
+write_binding_adapter() {
+    local adapter_name="$1"
+    local bindings_file="$2"
+
+    cat >"${fixture_source}/adapters/gate-${adapter_name}.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+cat '${bindings_file}'
+EOF
+    chmod 755 "${fixture_source}/adapters/gate-${adapter_name}.sh"
+}
+prepare_capture() {
+    local adapter_name="$1"
+
+    ARENA_SOURCE_ROOT="$fixture_source" bash -c '
+        set -euo pipefail
+        source "$1/lib/common.sh"
+        arena_prepare_gate_policy "$2" "$3"
+        printf "%s\n%s\n%s\n%s\n" "$ARENA_GATE_POLICY_PATH" "$ARENA_GATE_POLICY_HASH" \
+            "$ARENA_GATE_WRAPPER_PATH" "$ARENA_GATE_WRAPPER_HASH"
+    ' _ "$source_root" "$binding_worktree" "$adapter_name"
+}
+cat >"${tmp_root}/bindings-valid.tsv" <<EOF
+policy	.cursor/cli.json	${hex64_a}
+wrapper	.agent-arena-gate	${hex64_b}
+EOF
+write_binding_adapter fixture-valid "${tmp_root}/bindings-valid.tsv"
+valid_bindings="$(prepare_capture fixture-valid)"
+[[ "$(printf '%s\n' "$valid_bindings" | awk 'NR == 1')" == '.cursor/cli.json' ]] || \
+    fail 'valid policy binding did not parse the declared policy path'
+[[ "$(printf '%s\n' "$valid_bindings" | awk 'NR == 2')" == "$hex64_a" ]] || \
+    fail 'valid policy binding did not parse the declared policy hash'
+[[ "$(printf '%s\n' "$valid_bindings" | awk 'NR == 3')" == '.agent-arena-gate' ]] || \
+    fail 'valid wrapper binding did not parse the declared wrapper path'
+[[ "$(printf '%s\n' "$valid_bindings" | awk 'NR == 4')" == "$hex64_b" ]] || \
+    fail 'valid wrapper binding did not parse the declared wrapper hash'
+cat >"${tmp_root}/bindings-duplicate-policy.tsv" <<EOF
+policy	.cursor/cli.json	${hex64_a}
+policy	opencode.json	${hex64_b}
+wrapper	.agent-arena-gate	${hex64_a}
+EOF
+write_binding_adapter fixture-duplicate-policy "${tmp_root}/bindings-duplicate-policy.tsv"
+if prepare_capture fixture-duplicate-policy >"${tmp_root}/duplicate-policy.out" 2>&1; then
+    fail 'duplicate policy binding lines were accepted'
+fi
+require_match 'duplicate policy binding' "${tmp_root}/duplicate-policy.out"
+cat >"${tmp_root}/bindings-duplicate-wrapper.tsv" <<EOF
+policy	.cursor/cli.json	${hex64_a}
+wrapper	.agent-arena-gate	${hex64_a}
+wrapper	.agent-arena-gate	${hex64_b}
+EOF
+write_binding_adapter fixture-duplicate-wrapper "${tmp_root}/bindings-duplicate-wrapper.tsv"
+if prepare_capture fixture-duplicate-wrapper >"${tmp_root}/duplicate-wrapper.out" 2>&1; then
+    fail 'duplicate wrapper binding lines were accepted'
+fi
+require_match 'duplicate wrapper binding' "${tmp_root}/duplicate-wrapper.out"
+cat >"${tmp_root}/bindings-malformed.tsv" <<EOF
+policy	.cursor/cli.json	${hex64_a}
+wrapper	.agent-arena-gate	not-a-sha256-value
+EOF
+write_binding_adapter fixture-malformed "${tmp_root}/bindings-malformed.tsv"
+if prepare_capture fixture-malformed >"${tmp_root}/malformed.out" 2>&1; then
+    fail 'a malformed binding line was accepted'
+fi
+require_match 'malformed policy binding' "${tmp_root}/malformed.out"
+cat >"${tmp_root}/bindings-extra-line.tsv" <<EOF
+policy	.cursor/cli.json	${hex64_a}
+wrapper	.agent-arena-gate	${hex64_a}
+extra	line	ignored
+EOF
+write_binding_adapter fixture-extra-line "${tmp_root}/bindings-extra-line.tsv"
+if prepare_capture fixture-extra-line >"${tmp_root}/extra-line.out" 2>&1; then
+    fail 'an unrecognized extra binding line was accepted'
+fi
+require_match 'malformed policy binding' "${tmp_root}/extra-line.out"
+cat >"${tmp_root}/bindings-evil-policy.tsv" <<EOF
+policy	../evil	${hex64_a}
+wrapper	.agent-arena-gate	${hex64_a}
+EOF
+write_binding_adapter fixture-evil-policy "${tmp_root}/bindings-evil-policy.tsv"
+if prepare_capture fixture-evil-policy >"${tmp_root}/evil-policy.out" 2>&1; then
+    fail 'a policy path escaping the snapshot was accepted'
+fi
+require_match "may not contain '..'" "${tmp_root}/evil-policy.out"
+cat >"${tmp_root}/bindings-absolute-policy.tsv" <<EOF
+policy	/tmp/evil-policy	${hex64_a}
+wrapper	.agent-arena-gate	${hex64_a}
+EOF
+write_binding_adapter fixture-absolute-policy "${tmp_root}/bindings-absolute-policy.tsv"
+if prepare_capture fixture-absolute-policy >"${tmp_root}/absolute-policy.out" 2>&1; then
+    fail 'an absolute policy path was accepted'
+fi
+require_match 'must be relative to the review snapshot' "${tmp_root}/absolute-policy.out"
+cat >"${tmp_root}/bindings-evil-wrapper.tsv" <<EOF
+policy	.cursor/cli.json	${hex64_a}
+wrapper	../evil	${hex64_a}
+EOF
+write_binding_adapter fixture-evil-wrapper "${tmp_root}/bindings-evil-wrapper.tsv"
+if prepare_capture fixture-evil-wrapper >"${tmp_root}/evil-wrapper.out" 2>&1; then
+    fail 'a wrapper path escaping the snapshot was accepted'
+fi
+require_match "may not contain '..'" "${tmp_root}/evil-wrapper.out"
+rm -rf "$binding_worktree"
+git -C "$project" worktree prune
+
+printf '%s\n' '35. hostile gate adapter output fails submit before review.tsv'
+run_arena start run-hostile-gate --repo "$project" --profile pi-opencode --no-attach >/dev/null
+hostile_run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/run-hostile-gate/manifest.tsv' -exec dirname {} \;)"
+hostile_writer="$(manifest_value "${hostile_run_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' 'hostile checkpoint' >"${hostile_writer}/hostile.txt"
+git -C "$hostile_writer" add hostile.txt
+git -C "$hostile_writer" commit -m 'test: checkpoint for a hostile gate adapter' >/dev/null
+cp "${source_root}/adapters/gate-opencode.sh" "${tmp_root}/gate-opencode.sh.real"
+cat >"${source_root}/adapters/gate-opencode.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+case "\${1:-}" in
+    capabilities)
+        printf '%s\n' 'policy_path=../evil-policy' 'wrapper_path=.agent-arena-gate'
+        ;;
+    policy)
+        printf 'policy\t../evil-policy\t%s\n' "${hex64_a}"
+        printf 'wrapper\t.agent-arena-gate\t%s\n' "${hex64_b}"
+        ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod 755 "${source_root}/adapters/gate-opencode.sh"
+if run_arena submit run-hostile-gate >"${tmp_root}/hostile-submit.out" 2>&1; then
+    hostile_status=0
+else
+    hostile_status=$?
+fi
+cp "${tmp_root}/gate-opencode.sh.real" "${source_root}/adapters/gate-opencode.sh"
+chmod 755 "${source_root}/adapters/gate-opencode.sh"
+[[ "$hostile_status" -ne 0 ]] || fail 'submit accepted a gate policy path escaping the snapshot'
+require_match "may not contain '..'" "${tmp_root}/hostile-submit.out"
+[[ ! -f "${hostile_run_dir}/review.tsv" ]] || \
+    fail 'hostile gate policy path still wrote a review manifest'
+run_arena start run-dirty-gate --repo "$project" --profile pi-opencode --no-attach >/dev/null
+dirty_run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/run-dirty-gate/manifest.tsv' -exec dirname {} \;)"
+dirty_writer="$(manifest_value "${dirty_run_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' 'dirty checkpoint' >"${dirty_writer}/dirty.txt"
+git -C "$dirty_writer" add dirty.txt
+git -C "$dirty_writer" commit -m 'test: checkpoint for a dirty policy generation' >/dev/null
+cat >"${source_root}/adapters/gate-opencode.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+    capabilities)
+        printf '%s\n' 'policy_path=opencode.json' 'wrapper_path=.agent-arena-gate'
+        ;;
+    policy)
+        review_worktree="${2:?}"
+        policy_file="${review_worktree}/opencode.json"
+        gate_wrapper="${review_worktree}/.agent-arena-gate"
+        printf '%s\n' '{}' >"$policy_file"
+        printf '%s\n' '#!/usr/bin/env bash' >"$gate_wrapper"
+        chmod 600 "$policy_file"
+        chmod 700 "$gate_wrapper"
+        printf '%s\n' 'stray edit' >"${review_worktree}/stray.txt"
+        if command -v shasum >/dev/null 2>&1; then
+            printf 'policy\topencode.json\t%s\n' "$(shasum -a 256 "$policy_file" | awk '{print $1}')"
+            printf 'wrapper\t.agent-arena-gate\t%s\n' "$(shasum -a 256 "$gate_wrapper" | awk '{print $1}')"
+        else
+            printf 'policy\topencode.json\t%s\n' "$(sha256sum "$policy_file" | awk '{print $1}')"
+            printf 'wrapper\t.agent-arena-gate\t%s\n' "$(sha256sum "$gate_wrapper" | awk '{print $1}')"
+        fi
+        ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod 755 "${source_root}/adapters/gate-opencode.sh"
+if run_arena submit run-dirty-gate >"${tmp_root}/dirty-submit.out" 2>&1; then
+    dirty_status=0
+else
+    dirty_status=$?
+fi
+cp "${tmp_root}/gate-opencode.sh.real" "${source_root}/adapters/gate-opencode.sh"
+chmod 755 "${source_root}/adapters/gate-opencode.sh"
+[[ "$dirty_status" -ne 0 ]] || fail 'submit accepted a policy generation that dirtied the snapshot'
+require_match 'review snapshot changed while installing gate policy' "${tmp_root}/dirty-submit.out"
+[[ ! -f "${dirty_run_dir}/review.tsv" ]] || \
+    fail 'dirty policy generation still wrote a review manifest'
+
+printf '%s\n' '36. hostile review manifest paths fail closed'
+ocg_run_dir="$(dirname "$ocg_manifest")"
+hostile_review_backup="${tmp_root}/review.tsv.pre-hostile"
+cp "${ocg_run_dir}/review.tsv" "$hostile_review_backup"
+hostile_review="$(mktemp "${ocg_run_dir}/.review-hostile.XXXXXX")"
+awk -F $'\t' 'BEGIN { OFS = FS } $1 == "gate_policy_path" { $2 = "../evil" } { print }' \
+    "${ocg_run_dir}/review.tsv" >"$hostile_review"
+mv "$hostile_review" "${ocg_run_dir}/review.tsv"
+if run_arena validate run-opencode-gate >"${tmp_root}/hostile-review-validate.out" 2>&1; then
+    fail 'validate accepted a hostile gate_policy_path in review.tsv'
+fi
+require_match "may not contain '..'" "${tmp_root}/hostile-review-validate.out"
+if run_arena status run-opencode-gate >"${tmp_root}/hostile-review-status.out" 2>&1; then
+    fail 'status accepted a hostile gate_policy_path in review.tsv'
+fi
+require_match "may not contain '..'" "${tmp_root}/hostile-review-status.out"
+hostile_wrapper_review="$(mktemp "${ocg_run_dir}/.review-hostile-wrapper.XXXXXX")"
+awk -F $'\t' 'BEGIN { OFS = FS } $1 == "gate_wrapper_path" { $2 = "../evil" } { print }' \
+    "$hostile_review_backup" >"$hostile_wrapper_review"
+mv "$hostile_wrapper_review" "${ocg_run_dir}/review.tsv"
+if run_arena validate run-opencode-gate >"${tmp_root}/hostile-wrapper-validate.out" 2>&1; then
+    fail 'validate accepted a hostile gate_wrapper_path in review.tsv'
+fi
+require_match "may not contain '..'" "${tmp_root}/hostile-wrapper-validate.out"
+mv "$hostile_review_backup" "${ocg_run_dir}/review.tsv"
+run_arena status run-opencode-gate >"${tmp_root}/restored-status.out"
+require_match 'Integrity: OK' "${tmp_root}/restored-status.out"
+
+printf '%s\n' '37. cursor gate policy refuses pre-existing gate files'
+guard_snapshot="${tmp_root}/guard-snapshot"
+git -C "$project" worktree add --detach "$guard_snapshot" HEAD >/dev/null
+mkdir -p "${guard_snapshot}/.cursor"
+printf '%s\n' '{}' >"${guard_snapshot}/.cursor/cli.json"
+expect_failure env ARENA_COMMAND="$arena" "${source_root}/adapters/gate-cursor.sh" policy "$guard_snapshot"
+rm -f "${guard_snapshot}/.cursor/cli.json"
+printf '%s\n' '#!/usr/bin/env bash' >"${guard_snapshot}/.agent-arena-gate"
+expect_failure env ARENA_COMMAND="$arena" "${source_root}/adapters/gate-cursor.sh" policy "$guard_snapshot"
+rm -f "${guard_snapshot}/.agent-arena-gate"
+cursor_bindings="$(env ARENA_COMMAND="$arena" "${source_root}/adapters/gate-cursor.sh" policy "$guard_snapshot")"
+printf '%s\n' "$cursor_bindings" | grep -Eq $'^policy\t\.cursor/cli\.json\t[0-9a-fA-F]{64}$' || \
+    fail 'cursor gate policy did not print the three-column policy binding'
+printf '%s\n' "$cursor_bindings" | grep -Eq $'^wrapper\t\.agent-arena-gate\t[0-9a-fA-F]{64}$' || \
+    fail 'cursor gate policy did not print the three-column wrapper binding'
+rm -rf "$guard_snapshot"
+git -C "$project" worktree prune
 
 printf '%s\n' 'tests: ok'

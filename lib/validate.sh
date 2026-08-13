@@ -47,7 +47,7 @@ review_head="$(git -C "$ARENA_REVIEW_WORKTREE" rev-parse HEAD)"
     arena_die 'review worktree HEAD differs from the submitted checkpoint'
 arena_review_snapshot_is_intact "$ARENA_REVIEW_WORKTREE" "$ARENA_REVIEW_HEAD" \
     "$ARENA_REVIEW_CURSOR_POLICY_HASH" "$ARENA_REVIEW_GATE_WRAPPER_HASH" \
-    "$ARENA_REVIEW_GATE_POLICY_PATH" || \
+    "$ARENA_REVIEW_GATE_POLICY_PATH" "$ARENA_REVIEW_GATE_WRAPPER_PATH" || \
     arena_die 'review snapshot is not an intact submitted checkpoint'
 arena_load_project_config "$ARENA_REVIEW_WORKTREE"
 [[ -x "$ARENA_PROJECT_VALIDATION_PATH" ]] || \
@@ -76,7 +76,7 @@ run_gate() {
     fi
     if ! arena_review_snapshot_is_intact "$ARENA_REVIEW_WORKTREE" "$ARENA_REVIEW_HEAD" \
         "$ARENA_REVIEW_CURSOR_POLICY_HASH" "$ARENA_REVIEW_GATE_WRAPPER_HASH" \
-        "$ARENA_REVIEW_GATE_POLICY_PATH"; then
+        "$ARENA_REVIEW_GATE_POLICY_PATH" "$ARENA_REVIEW_GATE_WRAPPER_PATH"; then
         printf '%s\n' 'Snapshot integrity check failed after validation.' >&2
         return 2
     fi

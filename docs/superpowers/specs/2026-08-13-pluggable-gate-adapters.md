@@ -87,8 +87,8 @@ adapters/<gate>.sh probe        # exit 0 iff the gate CLI is locally available
 adapters/<gate>.sh capabilities # stable line-oriented flags
 adapters/<gate>.sh launch       # exec the gate CLI in the review pane (ARENA_GATE_* env)
 adapters/<gate>.sh policy WT    # generate gate policy files inside WT and print:
-                                #   gate_policy_path<TAB>gate_policy_hash
-                                #   gate_wrapper_path<TAB>gate_wrapper_hash
+                                #   policy<TAB>path<TAB>sha256
+                                #   wrapper<TAB>path<TAB>sha256
 ```
 
 The Cursor adapter's `policy` writes the current `.cursor/cli.json` (the

@@ -57,7 +57,7 @@ if [[ -f "${run_dir}/review.tsv" ]]; then
     printf 'Review worktree: %s\n' "$ARENA_REVIEW_WORKTREE"
     if arena_review_snapshot_is_intact "$ARENA_REVIEW_WORKTREE" "$ARENA_REVIEW_HEAD" \
         "$ARENA_REVIEW_CURSOR_POLICY_HASH" "$ARENA_REVIEW_GATE_WRAPPER_HASH" \
-        "$ARENA_REVIEW_GATE_POLICY_PATH"; then
+        "$ARENA_REVIEW_GATE_POLICY_PATH" "$ARENA_REVIEW_GATE_WRAPPER_PATH"; then
         printf 'Integrity: OK\n'
     else
         printf 'Integrity: FAILED (review snapshot is missing, dirty, or tampered)\n'

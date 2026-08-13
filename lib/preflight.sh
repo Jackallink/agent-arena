@@ -43,7 +43,7 @@ if [[ -n "$declared_review_worktree" ]]; then
     arena_assert_worktree "$ARENA_REVIEW_WORKTREE"
     arena_review_snapshot_is_intact "$ARENA_REVIEW_WORKTREE" "$ARENA_REVIEW_HEAD" \
         "$ARENA_REVIEW_CURSOR_POLICY_HASH" "$ARENA_REVIEW_GATE_WRAPPER_HASH" \
-        "$ARENA_REVIEW_GATE_POLICY_PATH" || \
+        "$ARENA_REVIEW_GATE_POLICY_PATH" "$ARENA_REVIEW_GATE_WRAPPER_PATH" || \
         arena_die 'review snapshot is not an intact submitted checkpoint'
 fi
 
