@@ -299,9 +299,16 @@ require_match '?? .cursor/cli.json' <(printf '%s\n' "$review_status")
 require_match '?? .agent-arena-gate' <(printf '%s\n' "$review_status")
 [[ -f "${review_worktree}/.cursor/cli.json" ]] || fail 'review snapshot lacks Cursor gate policy'
 [[ -x "${review_worktree}/.agent-arena-gate" ]] || fail 'review snapshot lacks gate wrapper'
-require_match '"approvalMode": "allowlist"' "${review_worktree}/.cursor/cli.json"
-require_match '"networkAccess": "user_config_only"' "${review_worktree}/.cursor/cli.json"
-require_match '"networkAllowlist": []' "${review_worktree}/.cursor/cli.json"
+require_match '"permissions"' "${review_worktree}/.cursor/cli.json"
+require_match '"allow"' "${review_worktree}/.cursor/cli.json"
+require_match '"deny"' "${review_worktree}/.cursor/cli.json"
+require_no_match 'approvalMode' "${review_worktree}/.cursor/cli.json"
+require_no_match 'networkAccess' "${review_worktree}/.cursor/cli.json"
+for deny_shell in 'Shell(echo *)' 'Shell(printf *)' 'Shell(tee *)' 'Shell(cp *)' \
+    'Shell(mv *)' 'Shell(bash *)' 'Shell(sh *)' 'Shell(zsh *)' \
+    'Shell(python3 *)' 'Shell(curl *)' 'Shell(wget *)'; do
+    require_match "$deny_shell" "${review_worktree}/.cursor/cli.json"
+done
 require_match '"Write(**)"' "${review_worktree}/.cursor/cli.json"
 require_match '"Delete(**)"' "${review_worktree}/.cursor/cli.json"
 require_match '"Shell(git commit *)"' "${review_worktree}/.cursor/cli.json"

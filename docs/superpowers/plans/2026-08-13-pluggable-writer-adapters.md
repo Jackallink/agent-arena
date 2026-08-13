@@ -59,7 +59,7 @@ validation report, or Cursor decision record.
 | Session handling | Fixtures distinguish first launch from valid explicit resume; unsupported automatic resume fails safely. | Passed 2026-08-13 |
 | Cursor gate | A non-Pi writer follows submit → detached snapshot → SHA-bound formal `validate` and `decision` commands; Cursor remains the designated gate by the generated policy. | Passed 2026-08-13 |
 | tmuxp / packaging | `bash tests/tmuxp-smoke.sh` and `bash packaging/package.sh --check` pass. | Passed 2026-08-13 |
-| Manual smoke | An authorized operator records authenticated provider/permission/session observations without placing credentials or transcripts in Git. | Not run |
+| Manual smoke | An authorized operator records authenticated provider/permission/session observations without placing credentials or transcripts in Git. | Cursor gate smoke completed 2026-08-13 (see the v0.1 plan Gate 4 evidence); Codex/OpenCode/Gemini writer live smokes remain open |
 
 Store command output, findings, drift, and rollback notes in the private run-state
 audit location. Do not record credentials, raw provider transcripts, or secrets in

@@ -17,8 +17,9 @@ scope until each has a separately verified immutable review-policy contract.
 
 This specification is **review-ready**. It records the implemented v0.2
 contracts and no-model validation evidence; it does not certify a provider's
-authenticated live behavior or production safety. `complete` remains blocked
-on the explicit manual smoke evidence described below.
+authenticated live behavior or production safety. The Cursor gate authenticated
+smoke completed on 2026-08-13 (see the v0.1 plan Gate 4 evidence); `complete`
+remains blocked on the Codex/OpenCode/Gemini writer live-permission smokes.
 
 ## Profiles and operator usage
 
@@ -138,12 +139,14 @@ remain mandatory.
 Tests use temporary Git fixtures and fake executables only; local CLI checks are
 `--help`/version/config parsing only and never make model or network requests.
 The hermetic suite, tmuxp smoke, packaging test, and local CLI-contract smoke
-passed on 2026-08-13. No authenticated live-model, provider-network, credential,
-session-resume, or permission smoke test has been performed. Hermetic tests are
-necessary but insufficient: they prove Arena's argument and lifecycle handling,
-not the provider's behavior after authentication.
+passed on 2026-08-13. The authenticated Cursor gate smoke (gate wrapper
+validation, write/commit/network rejection under the generated deny list) also
+passed on 2026-08-13; Codex/OpenCode/Gemini authenticated permission, network,
+and session-resume smokes remain open. Hermetic tests are necessary but
+insufficient: they prove Arena's argument and lifecycle handling, not the
+provider's behavior after authentication.
 
-Drift: v0.2 expands writers, not gates, to preserve the Cursor control boundary. The design walkthrough (2026-08-13) found and fixed four operational defects: `submit` treated an unavailable reviewer pane as fatal after committing state (now best-effort, AC11); a deleted review snapshot permanently bricked `submit`/`start` (now recreated via stale-registry pruning, AC12); stale validation/decision pointers misled `status` after a resubmit (now invalidated, AC13); and `status` performed no integrity verification (now fail-closed, AC14). A follow-up hardening pass removes `Shell(sed *)` from the generated Cursor policy (in-place writes were a deny-list gap), preserves prior validation reports under `validation-<sha>.rN.md` instead of overwriting them, and cleans stale Gemini marker temporaries left by killed first launches. A `list` command (AC15), a condensed preflight failure path that hides the tmuxp traceback, and a documented decision-order constraint (a writer that commits before a decision forfeits a decision on the reviewed checkpoint) complete the walkthrough backlog. The same-UID threat model above is a documented limitation, not a certified boundary.
+Drift: v0.2 expands writers, not gates, to preserve the Cursor control boundary. The design walkthrough (2026-08-13) found and fixed four operational defects: `submit` treated an unavailable reviewer pane as fatal after committing state (now best-effort, AC11); a deleted review snapshot permanently bricked `submit`/`start` (now recreated via stale-registry pruning, AC12); stale validation/decision pointers misled `status` after a resubmit (now invalidated, AC13); and `status` performed no integrity verification (now fail-closed, AC14). A follow-up hardening pass removes `Shell(sed *)` from the generated Cursor policy (in-place writes were a deny-list gap), preserves prior validation reports under `validation-<sha>.rN.md` instead of overwriting them, and cleans stale Gemini marker temporaries left by killed first launches. A `list` command (AC15), a condensed preflight failure path that hides the tmuxp traceback, and a documented decision-order constraint (a writer that commits before a decision forfeits a decision on the reviewed checkpoint) complete the walkthrough backlog. The Cursor gate smoke found and fixed two policy drifts: the generated `.cursor/cli.json` used keys the real CLI rejects (now a minimal `permissions` schema), and the allow list is not deny-by-default, so high-frequency write channels (`echo`/`printf`/`tee`/`cp`/`mv`/`bash`/`sh`/`zsh`/`python3`/`curl`/`wget`) were added to the deny list; the re-run confirmed writes are blocked. The same-UID threat model above is a documented limitation, not a certified boundary.
 Risk: provider CLI flags, policy semantics, trust behavior, or session storage can
 change without an Arena source change. Additional risks are overclaiming a CLI
 permission layer as OS/network isolation and resuming an unrelated conversation.
