@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_root="${ARENA_SOURCE_ROOT:-$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}"
+source "${source_root}/lib/common.sh"
+
+role="${1:-}"
+case "$role" in
+    control|writer|reviewer|validation) ;;
+    *) arena_die 'usage: pane.sh {control|writer|reviewer|validation}' ;;
+esac
+
+for variable_name in ARENA_REPOSITORY ARENA_RUN_ID ARENA_RUN_DIR ARENA_WRITER_WORKTREE ARENA_SESSION_NAME; do
+    [[ -n "${!variable_name:-}" ]] || arena_die "missing environment variable $variable_name"
+done
+
+enable_pane_log() {
+    local log_dir log_file pipe_command
+
+    [[ "${ARENA_LOG_PANES:-0}" == 1 ]] || return 0
+    [[ -n "${TMUX_PANE:-}" ]] || return 0
+    arena_require_command tmux
+    log_dir="${ARENA_RUN_DIR}/logs"
+    log_file="${log_dir}/${role}.log"
+    arena_make_private_dir "$log_dir"
+    : >"$log_file"
+    chmod 600 "$log_file"
+    printf -v pipe_command 'cat >> %q' "$log_file"
+    tmux pipe-pane -o -t "$TMUX_PANE" "$pipe_command"
+}
+
+set_pane_mode() {
+    [[ -n "${TMUX_PANE:-}" ]] || return 0
+    command -v tmux >/dev/null 2>&1 || return 0
+    tmux set-option -p -t "$TMUX_PANE" @agent_arena_role "$role" >/dev/null 2>&1 || return 0
+    tmux set-option -p -t "$TMUX_PANE" @agent_arena_mode "$1" >/dev/null 2>&1 || return 0
+}
+
+launch_shell() {
+    exec "${SHELL:-/bin/zsh}" -l
+}
+
+enable_pane_log
+set_pane_mode initializing
+
+if [[ "${ARENA_TEST_MODE:-0}" == 1 ]]; then
+    set_pane_mode test
+    printf 'role=%s\nrepository=%s\nwriter_worktree=%s\nrun_dir=%s\n' \
+        "$role" "$ARENA_REPOSITORY" "$ARENA_WRITER_WORKTREE" "$ARENA_RUN_DIR"
+    exit 0
+fi
+
+case "$role" in
+    control)
+        set_pane_mode control-shell
+        cd "$ARENA_REPOSITORY"
+        cat <<EOF
+Agent Arena integration control
+  Repository: $ARENA_REPOSITORY
+  Run:        $ARENA_RUN_ID
+  Writer:     $ARENA_WRITER_WORKTREE
+
+This is the human integration worktree. Agents must not write here.
+Useful commands:
+  $ARENA_COMMAND status $ARENA_RUN_ID
+  $ARENA_COMMAND submit $ARENA_RUN_ID
+EOF
+        launch_shell
+        ;;
+    writer)
+        set_pane_mode writer-agent
+        exec "${source_root}/adapters/pi.sh" launch
+        ;;
+    reviewer)
+        set_pane_mode reviewer-agent
+        if [[ -n "${ARENA_REVIEW_WORKTREE:-}" ]]; then
+            arena_assert_worktree "$ARENA_REVIEW_WORKTREE"
+            export ARENA_CURSOR_WORKSPACE="$ARENA_REVIEW_WORKTREE"
+            export ARENA_CURSOR_PHASE=review
+        else
+            export ARENA_CURSOR_WORKSPACE="$ARENA_WRITER_WORKTREE"
+            export ARENA_CURSOR_PHASE=intake
+        fi
+        exec "${source_root}/adapters/cursor.sh" launch
+        ;;
+    validation)
+        set_pane_mode validation-shell
+        if [[ -n "${ARENA_REVIEW_WORKTREE:-}" ]]; then
+            cd "$ARENA_REVIEW_WORKTREE"
+        else
+            cd "$ARENA_WRITER_WORKTREE"
+        fi
+        cat <<EOF
+Agent Arena validation pane
+  Run state: $ARENA_RUN_DIR
+
+After Pi commits and submits a checkpoint, run:
+  $ARENA_COMMAND validate $ARENA_RUN_ID
+
+Cursor owns the review/validation/decision gate. This pane is a deterministic
+human-operated fallback for inspecting reports or rerunning the project check; it
+does not replace Cursor's formal SHA-bound decision.
+EOF
+        launch_shell
+        ;;
+esac

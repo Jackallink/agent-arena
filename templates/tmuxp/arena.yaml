@@ -1,0 +1,33 @@
+session_name: "${ARENA_SESSION_NAME}"
+start_directory: "${ARENA_REPOSITORY}"
+before_script: "${ARENA_SOURCE_ROOT}/lib/preflight.sh"
+environment:
+  ARENA_SOURCE_ROOT: "${ARENA_SOURCE_ROOT}"
+  ARENA_COMMAND: "${ARENA_COMMAND}"
+  ARENA_REPOSITORY: "${ARENA_REPOSITORY}"
+  ARENA_RUN_ID: "${ARENA_RUN_ID}"
+  ARENA_RUN_DIR: "${ARENA_RUN_DIR}"
+  ARENA_STATE_ROOT: "${ARENA_STATE_ROOT}"
+  ARENA_WRITER_WORKTREE: "${ARENA_WRITER_WORKTREE}"
+  ARENA_PI_SESSION_DIR: "${ARENA_PI_SESSION_DIR}"
+  ARENA_REVIEW_WORKTREE: "${ARENA_REVIEW_WORKTREE}"
+  ARENA_SESSION_NAME: "${ARENA_SESSION_NAME}"
+  ARENA_LOG_PANES: "${ARENA_LOG_PANES}"
+  ARENA_PROFILE: "${ARENA_PROFILE}"
+  ARENA_TEST_MODE: "${ARENA_TEST_MODE}"
+  ARENA_PI_BIN: "${ARENA_PI_BIN}"
+  ARENA_CURSOR_BIN: "${ARENA_CURSOR_BIN}"
+windows:
+  - window_name: arena
+    layout: tiled
+    options:
+      remain-on-exit: on
+    panes:
+      - shell_command:
+          - 'exec "${ARENA_SOURCE_ROOT}/lib/pane.sh" control'
+      - shell_command:
+          - 'exec "${ARENA_SOURCE_ROOT}/lib/pane.sh" writer'
+      - shell_command:
+          - 'exec "${ARENA_SOURCE_ROOT}/lib/pane.sh" reviewer'
+      - shell_command:
+          - 'exec "${ARENA_SOURCE_ROOT}/lib/pane.sh" validation'

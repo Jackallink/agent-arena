@@ -1,0 +1,9 @@
+.DS_Store
+/.agent-arena/
+dist/
+*.tar.gz
+*.sha256
+
+# Runtime state is deliberately external; keep accidental local copies out of Git.
+state/
+worktrees/

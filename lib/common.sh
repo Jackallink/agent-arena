@@ -1,0 +1,472 @@
+#!/usr/bin/env bash
+
+if [[ "${ARENA_TRACE:-0}" == 1 ]]; then
+    set -x
+fi
+
+arena_die() {
+    printf 'agent-arena: %s\n' "$*" >&2
+    exit 1
+}
+
+arena_note() {
+    printf 'agent-arena: %s\n' "$*"
+}
+
+arena_require_command() {
+    command -v "$1" >/dev/null 2>&1 || arena_die "required command not found: $1"
+}
+
+arena_abs_dir() {
+    CDPATH='' cd -- "$1" && pwd -P
+}
+
+arena_same_directory() {
+    [[ "$(arena_abs_dir "$1")" == "$(arena_abs_dir "$2")" ]]
+}
+
+arena_reject_control_characters() {
+    if [[ "$1" =~ [[:cntrl:]] ]]; then
+        arena_die 'value contains a control character'
+    fi
+}
+
+arena_validate_text() {
+    local value="$1"
+    local field_name="$2"
+    local limit="$3"
+
+    [[ -n "$value" ]] || arena_die "$field_name must not be empty"
+    [[ "${#value}" -le "$limit" ]] || arena_die "$field_name exceeds ${limit} characters"
+    arena_reject_control_characters "$value"
+}
+
+arena_validate_relay_message() {
+    arena_validate_text "$1" 'relay message' 1000
+}
+
+arena_validate_run_id() {
+    local run_id="$1"
+
+    [[ "$run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || \
+        arena_die "invalid run id '$run_id'; use letters, digits, dot, underscore, or hyphen"
+    git check-ref-format --branch "agent-arena/pi/${run_id}" >/dev/null 2>&1 || \
+        arena_die "run id '$run_id' cannot form a safe Git branch name"
+}
+
+arena_state_root() {
+    if [[ -n "${ARENA_STATE_ROOT:-}" ]]; then
+        printf '%s' "$ARENA_STATE_ROOT"
+    else
+        printf '%s/agent-arena' "${XDG_STATE_HOME:-${HOME}/.local/state}"
+    fi
+}
+
+arena_worktree_root() {
+    if [[ -n "${ARENA_WORKTREE_ROOT:-}" ]]; then
+        printf '%s' "$ARENA_WORKTREE_ROOT"
+    else
+        printf '%s/agent-arena/worktrees' "${XDG_DATA_HOME:-${HOME}/.local/share}"
+    fi
+}
+
+arena_make_private_dir() {
+    mkdir -p "$1"
+    chmod 700 "$1"
+}
+
+arena_hash() {
+    if command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$1" | shasum -a 256 | awk '{print substr($1, 1, 16)}'
+    elif command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha256sum | awk '{print substr($1, 1, 16)}'
+    else
+        printf '%s' "$1" | cksum | awk '{print $1}'
+    fi
+}
+
+arena_file_hash() {
+    local path="$1"
+
+    [[ -f "$path" && ! -L "$path" ]] || return 1
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$path" | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$path" | awk '{print $1}'
+    else
+        cksum "$path" | awk '{print $1 "-" $2}'
+    fi
+}
+
+arena_repo_id() {
+    local repository="$1"
+    local stem
+
+    stem="$(basename "$repository" | tr -cs 'A-Za-z0-9._-' '-')"
+    stem="${stem#-}"
+    stem="${stem%-}"
+    [[ -n "$stem" ]] || stem='repository'
+    stem="${stem:0:48}"
+    printf '%s-%s' "$stem" "$(arena_hash "$repository")"
+}
+
+arena_assert_worktree() {
+    local worktree="$1"
+
+    [[ -d "$worktree" ]] || arena_die "worktree does not exist: $worktree"
+    worktree="$(arena_abs_dir "$worktree")"
+    git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>&1 || \
+        arena_die "not a Git worktree: $worktree"
+    [[ "$(git -C "$worktree" rev-parse --show-toplevel)" == "$worktree" ]] || \
+        arena_die "worktree must be its Git top-level directory: $worktree"
+}
+
+arena_assert_clean_worktree() {
+    local worktree="$1"
+    local status
+
+    arena_assert_worktree "$worktree"
+    status="$(git -C "$worktree" status --porcelain=v1 --untracked-files=all)"
+    [[ -z "$status" ]] || arena_die "worktree is dirty: $worktree"
+}
+
+arena_short_sha() {
+    printf '%s' "${1:0:12}"
+}
+
+arena_review_snapshot_is_intact() {
+    local worktree="$1"
+    local expected_head="$2"
+    local expected_policy_hash="${3:-}"
+    local expected_gate_hash="${4:-}"
+    local policy_file gate_wrapper actual_head worktree_status status_entry policy_mode gate_mode
+
+    if [[ ! -d "$worktree" ]]; then
+        printf 'review snapshot is missing: %s\n' "$worktree" >&2
+        return 1
+    fi
+    if ! git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        printf 'review snapshot is not a Git worktree: %s\n' "$worktree" >&2
+        return 1
+    fi
+    actual_head="$(git -C "$worktree" rev-parse HEAD 2>/dev/null)" || {
+        printf 'review snapshot has no readable HEAD: %s\n' "$worktree" >&2
+        return 1
+    }
+    if [[ "$actual_head" != "$expected_head" ]]; then
+        printf 'review snapshot HEAD changed: expected %s, got %s\n' \
+            "$expected_head" "$actual_head" >&2
+        return 1
+    fi
+    worktree_status="$(git -C "$worktree" status --porcelain=v1 --untracked-files=all)"
+    if [[ -z "$expected_policy_hash" && -z "$expected_gate_hash" ]]; then
+        if [[ -n "$worktree_status" ]]; then
+            printf 'review snapshot is dirty: %s\n' "$worktree" >&2
+            return 1
+        fi
+        return 0
+    fi
+    if [[ -z "$expected_policy_hash" || -z "$expected_gate_hash" ]]; then
+        printf 'review snapshot is missing generated policy integrity data\n' >&2
+        return 1
+    fi
+
+    policy_file="${worktree}/.cursor/cli.json"
+    gate_wrapper="${worktree}/.agent-arena-gate"
+    if [[ -L "${worktree}/.cursor" || -L "$policy_file" || -L "$gate_wrapper" ]]; then
+        printf 'review snapshot generated policy path is a symbolic link\n' >&2
+        return 1
+    fi
+    if [[ ! -d "${worktree}/.cursor" || ! -f "$policy_file" || ! -f "$gate_wrapper" ]]; then
+        printf 'review snapshot generated policy files are missing\n' >&2
+        return 1
+    fi
+    policy_mode="$(stat -f '%Lp' "$policy_file" 2>/dev/null || stat -c '%a' "$policy_file" 2>/dev/null)" || return 1
+    gate_mode="$(stat -f '%Lp' "$gate_wrapper" 2>/dev/null || stat -c '%a' "$gate_wrapper" 2>/dev/null)" || return 1
+    if [[ "$policy_mode" != 600 || "$gate_mode" != 700 ]]; then
+        printf 'review snapshot generated policy permissions changed\n' >&2
+        return 1
+    fi
+    if [[ "$(arena_file_hash "$policy_file")" != "$expected_policy_hash" ]]; then
+        printf 'review snapshot Cursor policy changed: %s\n' "$policy_file" >&2
+        return 1
+    fi
+    if [[ "$(arena_file_hash "$gate_wrapper")" != "$expected_gate_hash" ]]; then
+        printf 'review snapshot gate wrapper changed: %s\n' "$gate_wrapper" >&2
+        return 1
+    fi
+    while IFS= read -r status_entry; do
+        [[ -n "$status_entry" ]] || continue
+        case "$status_entry" in
+            '?? .cursor/cli.json'|'?? .agent-arena-gate') ;;
+            *)
+                printf 'review snapshot has unexpected change: %s\n' "$status_entry" >&2
+                return 1
+                ;;
+        esac
+    done <<<"$worktree_status"
+    for status_entry in '?? .cursor/cli.json' '?? .agent-arena-gate'; do
+        if ! grep -Fqx "$status_entry" <<<"$worktree_status"; then
+            printf 'review snapshot is missing generated local file: %s\n' "$status_entry" >&2
+            return 1
+        fi
+    done
+}
+
+arena_find_run_dir() {
+    local run_id="$1"
+    local runs_root
+    local matches
+    local match_count
+    local inherited_run_dir
+
+    arena_validate_run_id "$run_id"
+    if [[ -n "${ARENA_RUN_DIR:-}" ]]; then
+        inherited_run_dir="$(arena_abs_dir "$ARENA_RUN_DIR")" || \
+            arena_die "inherited run directory does not exist: $ARENA_RUN_DIR"
+        arena_read_manifest "$inherited_run_dir"
+        [[ "$ARENA_MANIFEST_RUN_ID" == "$run_id" ]] || \
+            arena_die "inherited run directory belongs to $ARENA_MANIFEST_RUN_ID, not $run_id"
+        printf '%s\n' "$inherited_run_dir"
+        return
+    fi
+    runs_root="$(arena_state_root)/runs"
+    [[ -d "$runs_root" ]] || arena_die "no run state exists under: $runs_root"
+    matches="$(find "$runs_root" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv \
+        -path "*/${run_id}/manifest.tsv" 2>/dev/null || true)"
+    match_count="$(printf '%s\n' "$matches" | awk 'NF { count += 1 } END { print count + 0 }')"
+    [[ "$match_count" == 1 ]] || \
+        arena_die "could not identify one run state for $run_id; pass --state-root if needed"
+    dirname "$matches"
+}
+
+arena_write_manifest() {
+    local run_dir="$1"
+    local run_id="$2"
+    local repository="$3"
+    local base_sha="$4"
+    local writer_worktree="$5"
+    local branch="$6"
+    local session_name="$7"
+    local tool_root="$8"
+    local worktree_root="$9"
+    local project_config="${10}"
+    local tmp_file value
+
+    for value in "$run_id" "$repository" "$base_sha" "$writer_worktree" "$branch" \
+        "$session_name" "$tool_root" "$worktree_root" "$project_config"; do
+        arena_reject_control_characters "$value"
+    done
+
+    tmp_file="$(mktemp "${run_dir}/.manifest.XXXXXX")"
+    {
+        printf 'run_id\t%s\n' "$run_id"
+        printf 'repository\t%s\n' "$repository"
+        printf 'base_sha\t%s\n' "$base_sha"
+        printf 'writer_worktree\t%s\n' "$writer_worktree"
+        printf 'branch\t%s\n' "$branch"
+        printf 'session_name\t%s\n' "$session_name"
+        printf 'tool_root\t%s\n' "$tool_root"
+        printf 'worktree_root\t%s\n' "$worktree_root"
+        printf 'project_config\t%s\n' "$project_config"
+    } >"$tmp_file"
+    chmod 600 "$tmp_file"
+    mv "$tmp_file" "${run_dir}/manifest.tsv"
+}
+
+arena_read_manifest() {
+    local run_dir="$1"
+    local manifest="${run_dir}/manifest.tsv"
+    local key value
+
+    [[ -f "$manifest" ]] || arena_die "missing run manifest: $manifest"
+    ARENA_MANIFEST_RUN_ID=''
+    ARENA_MANIFEST_REPOSITORY=''
+    ARENA_MANIFEST_BASE_SHA=''
+    ARENA_MANIFEST_WRITER_WORKTREE=''
+    ARENA_MANIFEST_BRANCH=''
+    ARENA_MANIFEST_SESSION_NAME=''
+    ARENA_MANIFEST_TOOL_ROOT=''
+    ARENA_MANIFEST_WORKTREE_ROOT=''
+    ARENA_MANIFEST_PROJECT_CONFIG=''
+
+    while IFS=$'\t' read -r key value; do
+        case "$key" in
+            run_id) ARENA_MANIFEST_RUN_ID="$value" ;;
+            repository) ARENA_MANIFEST_REPOSITORY="$value" ;;
+            base_sha) ARENA_MANIFEST_BASE_SHA="$value" ;;
+            writer_worktree) ARENA_MANIFEST_WRITER_WORKTREE="$value" ;;
+            branch) ARENA_MANIFEST_BRANCH="$value" ;;
+            session_name) ARENA_MANIFEST_SESSION_NAME="$value" ;;
+            tool_root) ARENA_MANIFEST_TOOL_ROOT="$value" ;;
+            worktree_root) ARENA_MANIFEST_WORKTREE_ROOT="$value" ;;
+            project_config) ARENA_MANIFEST_PROJECT_CONFIG="$value" ;;
+            *) arena_die "unknown manifest key '$key' in $manifest" ;;
+        esac
+    done <"$manifest"
+
+    for value in "$ARENA_MANIFEST_RUN_ID" "$ARENA_MANIFEST_REPOSITORY" \
+        "$ARENA_MANIFEST_BASE_SHA" "$ARENA_MANIFEST_WRITER_WORKTREE" \
+        "$ARENA_MANIFEST_BRANCH" "$ARENA_MANIFEST_SESSION_NAME" \
+        "$ARENA_MANIFEST_TOOL_ROOT" "$ARENA_MANIFEST_WORKTREE_ROOT" \
+        "$ARENA_MANIFEST_PROJECT_CONFIG"; do
+        [[ -n "$value" ]] || arena_die "incomplete run manifest: $manifest"
+        arena_reject_control_characters "$value"
+    done
+}
+
+arena_write_review_manifest() {
+    local run_dir="$1"
+    local review_head="$2"
+    local review_worktree="$3"
+    local cursor_policy_hash="$4"
+    local gate_wrapper_hash="$5"
+    local tmp_file value
+
+    for value in "$review_head" "$review_worktree" "$cursor_policy_hash" "$gate_wrapper_hash"; do
+        [[ -n "$value" ]] || arena_die 'review manifest value must not be empty'
+        arena_reject_control_characters "$value"
+    done
+    tmp_file="$(mktemp "${run_dir}/.review.XXXXXX")"
+    {
+        printf 'review_head\t%s\n' "$review_head"
+        printf 'review_worktree\t%s\n' "$review_worktree"
+        printf 'cursor_policy_hash\t%s\n' "$cursor_policy_hash"
+        printf 'gate_wrapper_hash\t%s\n' "$gate_wrapper_hash"
+    } >"$tmp_file"
+    chmod 600 "$tmp_file"
+    mv "$tmp_file" "${run_dir}/review.tsv"
+}
+
+arena_read_review_manifest() {
+    local run_dir="$1"
+    local manifest="${run_dir}/review.tsv"
+    local key value
+
+    [[ -f "$manifest" ]] || arena_die "no submitted review exists for this run"
+    ARENA_REVIEW_HEAD=''
+    ARENA_REVIEW_WORKTREE=''
+    ARENA_REVIEW_CURSOR_POLICY_HASH=''
+    ARENA_REVIEW_GATE_WRAPPER_HASH=''
+    while IFS=$'\t' read -r key value; do
+        case "$key" in
+            review_head) ARENA_REVIEW_HEAD="$value" ;;
+            review_worktree) ARENA_REVIEW_WORKTREE="$value" ;;
+            cursor_policy_hash) ARENA_REVIEW_CURSOR_POLICY_HASH="$value" ;;
+            gate_wrapper_hash) ARENA_REVIEW_GATE_WRAPPER_HASH="$value" ;;
+            *) arena_die "unknown review manifest key '$key' in $manifest" ;;
+        esac
+    done <"$manifest"
+    [[ -n "$ARENA_REVIEW_HEAD" && -n "$ARENA_REVIEW_WORKTREE" && \
+        -n "$ARENA_REVIEW_CURSOR_POLICY_HASH" && -n "$ARENA_REVIEW_GATE_WRAPPER_HASH" ]] || \
+        arena_die "incomplete review manifest: $manifest"
+    arena_reject_control_characters "$ARENA_REVIEW_HEAD"
+    arena_reject_control_characters "$ARENA_REVIEW_WORKTREE"
+    arena_reject_control_characters "$ARENA_REVIEW_CURSOR_POLICY_HASH"
+    arena_reject_control_characters "$ARENA_REVIEW_GATE_WRAPPER_HASH"
+}
+
+arena_prepare_cursor_gate_policy() {
+    local review_worktree="$1"
+    local cursor_dir="${review_worktree}/.cursor"
+    local policy_file="${cursor_dir}/cli.json"
+    local gate_wrapper="${review_worktree}/.agent-arena-gate"
+    local path
+    local tmp_policy tmp_wrapper
+
+    : "${ARENA_COMMAND:?missing ARENA_COMMAND}"
+    arena_assert_worktree "$review_worktree"
+    for path in .cursor/cli.json .agent-arena-gate; do
+        if git -C "$review_worktree" ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+            arena_die "review snapshot tracks $path; v0.1 cannot safely layer its local Cursor gate policy"
+        fi
+    done
+    if [[ -L "$cursor_dir" || ( -e "$cursor_dir" && ! -d "$cursor_dir" ) ]]; then
+        arena_die "review snapshot has an unsafe .cursor path: $cursor_dir"
+    fi
+    if [[ -e "$policy_file" || -L "$policy_file" || -e "$gate_wrapper" || -L "$gate_wrapper" ]]; then
+        arena_die 'review snapshot already has local Cursor gate files without a verified manifest'
+    fi
+    mkdir -p "$cursor_dir"
+    tmp_policy="$(mktemp "${cursor_dir}/.cli.XXXXXX")"
+    cat >"$tmp_policy" <<'EOF'
+{
+  "version": 1,
+  "approvalMode": "allowlist",
+  "sandbox": {
+    "mode": "enabled",
+    "networkAccess": "user_config_only",
+    "networkAllowlist": []
+  },
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Shell(git status *)",
+      "Shell(git diff *)",
+      "Shell(git show *)",
+      "Shell(git log *)",
+      "Shell(rg *)",
+      "Shell(find *)",
+      "Shell(ls *)",
+      "Shell(cat *)",
+      "Shell(sed *)",
+      "Shell(./.agent-arena-gate status *)",
+      "Shell(./.agent-arena-gate validate *)",
+      "Shell(./.agent-arena-gate decision *)",
+      "Shell(./.agent-arena-gate relay *)"
+    ],
+    "deny": [
+      "Write(**)",
+      "Delete(**)",
+      "Shell(git add *)",
+      "Shell(git commit *)",
+      "Shell(git merge *)",
+      "Shell(git push *)",
+      "Shell(git reset *)",
+      "Shell(git checkout *)",
+      "Shell(git clean *)",
+      "Shell(rm *)"
+    ]
+  }
+}
+EOF
+    chmod 600 "$tmp_policy"
+    mv "$tmp_policy" "$policy_file"
+    tmp_wrapper="$(mktemp "${review_worktree}/.agent-arena-gate.XXXXXX")"
+    {
+        printf '%s\n' '#!/usr/bin/env bash'
+        printf '%s\n' 'set -euo pipefail'
+        printf '%s\n' 'case "${1:-}" in'
+        printf '%s\n' '    status|validate|decision|relay) ;;'
+        printf '%s\n' '    *) printf "%s\\n" "agent-arena gate: unsupported command" >&2; exit 64 ;;'
+        printf '%s\n' 'esac'
+        printf 'exec %q "$@"\n' "$ARENA_COMMAND"
+    } >"$tmp_wrapper"
+    chmod 700 "$tmp_wrapper"
+    mv "$tmp_wrapper" "$gate_wrapper"
+    ARENA_CURSOR_POLICY_HASH="$(arena_file_hash "$policy_file")" || \
+        arena_die 'could not hash generated Cursor gate policy'
+    ARENA_GATE_WRAPPER_HASH="$(arena_file_hash "$gate_wrapper")" || \
+        arena_die 'could not hash generated Cursor gate wrapper'
+}
+
+arena_pane_format() {
+    printf '%s' $'#{session_name}\t#{pane_id}\t#{@agent_arena_role}\t#{@agent_arena_mode}\t#{pane_dead}\t#{pane_input_off}\t#{pane_in_mode}\t#{pane_synchronized}'
+}
+
+arena_find_live_pane() {
+    local session_name="$1"
+    local role="$2"
+    local expected_mode="$3"
+    local candidates count
+
+    candidates="$(
+        tmux list-panes -s -t "=${session_name}" -F "$(arena_pane_format)" |
+            awk -F $'\t' -v session="$session_name" -v role="$role" -v mode="$expected_mode" \
+                '$1 == session && $3 == role && $4 == mode && $5 == "0" && $6 == "0" && $7 == "0" && $8 == "0" { print $2 }'
+    )"
+    count="$(printf '%s\n' "$candidates" | awk 'NF { count += 1 } END { print count + 0 }')"
+    [[ "$count" == 1 ]] || arena_die \
+        "$role pane is unavailable or ambiguous; relay only targets one live, input-enabled agent pane"
+    printf '%s\n' "$candidates"
+}

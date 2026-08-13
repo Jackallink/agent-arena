@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source_root="$(CDPATH='' cd -- "${script_dir}/.." && pwd -P)"
+
+export ARENA_SOURCE_ROOT="$source_root"
+export ARENA_COMMAND="$script_dir/agent-arena"
+
+exec "$source_root/lib/arena.sh" "$@"
