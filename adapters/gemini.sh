@@ -46,6 +46,10 @@ EOF
             session_args=(--resume "$session_id")
             initial_session=0
         else
+            # A killed first launch can leave a stale temporary marker; the
+            # real marker is published only after a clean exit. Remove any
+            # leftovers so they never masquerade as session state.
+            rm -f "${ARENA_WRITER_SESSION_DIR}/.gemini-session-id."*
             marker_tmp="$(mktemp "${ARENA_WRITER_SESSION_DIR}/.gemini-session-id.XXXXXX")"
             printf '%s\n' "$session_id" >"$marker_tmp"
             chmod 600 "$marker_tmp"

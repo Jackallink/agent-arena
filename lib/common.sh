@@ -565,7 +565,6 @@ arena_prepare_cursor_gate_policy() {
       "Shell(find *)",
       "Shell(ls *)",
       "Shell(cat *)",
-      "Shell(sed *)",
       "Shell(./.agent-arena-gate status *)",
       "Shell(./.agent-arena-gate validate *)",
       "Shell(./.agent-arena-gate decision *)",

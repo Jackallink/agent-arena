@@ -304,6 +304,7 @@ require_match '"networkAllowlist": []' "${review_worktree}/.cursor/cli.json"
 require_match '"Write(**)"' "${review_worktree}/.cursor/cli.json"
 require_match '"Delete(**)"' "${review_worktree}/.cursor/cli.json"
 require_match '"Shell(git commit *)"' "${review_worktree}/.cursor/cli.json"
+require_no_match 'Shell(sed' "${review_worktree}/.cursor/cli.json"
 expect_failure "${review_worktree}/.agent-arena-gate" start run-one
 shared_exclude="$(git -C "$review_worktree" rev-parse --git-path info/exclude)"
 shared_exclude_before="$(<"$shared_exclude")"
@@ -344,6 +345,10 @@ expect_failure run_arena validate run-one
 rm -f "${review_worktree}/reviewer-edit.txt"
 run_arena validate run-one >"${tmp_root}/validation-retry.out"
 require_match 'RESULT: PASS' "${tmp_root}/validation-retry.out"
+run_one_short="${writer_head:0:12}"
+require_match 'RESULT: PASS' "${run_dir}/validation-${run_one_short}.r1.md"
+run_arena validate run-one >"${tmp_root}/validation-extra.out"
+require_match 'RESULT: PASS' "${run_dir}/validation-${run_one_short}.r2.md"
 
 printf '%s\n' '8. decision gate and relay-failure persistence'
 printf '%s\n' dirty >"${writer_worktree}/writer-uncommitted.txt"
@@ -826,6 +831,7 @@ printf '%s\n' '23. failed Gemini first launch does not publish a resume marker'
 gemini_failed_session_dir="${gemini_session_dir}-failed-first"
 mkdir -p "$gemini_failed_session_dir"
 chmod 700 "$gemini_failed_session_dir"
+printf '%s\n' stale >"${gemini_failed_session_dir}/.gemini-session-id.stale"
 : >"$fake_gemini_log"
 if FAKE_GEMINI_EXIT=7 run_writer_adapter gemini gemini-cursor Gemini "$gemini_writer" \
     "$gemini_failed_session_dir" "$gemini_run_dir" profile-gemini-failed; then
@@ -833,6 +839,9 @@ if FAKE_GEMINI_EXIT=7 run_writer_adapter gemini gemini-cursor Gemini "$gemini_wr
 fi
 [[ ! -e "${gemini_failed_session_dir}/gemini.session-id" ]] || \
     fail 'failed Gemini first launch published a resume marker'
+if find "$gemini_failed_session_dir" -maxdepth 1 -name '.gemini-session-id.*' -print -quit | grep -q .; then
+    fail 'stale Gemini marker temporaries were not cleaned'
+fi
 require_match 'arg=--session-id' "$fake_gemini_log"
 require_no_match 'arg=--resume' "$fake_gemini_log"
 

@@ -91,6 +91,19 @@ else
     printf '\nRESULT: FAIL\n' >>"$tmp_report"
 fi
 chmod 600 "$tmp_report"
+if [[ -f "$report" && ! -L "$report" ]]; then
+    # Preserve the previous report for the audit trail instead of overwriting
+    # it; the decision gate still reads only the canonical report name.
+    rotation_index=0
+    rotated_report=''
+    while :; do
+        rotation_index=$((rotation_index + 1))
+        rotated_report="${report%.md}.r${rotation_index}.md"
+        [[ ! -e "$rotated_report" ]] && break
+    done
+    mv "$report" "$rotated_report"
+    chmod 600 "$rotated_report"
+fi
 mv "$tmp_report" "$report"
 printf 'Latest validation report: %s\n' "$(basename "$report")" >"${run_dir}/validation.md"
 chmod 600 "${run_dir}/validation.md"

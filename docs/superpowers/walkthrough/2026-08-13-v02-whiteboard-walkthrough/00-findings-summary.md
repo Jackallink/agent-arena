@@ -6,7 +6,9 @@
 
 ## 修复状态（2026-08-13）
 
-F1–F4 已在 `fix/submit-status-best-effort` 分支修复并通过 hermetic 测试（tests/run.sh 新增 §26–§29）与真实环境复验：submit 在 reviewer pane 不可用时降级为提示（AC11）、丢失的快照可自愈重建（AC12）、新 checkpoint 提交时指针失效（AC13）、status 完整性校验 fail-closed（AC14）。F5 已写入 spec 威胁模型与 README。F6–F11 保持开放。
+F1–F4 已在 `fix/submit-status-best-effort` 分支修复并通过 hermetic 测试（tests/run.sh 新增 §26–§29）与真实环境复验：submit 在 reviewer pane 不可用时降级为提示（AC11）、丢失的快照可自愈重建（AC12）、新 checkpoint 提交时指针失效（AC13）、status 完整性校验 fail-closed（AC14）。F5 已写入 spec 威胁模型与 README。
+
+F7（验证报告轮转保留历史）、F8（门策略移除 `Shell(sed *)`）、F9（Gemini 残留临时 marker 清理）已修复，断言并入 §5/§7/§23。F6（list/恢复命令）、F10（决策-提交顺序约束文档化）、F11（tmuxp traceback 泄漏）保持开放。
 
 ## 结论
 
