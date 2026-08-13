@@ -42,14 +42,15 @@ arena_read_manifest "$run_dir"
 [[ "$ARENA_MANIFEST_RUN_ID" == "$run_id" ]] || arena_die 'run id differs from manifest'
 arena_assert_clean_worktree "$ARENA_MANIFEST_WRITER_WORKTREE"
 
-# A project-owned Cursor policy cannot be safely merged with the generated gate
+# A project-owned gate policy cannot be safely merged with the generated gate
 # policy: permission arrays have provider-specific layering semantics. Refuse
 # before creating a detached snapshot instead of weakening either policy.
-for policy_path in .cursor/cli.json .agent-arena-gate; do
-    if git -C "$ARENA_MANIFEST_WRITER_WORKTREE" ls-files --error-unmatch -- "$policy_path" >/dev/null 2>&1; then
-        arena_die "submitted checkpoint tracks $policy_path; Agent Arena cannot safely layer its local Cursor gate policy"
+while IFS=$'\t' read -r key value; do
+    [[ "$key" == policy_path || "$key" == wrapper_path ]] || continue
+    if git -C "$ARENA_MANIFEST_WRITER_WORKTREE" ls-files --error-unmatch -- "$value" >/dev/null 2>&1; then
+        arena_die "submitted checkpoint tracks $value; Agent Arena cannot safely layer its local gate policy"
     fi
-done
+done < <(arena_gate_policy_paths "$ARENA_MANIFEST_GATE_ADAPTER")
 
 writer_head="$(git -C "$ARENA_MANIFEST_WRITER_WORKTREE" rev-parse HEAD)"
 [[ "$writer_head" != "$ARENA_MANIFEST_BASE_SHA" ]] || \
@@ -86,12 +87,12 @@ else
     fi
     git -C "$ARENA_MANIFEST_REPOSITORY" worktree add --detach "$review_worktree" "$writer_head"
     arena_assert_clean_worktree "$review_worktree"
-    arena_prepare_cursor_gate_policy "$review_worktree"
+    arena_prepare_gate_policy "$review_worktree" "$ARENA_MANIFEST_GATE_ADAPTER"
     arena_review_snapshot_is_intact "$review_worktree" "$writer_head" \
-        "$ARENA_CURSOR_POLICY_HASH" "$ARENA_GATE_WRAPPER_HASH" || \
+        "$ARENA_GATE_POLICY_HASH" "$ARENA_GATE_WRAPPER_HASH" || \
         arena_die 'review snapshot changed while installing Cursor gate policy'
     arena_write_review_manifest "$run_dir" "$writer_head" "$review_worktree" \
-        "$ARENA_CURSOR_POLICY_HASH" "$ARENA_GATE_WRAPPER_HASH"
+        "$ARENA_MANIFEST_GATE_ADAPTER" "$ARENA_GATE_POLICY_HASH" "$ARENA_GATE_WRAPPER_HASH"
     # The previous checkpoint's validation/decision pointers no longer describe
     # this submission; the per-SHA archives remain for the audit trail.
     rm -f "${run_dir}/validation.md" "${run_dir}/decision.md"

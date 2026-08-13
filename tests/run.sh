@@ -300,6 +300,8 @@ require_match '?? .cursor/cli.json' <(printf '%s\n' "$review_status")
 require_match '?? .agent-arena-gate' <(printf '%s\n' "$review_status")
 [[ -f "${review_worktree}/.cursor/cli.json" ]] || fail 'review snapshot lacks Cursor gate policy'
 [[ -x "${review_worktree}/.agent-arena-gate" ]] || fail 'review snapshot lacks gate wrapper'
+[[ "$(manifest_value "${run_dir}/review.tsv" gate_adapter)" == 'cursor' ]] || \
+    fail 'review manifest did not record gate_adapter=cursor'
 require_match '"permissions"' "${review_worktree}/.cursor/cli.json"
 require_match '"allow"' "${review_worktree}/.cursor/cli.json"
 require_match '"deny"' "${review_worktree}/.cursor/cli.json"

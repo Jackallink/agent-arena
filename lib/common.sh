@@ -478,11 +478,13 @@ arena_write_review_manifest() {
     local run_dir="$1"
     local review_head="$2"
     local review_worktree="$3"
-    local cursor_policy_hash="$4"
-    local gate_wrapper_hash="$5"
+    local gate_adapter="$4"
+    local cursor_policy_hash="$5"
+    local gate_wrapper_hash="$6"
     local tmp_file value
 
-    for value in "$review_head" "$review_worktree" "$cursor_policy_hash" "$gate_wrapper_hash"; do
+    for value in "$review_head" "$review_worktree" "$gate_adapter" \
+        "$cursor_policy_hash" "$gate_wrapper_hash"; do
         [[ -n "$value" ]] || arena_die 'review manifest value must not be empty'
         arena_reject_control_characters "$value"
     done
@@ -492,6 +494,7 @@ arena_write_review_manifest() {
     {
         printf 'review_head\t%s\n' "$review_head"
         printf 'review_worktree\t%s\n' "$review_worktree"
+        printf 'gate_adapter\t%s\n' "$gate_adapter"
         printf 'cursor_policy_hash\t%s\n' "$cursor_policy_hash"
         printf 'gate_wrapper_hash\t%s\n' "$gate_wrapper_hash"
     } >"$tmp_file"
@@ -507,22 +510,26 @@ arena_read_review_manifest() {
     [[ -f "$manifest" ]] || arena_die "no submitted review exists for this run"
     ARENA_REVIEW_HEAD=''
     ARENA_REVIEW_WORKTREE=''
+    ARENA_REVIEW_GATE_ADAPTER=''
     ARENA_REVIEW_CURSOR_POLICY_HASH=''
     ARENA_REVIEW_GATE_WRAPPER_HASH=''
     while IFS=$'\t' read -r key value; do
         case "$key" in
             review_head) ARENA_REVIEW_HEAD="$value" ;;
             review_worktree) ARENA_REVIEW_WORKTREE="$value" ;;
+            gate_adapter) ARENA_REVIEW_GATE_ADAPTER="$value" ;;
             cursor_policy_hash) ARENA_REVIEW_CURSOR_POLICY_HASH="$value" ;;
             gate_wrapper_hash) ARENA_REVIEW_GATE_WRAPPER_HASH="$value" ;;
             *) arena_die "unknown review manifest key '$key' in $manifest" ;;
         esac
     done <"$manifest"
     [[ -n "$ARENA_REVIEW_HEAD" && -n "$ARENA_REVIEW_WORKTREE" && \
+        -n "$ARENA_REVIEW_GATE_ADAPTER" && \
         -n "$ARENA_REVIEW_CURSOR_POLICY_HASH" && -n "$ARENA_REVIEW_GATE_WRAPPER_HASH" ]] || \
         arena_die "incomplete review manifest: $manifest"
     arena_reject_control_characters "$ARENA_REVIEW_HEAD"
     arena_reject_control_characters "$ARENA_REVIEW_WORKTREE"
+    arena_reject_control_characters "$ARENA_REVIEW_GATE_ADAPTER"
     arena_reject_control_characters "$ARENA_REVIEW_CURSOR_POLICY_HASH"
     arena_reject_control_characters "$ARENA_REVIEW_GATE_WRAPPER_HASH"
     [[ "$ARENA_REVIEW_CURSOR_POLICY_HASH" =~ ^[0-9a-fA-F]{64}$ && \
@@ -530,91 +537,26 @@ arena_read_review_manifest() {
         arena_die "invalid review manifest policy hashes: $manifest"
 }
 
-arena_prepare_cursor_gate_policy() {
+arena_prepare_gate_policy() {
     local review_worktree="$1"
-    local cursor_dir="${review_worktree}/.cursor"
-    local policy_file="${cursor_dir}/cli.json"
-    local gate_wrapper="${review_worktree}/.agent-arena-gate"
-    local path
-    local tmp_policy tmp_wrapper
+    local gate_adapter="$2"
+    local adapter="${ARENA_SOURCE_ROOT:-$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}/adapters/gate-${gate_adapter}.sh"
+    local bindings gate_policy_path gate_policy_hash gate_wrapper_hash
 
-    : "${ARENA_COMMAND:?missing ARENA_COMMAND}"
     arena_assert_worktree "$review_worktree"
-    for path in .cursor/cli.json .agent-arena-gate; do
-        if git -C "$review_worktree" ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
-            arena_die "review snapshot tracks $path; Agent Arena cannot safely layer its local Cursor gate policy"
-        fi
-    done
-    if [[ -L "$cursor_dir" || ( -e "$cursor_dir" && ! -d "$cursor_dir" ) ]]; then
-        arena_die "review snapshot has an unsafe .cursor path: $cursor_dir"
-    fi
-    if [[ -e "$policy_file" || -L "$policy_file" || -e "$gate_wrapper" || -L "$gate_wrapper" ]]; then
-        arena_die 'review snapshot already has local Cursor gate files without a verified manifest'
-    fi
-    mkdir -p "$cursor_dir"
-    tmp_policy="$(mktemp "${cursor_dir}/.cli.XXXXXX")"
-    cat >"$tmp_policy" <<'EOF'
-{
-  "permissions": {
-    "allow": [
-      "Read(**)",
-      "Shell(git status *)",
-      "Shell(git diff *)",
-      "Shell(git show *)",
-      "Shell(git log *)",
-      "Shell(rg *)",
-      "Shell(find *)",
-      "Shell(ls *)",
-      "Shell(cat *)",
-      "Shell(./.agent-arena-gate status *)",
-      "Shell(./.agent-arena-gate validate *)",
-      "Shell(./.agent-arena-gate decision *)",
-      "Shell(./.agent-arena-gate relay *)"
-    ],
-    "deny": [
-      "Write(**)",
-      "Delete(**)",
-      "Shell(git add *)",
-      "Shell(git commit *)",
-      "Shell(git merge *)",
-      "Shell(git push *)",
-      "Shell(git reset *)",
-      "Shell(git checkout *)",
-      "Shell(git clean *)",
-      "Shell(rm *)",
-      "Shell(echo *)",
-      "Shell(printf *)",
-      "Shell(tee *)",
-      "Shell(cp *)",
-      "Shell(mv *)",
-      "Shell(bash *)",
-      "Shell(sh *)",
-      "Shell(zsh *)",
-      "Shell(python3 *)",
-      "Shell(curl *)",
-      "Shell(wget *)"
-    ]
-  }
-}
-EOF
-    chmod 600 "$tmp_policy"
-    mv "$tmp_policy" "$policy_file"
-    tmp_wrapper="$(mktemp "${review_worktree}/.agent-arena-gate.XXXXXX")"
-    {
-        printf '%s\n' '#!/usr/bin/env bash'
-        printf '%s\n' 'set -euo pipefail'
-        printf '%s\n' 'case "${1:-}" in'
-        printf '%s\n' '    status|validate|decision|relay) ;;'
-        printf '%s\n' '    *) printf "%s\\n" "agent-arena gate: unsupported command" >&2; exit 64 ;;'
-        printf '%s\n' 'esac'
-        printf 'exec %q "$@"\n' "$ARENA_COMMAND"
-    } >"$tmp_wrapper"
-    chmod 700 "$tmp_wrapper"
-    mv "$tmp_wrapper" "$gate_wrapper"
-    ARENA_CURSOR_POLICY_HASH="$(arena_file_hash "$policy_file")" || \
-        arena_die 'could not hash generated Cursor gate policy'
-    ARENA_GATE_WRAPPER_HASH="$(arena_file_hash "$gate_wrapper")" || \
-        arena_die 'could not hash generated Cursor gate wrapper'
+    [[ -x "$adapter" ]] || arena_die "gate adapter is missing: $adapter"
+    bindings="$("$adapter" policy "$review_worktree")" || \
+        arena_die "gate adapter $gate_adapter failed to generate its policy"
+    gate_policy_path="$(printf '%s\n' "$bindings" | awk -F $'\t' '$1 == "policy" { print $2; exit }')"
+    gate_policy_hash="$(printf '%s\n' "$bindings" | awk -F $'\t' '$1 == "policy" { print $3; exit }')"
+    gate_wrapper_hash="$(printf '%s\n' "$bindings" | awk -F $'\t' '$1 == "wrapper" { print $3; exit }')"
+    [[ -n "$gate_policy_path" && -n "$gate_policy_hash" && -n "$gate_wrapper_hash" ]] || \
+        arena_die 'gate adapter printed an incomplete policy binding manifest'
+    [[ "$gate_policy_hash" =~ ^[0-9a-fA-F]{64}$ && "$gate_wrapper_hash" =~ ^[0-9a-fA-F]{64}$ ]] || \
+        arena_die 'gate adapter printed invalid SHA-256 binding hashes'
+    ARENA_GATE_POLICY_PATH="$gate_policy_path"
+    ARENA_GATE_POLICY_HASH="$gate_policy_hash"
+    ARENA_GATE_WRAPPER_HASH="$gate_wrapper_hash"
 }
 
 arena_pane_format() {
