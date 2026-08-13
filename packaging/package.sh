@@ -8,8 +8,8 @@ usage() {
     cat <<'EOF'
 Usage: bash packaging/package.sh [--output DIR] [--check]
 
-Create a local tar.gz and SHA-256 checksum. This is a local build artifact only;
-public distribution remains blocked until the owner chooses a release license.
+Create a tar.gz and SHA-256 checksum. Publishing a release artifact still requires
+the applicable specification's Gate 4 evidence and release notes.
 EOF
 }
 
@@ -47,6 +47,8 @@ checksum="${archive}.sha256"
 verify_archive() {
     tar -tzf "$archive" | grep -Fqx "${release_name}/bin/agent-arena" || \
         arena_die 'archive is missing the main command'
+    tar -tzf "$archive" | grep -Fqx "${release_name}/LICENSE" || \
+        arena_die 'archive is missing the MIT license'
     tar -tzf "$archive" | grep -Fqx "${release_name}/templates/tmuxp/arena.yaml" || \
         arena_die 'archive is missing the tmuxp template'
     if command -v shasum >/dev/null 2>&1; then
@@ -66,7 +68,7 @@ if [[ -e "$archive" || -L "$archive" || -e "$checksum" || -L "$checksum" ]]; the
 fi
 
 required=(
-    AGENTS.md LICENSE-STATUS.md README.md VERSION .gitignore
+    AGENTS.md LICENSE LICENSE-STATUS.md README.md VERSION .gitignore
     adapters bin docs examples lib packaging templates tests
 )
 for path in "${required[@]}"; do

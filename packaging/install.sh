@@ -80,7 +80,7 @@ fi
 
 stage_dir="$(mktemp -d "${share_dir}/.install.XXXXXX")"
 trap 'rm -rf "$stage_dir"' EXIT
-required=(AGENTS.md LICENSE-STATUS.md README.md VERSION .gitignore adapters bin docs examples lib packaging templates tests)
+required=(AGENTS.md LICENSE LICENSE-STATUS.md README.md VERSION .gitignore adapters bin docs examples lib packaging templates tests)
 tar -C "$source_root" -cf - "${required[@]}" | tar -C "$stage_dir" -xf -
 mv "$stage_dir" "$release_dir"
 

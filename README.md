@@ -99,3 +99,9 @@ reports or make a formal decision from an immutable snapshot.
 See [the v0.2 writer-profile spec](docs/superpowers/specs/2026-08-13-pluggable-writer-adapters.md)
 and [implementation plan](docs/superpowers/plans/2026-08-13-pluggable-writer-adapters.md)
 for current acceptance criteria, evidence, risks, and release gates.
+
+## License
+
+This project is available under the [MIT License](LICENSE). Public source
+publication is permitted; publishing a GitHub Release or package still requires
+the documented Gate 4 evidence.

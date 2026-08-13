@@ -10,10 +10,15 @@ prefix="${tmp_root}/prefix"
 bash "${source_root}/packaging/package.sh" --output "$output_dir" --check
 archive="${output_dir}/agent-arena-$(<"${source_root}/VERSION").tar.gz"
 tar -tzf "$archive" | grep -Fqx "agent-arena-$(<"${source_root}/VERSION")/bin/agent-arena"
+tar -tzf "$archive" | grep -Fqx "agent-arena-$(<"${source_root}/VERSION")/LICENSE"
 extract_root="${tmp_root}/extract"
 mkdir -p "$extract_root"
 tar -C "$extract_root" -xzf "$archive"
 packaged_source="${extract_root}/agent-arena-$(<"${source_root}/VERSION")"
+[[ -f "${packaged_source}/LICENSE" ]] || {
+    printf '%s\n' 'expected packaged MIT license' >&2
+    exit 1
+}
 
 bash "${packaged_source}/packaging/install.sh" --prefix "$prefix"
 "${prefix}/bin/agent-arena" version | grep -Fqx "$(<"${source_root}/VERSION")"
