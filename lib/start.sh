@@ -16,6 +16,8 @@ Options:
   --repo PATH             Integration Git worktree (default: current directory)
   --profile NAME          pi-cursor, codex-cursor, opencode-cursor, or agy-cursor
                            (default: pi-cursor)
+  --writer NAME           Writer adapter: pi, codex, opencode, or agy (with --gate)
+  --gate NAME             Gate adapter: cursor or opencode (with --writer)
   --state-root PATH       Private run-state root override
   --worktree-root PATH    Private worktree root override
   --log-panes             Opt in to raw terminal logs in the private run directory
@@ -31,6 +33,10 @@ repository='.'
 run_id=''
 profile='pi-cursor'
 profile_explicit=0
+writer_arg=''
+gate_arg=''
+writer_explicit=0
+gate_explicit=0
 attach=1
 log_panes=0
 while [[ $# -gt 0 ]]; do
@@ -49,6 +55,18 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || arena_die '--profile requires a value'
             profile="$2"
             profile_explicit=1
+            shift 2
+            ;;
+        --writer)
+            [[ $# -ge 2 ]] || arena_die '--writer requires a value'
+            writer_arg="$2"
+            writer_explicit=1
+            shift 2
+            ;;
+        --gate)
+            [[ $# -ge 2 ]] || arena_die '--gate requires a value'
+            gate_arg="$2"
+            gate_explicit=1
             shift 2
             ;;
         --state-root)
@@ -81,6 +99,13 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "$writer_explicit" == 1 || "$gate_explicit" == 1 ]]; then
+    [[ "$writer_explicit" == 1 && "$gate_explicit" == 1 ]] || \
+        arena_die '--writer and --gate must be given together'
+    [[ "$profile_explicit" == 0 ]] || arena_die '--profile cannot be combined with --writer/--gate'
+    profile="${writer_arg}-${gate_arg}"
+fi
 
 [[ -n "$run_id" ]] || arena_die 'start requires RUN_ID'
 arena_validate_run_id "$run_id"
@@ -126,6 +151,8 @@ if [[ -e "$run_dir" || -L "$run_dir" ]]; then
     arena_profile_resolve "$profile"
     writer_adapter="$ARENA_PROFILE_WRITER_ADAPTER"
     writer_label="$ARENA_PROFILE_WRITER_LABEL"
+    gate_adapter="$ARENA_PROFILE_GATE_ADAPTER"
+    export ARENA_GATE_ADAPTER="$gate_adapter"
     branch="$(arena_profile_branch "$writer_adapter" "$run_id")"
     [[ "$ARENA_MANIFEST_BRANCH" == "$branch" ]] || arena_die 'run branch does not match requested profile'
     arena_assert_worktree "$ARENA_MANIFEST_WRITER_WORKTREE"
@@ -145,6 +172,8 @@ else
     arena_profile_resolve "$profile"
     writer_adapter="$ARENA_PROFILE_WRITER_ADAPTER"
     writer_label="$ARENA_PROFILE_WRITER_LABEL"
+    gate_adapter="$ARENA_PROFILE_GATE_ADAPTER"
+    export ARENA_GATE_ADAPTER="$gate_adapter"
     branch="$(arena_profile_branch "$writer_adapter" "$run_id")"
     writer_session_dir="${run_dir}/writer-session"
 
@@ -153,6 +182,8 @@ else
         arena_die "${writer_label} executable not found for profile $profile"
     "${source_root}/adapters/cursor.sh" probe || \
         arena_die "Cursor Agent executable not found: ${ARENA_CURSOR_BIN:-agent}"
+    "${source_root}/adapters/gate-${gate_adapter}.sh" probe || \
+        arena_die "gate adapter is not available: ${gate_adapter}"
 
     arena_assert_clean_worktree "$repository"
     git -C "$repository" rev-parse --verify HEAD >/dev/null 2>&1 || \
@@ -170,16 +201,18 @@ else
     arena_write_manifest "$run_dir" "$run_id" "$repository" "$base_sha" \
         "$writer_worktree" "$branch" "$session_name" "$source_root" "$worktree_root" \
         "$ARENA_PROJECT_CONFIG" "$profile" "$writer_adapter" "$writer_label" \
-        "$writer_session_dir"
+        "$writer_session_dir" "$gate_adapter"
     review_worktree=''
 fi
 
-# Existing runs must also refuse to launch when their selected writer or the
-# mandatory Cursor gate is no longer available.
+# Existing runs must also refuse to launch when their selected writer, the
+# mandatory Cursor gate, or the selected gate adapter is no longer available.
 "${source_root}/adapters/${writer_adapter}.sh" probe || \
     arena_die "${writer_label} executable not found for profile $profile"
 "${source_root}/adapters/cursor.sh" probe || \
     arena_die "Cursor Agent executable not found: ${ARENA_CURSOR_BIN:-agent}"
+"${source_root}/adapters/gate-${gate_adapter}.sh" probe || \
+    arena_die "gate adapter is not available: ${gate_adapter}"
 arena_make_private_dir "$writer_session_dir"
 
 export ARENA_REPOSITORY="$repository"
@@ -209,7 +242,7 @@ arena_update_live_session_environment() {
         ARENA_SOURCE_ROOT ARENA_COMMAND ARENA_REPOSITORY ARENA_RUN_ID ARENA_RUN_DIR \
         ARENA_STATE_ROOT ARENA_WRITER_WORKTREE ARENA_WRITER_SESSION_DIR \
         ARENA_REVIEW_WORKTREE ARENA_SESSION_NAME ARENA_LOG_PANES ARENA_PROFILE \
-        ARENA_WRITER_ADAPTER ARENA_WRITER_LABEL ARENA_TEST_MODE ARENA_PI_BIN \
+        ARENA_WRITER_ADAPTER ARENA_WRITER_LABEL ARENA_GATE_ADAPTER ARENA_TEST_MODE ARENA_PI_BIN \
         ARENA_CODEX_BIN ARENA_OPENCODE_BIN ARENA_AGY_BIN ARENA_CURSOR_BIN; do
         environment_value="${!environment_name}"
         tmux set-environment -t "=${session_name}" "$environment_name" "$environment_value"

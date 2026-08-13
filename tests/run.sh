@@ -925,4 +925,21 @@ PATH="${fake_bin}:${PATH}" ARENA_STATE_ROOT="${tmp_root}/empty-state" \
     "$arena" list >"${tmp_root}/list-empty.out"
 require_match 'no runs recorded' "${tmp_root}/list-empty.out"
 
+printf '%s\n' '30. gate selection and writer-gate combination'
+if run_arena start run-bad-gate --repo "$project" --writer pi --gate nosuch --no-attach >/dev/null 2>&1; then
+    fail 'unknown gate unexpectedly succeeded'
+fi
+assert_no_run_manifest run-bad-gate
+if run_arena start run-bad-combo --repo "$project" --writer pi --no-attach >/dev/null 2>&1; then
+    fail '--writer without --gate unexpectedly succeeded'
+fi
+assert_no_run_manifest run-bad-combo
+run_arena start run-opencode-gate --repo "$project" --profile pi-opencode --no-attach >/dev/null
+ocg_manifest="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/run-opencode-gate/manifest.tsv' -exec dirname {} \;)/manifest.tsv"
+[[ "$(manifest_value "$ocg_manifest" gate_adapter)" == 'opencode' ]] || \
+    fail 'pi-opencode did not record gate_adapter=opencode'
+[[ "$(manifest_value "$ocg_manifest" profile)" == 'pi-opencode' ]] || \
+    fail 'pi-opencode did not record the combined profile'
+expect_failure run_arena start run-opencode-gate --repo "$project" --profile pi-opencode --gate cursor --no-attach
+
 printf '%s\n' 'tests: ok'

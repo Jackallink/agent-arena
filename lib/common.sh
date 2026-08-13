@@ -325,11 +325,12 @@ arena_write_manifest() {
     local writer_adapter="${12}"
     local writer_label="${13}"
     local writer_session_dir="${14}"
+    local gate_adapter="${15}"
     local tmp_file value
 
     for value in "$run_id" "$repository" "$base_sha" "$writer_worktree" "$branch" \
         "$session_name" "$tool_root" "$worktree_root" "$project_config" "$profile" \
-        "$writer_adapter" "$writer_label" "$writer_session_dir"; do
+        "$writer_adapter" "$writer_label" "$writer_session_dir" "$gate_adapter"; do
         arena_reject_control_characters "$value"
         [[ -n "$value" ]] || arena_die 'run manifest value must not be empty'
     done
@@ -338,6 +339,8 @@ arena_write_manifest() {
         arena_die 'writer adapter does not match the selected profile'
     [[ "$ARENA_PROFILE_WRITER_LABEL" == "$writer_label" ]] || \
         arena_die 'writer label does not match the selected profile'
+    [[ "$ARENA_PROFILE_GATE_ADAPTER" == "$gate_adapter" ]] || \
+        arena_die 'gate adapter does not match the selected profile'
     [[ "$branch" == "$(arena_profile_branch "$writer_adapter" "$run_id")" ]] || \
         arena_die 'writer branch does not match the selected profile'
     writer_session_dir="$(arena_normalize_path "$writer_session_dir")"
@@ -360,6 +363,7 @@ arena_write_manifest() {
         printf 'writer_adapter\t%s\n' "$writer_adapter"
         printf 'writer_label\t%s\n' "$writer_label"
         printf 'writer_session_dir\t%s\n' "$writer_session_dir"
+        printf 'gate_adapter\t%s\n' "$gate_adapter"
     } >"$tmp_file"
     chmod 600 "$tmp_file"
     mv "$tmp_file" "${run_dir}/manifest.tsv"
@@ -384,6 +388,7 @@ arena_read_manifest() {
     ARENA_MANIFEST_WRITER_ADAPTER=''
     ARENA_MANIFEST_WRITER_LABEL=''
     ARENA_MANIFEST_WRITER_SESSION_DIR=''
+    ARENA_MANIFEST_GATE_ADAPTER=''
     ARENA_MANIFEST_LEGACY_PROFILE=0
     local profile_field_count=0
 
@@ -414,6 +419,7 @@ arena_read_manifest() {
                 ARENA_MANIFEST_WRITER_SESSION_DIR="$value"
                 profile_field_count=$((profile_field_count + 1))
                 ;;
+            gate_adapter) ARENA_MANIFEST_GATE_ADAPTER="$value" ;;
             *) arena_die "unknown manifest key '$key' in $manifest" ;;
         esac
     done <"$manifest"
@@ -441,6 +447,8 @@ arena_read_manifest() {
         4) ;;
         *) arena_die "incomplete writer profile in run manifest: $manifest" ;;
     esac
+    [[ -n "$ARENA_MANIFEST_GATE_ADAPTER" ]] || ARENA_MANIFEST_GATE_ADAPTER='cursor'
+    arena_gate_resolve "$ARENA_MANIFEST_GATE_ADAPTER"
 
     for value in "$ARENA_MANIFEST_PROFILE" "$ARENA_MANIFEST_WRITER_ADAPTER" \
         "$ARENA_MANIFEST_WRITER_LABEL" "$ARENA_MANIFEST_WRITER_SESSION_DIR"; do
