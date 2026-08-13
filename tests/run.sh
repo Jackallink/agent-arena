@@ -302,25 +302,45 @@ require_match '?? .agent-arena-gate' <(printf '%s\n' "$review_status")
 [[ -x "${review_worktree}/.agent-arena-gate" ]] || fail 'review snapshot lacks gate wrapper'
 [[ "$(manifest_value "${run_dir}/review.tsv" gate_adapter)" == 'cursor' ]] || \
     fail 'review manifest did not record gate_adapter=cursor'
-# legacy-safety: a v0.2-era review.tsv carries no gate_adapter line; reading it
-# must succeed and default the gate adapter to cursor
+[[ "$(manifest_value "${run_dir}/review.tsv" gate_policy_path)" == '.cursor/cli.json' ]] || \
+    fail 'review manifest did not record gate_policy_path=.cursor/cli.json'
+# legacy-safety: a v0.2-era review.tsv carries no gate_adapter or
+# gate_policy_path line; reading it must succeed and default them to the
+# Cursor gate adapter and its .cursor/cli.json policy
 legacy_review_backup="${tmp_root}/review.tsv.with-gate-adapter"
 cp "${run_dir}/review.tsv" "$legacy_review_backup"
-awk -F $'\t' '$1 != "gate_adapter"' "${run_dir}/review.tsv" >"${run_dir}/review.tsv.legacy"
+awk -F $'\t' '$1 != "gate_adapter" && $1 != "gate_policy_path"' \
+    "${run_dir}/review.tsv" >"${run_dir}/review.tsv.legacy"
 mv "${run_dir}/review.tsv.legacy" "${run_dir}/review.tsv"
 [[ "$(manifest_value "${run_dir}/review.tsv" gate_adapter)" == '' ]] || \
     fail 'legacy fixture still carries a gate_adapter line'
+[[ "$(manifest_value "${run_dir}/review.tsv" gate_policy_path)" == '' ]] || \
+    fail 'legacy fixture still carries a gate_policy_path line'
 run_arena status run-one >"${tmp_root}/legacy-review-status.out"
 require_match 'Integrity: OK' "${tmp_root}/legacy-review-status.out"
-legacy_gate_adapter="$(ARENA_SOURCE_ROOT="$source_root" bash -c '
+legacy_review_fields="$(ARENA_SOURCE_ROOT="$source_root" bash -c '
     set -euo pipefail
     source "$ARENA_SOURCE_ROOT/lib/common.sh"
+    arena_read_manifest "$1"
     arena_read_review_manifest "$1"
-    printf "%s" "$ARENA_REVIEW_GATE_ADAPTER"
+    printf "%s\n%s\n" "$ARENA_REVIEW_GATE_ADAPTER" "$ARENA_REVIEW_GATE_POLICY_PATH"
 ' _ "$run_dir")"
+legacy_gate_adapter="$(printf '%s\n' "$legacy_review_fields" | awk 'NR == 1')"
+legacy_gate_policy_path="$(printf '%s\n' "$legacy_review_fields" | awk 'NR == 2')"
 [[ "$legacy_gate_adapter" == cursor ]] || \
     fail 'legacy review.tsv without gate_adapter did not default to the cursor gate'
+[[ "$legacy_gate_policy_path" == '.cursor/cli.json' ]] || \
+    fail 'legacy review.tsv without gate_policy_path did not default to .cursor/cli.json'
 mv "$legacy_review_backup" "${run_dir}/review.tsv"
+# the review gate must match the gate recorded in the run manifest
+mismatch_backup="${tmp_root}/review.tsv.pre-mismatch"
+cp "${run_dir}/review.tsv" "$mismatch_backup"
+mismatch_review="$(mktemp "${run_dir}/.review-mismatch.XXXXXX")"
+awk -F $'\t' 'BEGIN { OFS = FS } $1 == "gate_adapter" { $2 = "opencode" } { print }' \
+    "${run_dir}/review.tsv" >"$mismatch_review"
+mv "$mismatch_review" "${run_dir}/review.tsv"
+expect_failure run_arena status run-one
+mv "$mismatch_backup" "${run_dir}/review.tsv"
 require_match '"permissions"' "${review_worktree}/.cursor/cli.json"
 require_match '"allow"' "${review_worktree}/.cursor/cli.json"
 require_match '"deny"' "${review_worktree}/.cursor/cli.json"
@@ -666,6 +686,8 @@ require_match 'ARENA_SOURCE_ROOT ' "$fake_tmux_log"
 require_match 'ARENA_COMMAND ' "$fake_tmux_log"
 require_match 'respawn-pane -k -t %13' "$fake_tmux_log"
 [[ -d "${run_dir}/pi-session" ]] || fail 'legacy Pi session directory was not restored privately'
+[[ "$(manifest_value "${run_dir}/manifest.tsv" gate_adapter)" == 'cursor' ]] || \
+    fail 'legacy manifest did not default gate_adapter to cursor'
 export FAKE_TMUX_MODE=offline
 mv "$legacy_manifest_backup" "${run_dir}/manifest.tsv"
 chmod 600 "${run_dir}/manifest.tsv"
@@ -911,6 +933,7 @@ run_arena submit run-pane-dead >/dev/null
 printf '%s\n' '27. status verifies snapshot integrity and binds reports to the current checkpoint'
 run_arena status run-pane-dead >"${tmp_root}/pane-dead-status.out"
 require_match 'Integrity: OK' "${tmp_root}/pane-dead-status.out"
+require_match 'Gate: cursor' "${tmp_root}/pane-dead-status.out"
 require_match 'Validation: not run' "${tmp_root}/pane-dead-status.out"
 require_match 'Decision: not recorded' "${tmp_root}/pane-dead-status.out"
 pane_dead_review2="$(manifest_value "${pane_dead_run_dir}/review.tsv" review_worktree)"

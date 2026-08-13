@@ -73,7 +73,8 @@ if [[ -e "$review_worktree" || -L "$review_worktree" ]]; then
     arena_same_directory "$ARENA_REVIEW_WORKTREE" "$review_worktree" || \
         arena_die 'existing review manifest does not match review worktree'
     arena_review_snapshot_is_intact "$review_worktree" "$writer_head" \
-        "$ARENA_REVIEW_CURSOR_POLICY_HASH" "$ARENA_REVIEW_GATE_WRAPPER_HASH" || \
+        "$ARENA_REVIEW_CURSOR_POLICY_HASH" "$ARENA_REVIEW_GATE_WRAPPER_HASH" \
+        "$ARENA_REVIEW_GATE_POLICY_PATH" || \
         arena_die 'existing review snapshot is not an intact submitted checkpoint'
 else
     arena_make_private_dir "$(dirname "$review_worktree")"
@@ -89,10 +90,11 @@ else
     arena_assert_clean_worktree "$review_worktree"
     arena_prepare_gate_policy "$review_worktree" "$ARENA_MANIFEST_GATE_ADAPTER"
     arena_review_snapshot_is_intact "$review_worktree" "$writer_head" \
-        "$ARENA_GATE_POLICY_HASH" "$ARENA_GATE_WRAPPER_HASH" || \
+        "$ARENA_GATE_POLICY_HASH" "$ARENA_GATE_WRAPPER_HASH" "$ARENA_GATE_POLICY_PATH" || \
         arena_die 'review snapshot changed while installing Cursor gate policy'
     arena_write_review_manifest "$run_dir" "$writer_head" "$review_worktree" \
-        "$ARENA_MANIFEST_GATE_ADAPTER" "$ARENA_GATE_POLICY_HASH" "$ARENA_GATE_WRAPPER_HASH"
+        "$ARENA_MANIFEST_GATE_ADAPTER" "$ARENA_GATE_POLICY_PATH" \
+        "$ARENA_GATE_POLICY_HASH" "$ARENA_GATE_WRAPPER_HASH"
     # The previous checkpoint's validation/decision pointers no longer describe
     # this submission; the per-SHA archives remain for the audit trail.
     rm -f "${run_dir}/validation.md" "${run_dir}/decision.md"

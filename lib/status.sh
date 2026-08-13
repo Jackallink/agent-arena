@@ -44,6 +44,7 @@ printf 'Repository: %s\n' "$ARENA_MANIFEST_REPOSITORY"
 printf 'Base: %s\n' "$ARENA_MANIFEST_BASE_SHA"
 printf 'Profile: %s\n' "$ARENA_MANIFEST_PROFILE"
 printf 'Writer adapter: %s\n' "$ARENA_MANIFEST_WRITER_ADAPTER"
+printf 'Gate: %s\n' "$ARENA_MANIFEST_GATE_ADAPTER"
 printf 'Writer: %s\n' "$ARENA_MANIFEST_WRITER_LABEL"
 printf 'Writer worktree: %s\n' "$ARENA_MANIFEST_WRITER_WORKTREE"
 printf 'Branch: %s\n' "$ARENA_MANIFEST_BRANCH"
@@ -55,7 +56,8 @@ if [[ -f "${run_dir}/review.tsv" ]]; then
     printf 'Review HEAD: %s\n' "$ARENA_REVIEW_HEAD"
     printf 'Review worktree: %s\n' "$ARENA_REVIEW_WORKTREE"
     if arena_review_snapshot_is_intact "$ARENA_REVIEW_WORKTREE" "$ARENA_REVIEW_HEAD" \
-        "$ARENA_REVIEW_CURSOR_POLICY_HASH" "$ARENA_REVIEW_GATE_WRAPPER_HASH"; then
+        "$ARENA_REVIEW_CURSOR_POLICY_HASH" "$ARENA_REVIEW_GATE_WRAPPER_HASH" \
+        "$ARENA_REVIEW_GATE_POLICY_PATH"; then
         printf 'Integrity: OK\n'
     else
         printf 'Integrity: FAILED (review snapshot is missing, dirty, or tampered)\n'
