@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+common_dir="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=profile.sh
+source "${common_dir}/profile.sh"
+unset common_dir
+
 if [[ "${ARENA_TRACE:-0}" == 1 ]]; then
     set -x
 fi
@@ -19,6 +24,25 @@ arena_require_command() {
 
 arena_abs_dir() {
     CDPATH='' cd -- "$1" && pwd -P
+}
+
+arena_normalize_path() {
+    local path="$1"
+    local ancestor
+    local component
+    local suffix=''
+
+    [[ -n "$path" ]] || arena_die 'path must not be empty'
+    ancestor="$path"
+    while [[ ! -e "$ancestor" && ! -L "$ancestor" ]]; do
+        component="$(basename -- "$ancestor")"
+        suffix="/${component}${suffix}"
+        ancestor="$(dirname -- "$ancestor")"
+        [[ "$ancestor" != "$component" ]] || arena_die "cannot normalize path: $path"
+    done
+    [[ -d "$ancestor" ]] || arena_die "path ancestor is not a directory: $ancestor"
+    ancestor="$(arena_abs_dir "$ancestor")"
+    printf '%s%s\n' "$ancestor" "$suffix"
 }
 
 arena_same_directory() {
@@ -56,22 +80,26 @@ arena_validate_run_id() {
 
 arena_state_root() {
     if [[ -n "${ARENA_STATE_ROOT:-}" ]]; then
-        printf '%s' "$ARENA_STATE_ROOT"
+        arena_normalize_path "$ARENA_STATE_ROOT"
     else
-        printf '%s/agent-arena' "${XDG_STATE_HOME:-${HOME}/.local/state}"
+        arena_normalize_path "${XDG_STATE_HOME:-${HOME}/.local/state}/agent-arena"
     fi
 }
 
 arena_worktree_root() {
     if [[ -n "${ARENA_WORKTREE_ROOT:-}" ]]; then
-        printf '%s' "$ARENA_WORKTREE_ROOT"
+        arena_normalize_path "$ARENA_WORKTREE_ROOT"
     else
-        printf '%s/agent-arena/worktrees' "${XDG_DATA_HOME:-${HOME}/.local/share}"
+        arena_normalize_path "${XDG_DATA_HOME:-${HOME}/.local/share}/agent-arena/worktrees"
     fi
 }
 
 arena_make_private_dir() {
-    mkdir -p "$1"
+    if [[ -e "$1" || -L "$1" ]]; then
+        [[ -d "$1" && ! -L "$1" ]] || arena_die "private directory is unsafe: $1"
+    else
+        mkdir -p "$1"
+    fi
     chmod 700 "$1"
 }
 
@@ -83,6 +111,28 @@ arena_hash() {
     else
         printf '%s' "$1" | cksum | awk '{print $1}'
     fi
+}
+
+arena_sha256_text() {
+    local value="$1"
+
+    if command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$value" | shasum -a 256 | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$value" | sha256sum | awk '{print $1}'
+    else
+        arena_die 'SHA-256 utility is required for provider session identifiers'
+    fi
+}
+
+arena_uuid_v4_from_text() {
+    local digest
+
+    digest="$(arena_sha256_text "$1")"
+    [[ "$digest" =~ ^[0-9a-fA-F]{64}$ ]] || \
+        arena_die 'could not derive a SHA-256 provider session identifier'
+    printf '%s-%s-4%s-8%s-%s\n' "${digest:0:8}" "${digest:8:4}" \
+        "${digest:12:3}" "${digest:15:3}" "${digest:18:12}"
 }
 
 arena_file_hash() {
@@ -271,12 +321,29 @@ arena_write_manifest() {
     local tool_root="$8"
     local worktree_root="$9"
     local project_config="${10}"
+    local profile="${11}"
+    local writer_adapter="${12}"
+    local writer_label="${13}"
+    local writer_session_dir="${14}"
     local tmp_file value
 
     for value in "$run_id" "$repository" "$base_sha" "$writer_worktree" "$branch" \
-        "$session_name" "$tool_root" "$worktree_root" "$project_config"; do
+        "$session_name" "$tool_root" "$worktree_root" "$project_config" "$profile" \
+        "$writer_adapter" "$writer_label" "$writer_session_dir"; do
         arena_reject_control_characters "$value"
+        [[ -n "$value" ]] || arena_die 'run manifest value must not be empty'
     done
+    arena_profile_resolve "$profile"
+    [[ "$ARENA_PROFILE_WRITER_ADAPTER" == "$writer_adapter" ]] || \
+        arena_die 'writer adapter does not match the selected profile'
+    [[ "$ARENA_PROFILE_WRITER_LABEL" == "$writer_label" ]] || \
+        arena_die 'writer label does not match the selected profile'
+    [[ "$branch" == "$(arena_profile_branch "$writer_adapter" "$run_id")" ]] || \
+        arena_die 'writer branch does not match the selected profile'
+    writer_session_dir="$(arena_normalize_path "$writer_session_dir")"
+    run_dir="$(arena_normalize_path "$run_dir")"
+    [[ "$writer_session_dir" == "${run_dir}/writer-session" ]] || \
+        arena_die 'writer session directory must be the private generic session directory'
 
     tmp_file="$(mktemp "${run_dir}/.manifest.XXXXXX")"
     {
@@ -289,6 +356,10 @@ arena_write_manifest() {
         printf 'tool_root\t%s\n' "$tool_root"
         printf 'worktree_root\t%s\n' "$worktree_root"
         printf 'project_config\t%s\n' "$project_config"
+        printf 'profile\t%s\n' "$profile"
+        printf 'writer_adapter\t%s\n' "$writer_adapter"
+        printf 'writer_label\t%s\n' "$writer_label"
+        printf 'writer_session_dir\t%s\n' "$writer_session_dir"
     } >"$tmp_file"
     chmod 600 "$tmp_file"
     mv "$tmp_file" "${run_dir}/manifest.tsv"
@@ -309,6 +380,12 @@ arena_read_manifest() {
     ARENA_MANIFEST_TOOL_ROOT=''
     ARENA_MANIFEST_WORKTREE_ROOT=''
     ARENA_MANIFEST_PROJECT_CONFIG=''
+    ARENA_MANIFEST_PROFILE=''
+    ARENA_MANIFEST_WRITER_ADAPTER=''
+    ARENA_MANIFEST_WRITER_LABEL=''
+    ARENA_MANIFEST_WRITER_SESSION_DIR=''
+    ARENA_MANIFEST_LEGACY_PROFILE=0
+    local profile_field_count=0
 
     while IFS=$'\t' read -r key value; do
         case "$key" in
@@ -321,6 +398,22 @@ arena_read_manifest() {
             tool_root) ARENA_MANIFEST_TOOL_ROOT="$value" ;;
             worktree_root) ARENA_MANIFEST_WORKTREE_ROOT="$value" ;;
             project_config) ARENA_MANIFEST_PROJECT_CONFIG="$value" ;;
+            profile)
+                ARENA_MANIFEST_PROFILE="$value"
+                profile_field_count=$((profile_field_count + 1))
+                ;;
+            writer_adapter)
+                ARENA_MANIFEST_WRITER_ADAPTER="$value"
+                profile_field_count=$((profile_field_count + 1))
+                ;;
+            writer_label)
+                ARENA_MANIFEST_WRITER_LABEL="$value"
+                profile_field_count=$((profile_field_count + 1))
+                ;;
+            writer_session_dir)
+                ARENA_MANIFEST_WRITER_SESSION_DIR="$value"
+                profile_field_count=$((profile_field_count + 1))
+                ;;
             *) arena_die "unknown manifest key '$key' in $manifest" ;;
         esac
     done <"$manifest"
@@ -333,6 +426,44 @@ arena_read_manifest() {
         [[ -n "$value" ]] || arena_die "incomplete run manifest: $manifest"
         arena_reject_control_characters "$value"
     done
+    arena_validate_run_id "$ARENA_MANIFEST_RUN_ID"
+
+    case "$profile_field_count" in
+        0)
+            # v0.1 manifests are Pi-only. Preserve them so an interrupted older
+            # run can be resumed safely rather than silently changing writers.
+            ARENA_MANIFEST_PROFILE='pi-cursor'
+            ARENA_MANIFEST_WRITER_ADAPTER='pi'
+            ARENA_MANIFEST_WRITER_LABEL='Pi'
+            ARENA_MANIFEST_WRITER_SESSION_DIR="${run_dir}/pi-session"
+            ARENA_MANIFEST_LEGACY_PROFILE=1
+            ;;
+        4) ;;
+        *) arena_die "incomplete writer profile in run manifest: $manifest" ;;
+    esac
+
+    for value in "$ARENA_MANIFEST_PROFILE" "$ARENA_MANIFEST_WRITER_ADAPTER" \
+        "$ARENA_MANIFEST_WRITER_LABEL" "$ARENA_MANIFEST_WRITER_SESSION_DIR"; do
+        [[ -n "$value" ]] || arena_die "incomplete writer profile in run manifest: $manifest"
+        arena_reject_control_characters "$value"
+    done
+    arena_profile_resolve "$ARENA_MANIFEST_PROFILE"
+    [[ "$ARENA_PROFILE_WRITER_ADAPTER" == "$ARENA_MANIFEST_WRITER_ADAPTER" ]] || \
+        arena_die "writer adapter does not match profile in $manifest"
+    [[ "$ARENA_PROFILE_WRITER_LABEL" == "$ARENA_MANIFEST_WRITER_LABEL" ]] || \
+        arena_die "writer label does not match profile in $manifest"
+    [[ "$ARENA_MANIFEST_BRANCH" == \
+        "$(arena_profile_branch "$ARENA_MANIFEST_WRITER_ADAPTER" "$ARENA_MANIFEST_RUN_ID")" ]] || \
+        arena_die "writer branch does not match profile in $manifest"
+    ARENA_MANIFEST_WRITER_SESSION_DIR="$(arena_normalize_path "$ARENA_MANIFEST_WRITER_SESSION_DIR")"
+    run_dir="$(arena_normalize_path "$run_dir")"
+    if [[ "$ARENA_MANIFEST_LEGACY_PROFILE" == 1 ]]; then
+        [[ "$ARENA_MANIFEST_WRITER_SESSION_DIR" == "${run_dir}/pi-session" ]] || \
+            arena_die "legacy writer session directory is invalid: $manifest"
+    else
+        [[ "$ARENA_MANIFEST_WRITER_SESSION_DIR" == "${run_dir}/writer-session" ]] || \
+            arena_die "writer session directory is invalid: $manifest"
+    fi
 }
 
 arena_write_review_manifest() {
@@ -403,7 +534,7 @@ arena_prepare_cursor_gate_policy() {
     arena_assert_worktree "$review_worktree"
     for path in .cursor/cli.json .agent-arena-gate; do
         if git -C "$review_worktree" ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
-            arena_die "review snapshot tracks $path; v0.1 cannot safely layer its local Cursor gate policy"
+            arena_die "review snapshot tracks $path; Agent Arena cannot safely layer its local Cursor gate policy"
         fi
     done
     if [[ -L "$cursor_dir" || ( -e "$cursor_dir" && ! -d "$cursor_dir" ) ]]; then

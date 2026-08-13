@@ -8,7 +8,7 @@ usage() {
     cat <<'EOF'
 Usage: agent-arena submit RUN_ID [--state-root PATH]
 
-Require a clean committed Pi checkpoint, create a detached Cursor review snapshot,
+Require a clean committed writer checkpoint, create a detached Cursor review snapshot,
 and respawn the reviewer pane when the tmux session is running.
 EOF
 }
@@ -47,7 +47,7 @@ arena_assert_clean_worktree "$ARENA_MANIFEST_WRITER_WORKTREE"
 # before creating a detached snapshot instead of weakening either policy.
 for policy_path in .cursor/cli.json .agent-arena-gate; do
     if git -C "$ARENA_MANIFEST_WRITER_WORKTREE" ls-files --error-unmatch -- "$policy_path" >/dev/null 2>&1; then
-        arena_die "submitted checkpoint tracks $policy_path; v0.1 cannot safely layer its local Cursor gate policy"
+        arena_die "submitted checkpoint tracks $policy_path; Agent Arena cannot safely layer its local Cursor gate policy"
     fi
 done
 
@@ -86,13 +86,53 @@ else
         "$ARENA_CURSOR_POLICY_HASH" "$ARENA_GATE_WRAPPER_HASH"
 fi
 
+refresh_live_session_environment() {
+    local environment_name
+    local environment_value
+
+    # v0.1 sessions lack the generic writer fields that current pane.sh
+    # requires. Refresh them here as well as in start: a writer may submit its
+    # next checkpoint directly from an already-running legacy Pi pane.
+    export ARENA_SOURCE_ROOT="$source_root"
+    export ARENA_COMMAND="${ARENA_COMMAND:-${source_root}/bin/agent-arena}"
+    export ARENA_REPOSITORY="$ARENA_MANIFEST_REPOSITORY"
+    export ARENA_RUN_ID="$run_id"
+    export ARENA_RUN_DIR="$run_dir"
+    export ARENA_STATE_ROOT="$(arena_state_root)"
+    export ARENA_WRITER_WORKTREE="$ARENA_MANIFEST_WRITER_WORKTREE"
+    export ARENA_WRITER_SESSION_DIR="$ARENA_MANIFEST_WRITER_SESSION_DIR"
+    export ARENA_REVIEW_WORKTREE="$review_worktree"
+    export ARENA_SESSION_NAME="$ARENA_MANIFEST_SESSION_NAME"
+    export ARENA_PROFILE="$ARENA_MANIFEST_PROFILE"
+    export ARENA_WRITER_ADAPTER="$ARENA_MANIFEST_WRITER_ADAPTER"
+    export ARENA_WRITER_LABEL="$ARENA_MANIFEST_WRITER_LABEL"
+    export ARENA_TEST_MODE="${ARENA_TEST_MODE:-0}"
+    export ARENA_PI_BIN="${ARENA_PI_BIN:-pi}"
+    export ARENA_CODEX_BIN="${ARENA_CODEX_BIN:-codex}"
+    export ARENA_OPENCODE_BIN="${ARENA_OPENCODE_BIN:-opencode}"
+    export ARENA_GEMINI_BIN="${ARENA_GEMINI_BIN:-gemini}"
+    export ARENA_CURSOR_BIN="${ARENA_CURSOR_BIN:-agent}"
+    arena_make_private_dir "$ARENA_WRITER_SESSION_DIR"
+
+    for environment_name in \
+        ARENA_SOURCE_ROOT ARENA_COMMAND ARENA_REPOSITORY ARENA_RUN_ID ARENA_RUN_DIR \
+        ARENA_STATE_ROOT ARENA_WRITER_WORKTREE ARENA_WRITER_SESSION_DIR \
+        ARENA_REVIEW_WORKTREE ARENA_SESSION_NAME ARENA_PROFILE \
+        ARENA_WRITER_ADAPTER ARENA_WRITER_LABEL ARENA_TEST_MODE ARENA_PI_BIN \
+        ARENA_CODEX_BIN ARENA_OPENCODE_BIN ARENA_GEMINI_BIN ARENA_CURSOR_BIN; do
+        environment_value="${!environment_name}"
+        tmux set-environment -t "=${ARENA_MANIFEST_SESSION_NAME}" \
+            "$environment_name" "$environment_value"
+    done
+}
+
 if command -v tmux >/dev/null 2>&1 && tmux has-session -t "=${ARENA_MANIFEST_SESSION_NAME}" 2>/dev/null; then
-    tmux set-environment -t "=${ARENA_MANIFEST_SESSION_NAME}" ARENA_REVIEW_WORKTREE "$review_worktree"
+    refresh_live_session_environment
     reviewer_pane="$(arena_find_live_pane "$ARENA_MANIFEST_SESSION_NAME" reviewer reviewer-agent)"
     printf -v respawn_command 'exec %q reviewer' "${source_root}/lib/pane.sh"
     tmux respawn-pane -k -t "$reviewer_pane" "$respawn_command"
 fi
 
-arena_note "submitted Pi checkpoint: $writer_head"
+arena_note "submitted ${ARENA_MANIFEST_WRITER_LABEL} checkpoint: $writer_head"
 arena_note "Cursor review snapshot: $review_worktree"
 arena_note 'Cursor must run the validation gate before approving the checkpoint'

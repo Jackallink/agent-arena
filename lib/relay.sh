@@ -81,7 +81,7 @@ tmux has-session -t "=${ARENA_MANIFEST_SESSION_NAME}" 2>/dev/null || \
 
 target_pane="$(arena_find_live_pane "$ARENA_MANIFEST_SESSION_NAME" "$recipient" "${recipient}-agent")"
 case "$sender" in
-    writer) sender_label='Pi' ;;
+    writer) sender_label="$ARENA_MANIFEST_WRITER_LABEL" ;;
     reviewer) sender_label='Cursor' ;;
     human) sender_label='Human' ;;
 esac

@@ -11,9 +11,9 @@ Usage: agent-arena COMMAND [RUN_ID] [options]
 Commands:
   doctor                         Check required tools and adapter availability
   init [--repo PATH]             Add a minimal project adapter without overwrite
-  start RUN_ID [--repo PATH]     Create/resume a Pi + Cursor tmuxp run
+  start RUN_ID [--repo PATH]     Create/resume a writer + Cursor tmuxp run
   resume RUN_ID [--repo PATH]    Attach or recreate an existing run
-  submit RUN_ID                  Freeze Pi's committed checkpoint for review
+  submit RUN_ID                  Freeze the writer's committed checkpoint for review
   validate RUN_ID                Run the project-defined validation gate
   decision RUN_ID [options]      Record Cursor's formal decision
   relay RUN_ID [options]         Send a direct, literal agent-pane message

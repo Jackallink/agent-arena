@@ -1,13 +1,19 @@
 # Agent Arena
 
-Agent Arena is a standalone, local-first terminal workflow for a single coding
-writer and a separate review, validation, and decision gate. `tmuxp` creates the
-four panes; Git worktrees enforce the handoff boundary; `tmux` relays short
-messages directly between the agents.
+Agent Arena is a standalone, local-first terminal workflow for one coding writer
+and a separate review, validation, and decision gate. `tmuxp` creates the four
+panes; Git worktrees isolate the handoff; `tmux` relays short messages directly
+between the agents.
 
-Version 0.1 supports **Pi** as the writer and **Cursor Agent** as the reviewer.
-Codex, OpenCode, and Gemini are detected by `doctor` but intentionally remain
-unsupported until each adapter has passed permission and session-resume tests.
+Every v0.2 profile pairs one writer with **Cursor Agent**, which is the only
+formal review, validation, and decision gate. Pi, Codex, OpenCode, and Gemini
+are writers only. A direct relay is useful feedback, but the SHA-bound Cursor
+validation report and decision record remain the audit truth.
+
+> **Validation status:** v0.2 has hermetic adapter tests, tmuxp smoke coverage,
+> and no-model local CLI contract checks. It has not run a live model, used a
+> credential, or performed a provider-network/end-to-end permission smoke test.
+> `doctor` confirms local prerequisites, not provider-side behavior.
 
 ## Location model
 
@@ -32,13 +38,30 @@ From a clean Git project:
 /Users/jakeliu/Workspace/agent-arena/bin/agent-arena doctor
 /Users/jakeliu/Workspace/agent-arena/bin/agent-arena init --repo .
 # Edit .agent-arena/validate.sh to run this project's checks.
-/Users/jakeliu/Workspace/agent-arena/bin/agent-arena start tui-sink --repo .
+/Users/jakeliu/Workspace/agent-arena/bin/agent-arena start tui-sink --repo . --profile pi-cursor
 ```
 
-`start` refuses a dirty integration worktree. It creates a writable Pi worktree.
-Pi commits a checkpoint and runs `agent-arena submit RUN_ID`; Cursor then receives
-a detached review snapshot, runs the configured validation gate, writes a
-SHA-bound decision, and relays the next step to Pi.
+Replace `pi-cursor` with `codex-cursor`, `opencode-cursor`, or `gemini-cursor`
+after its local prerequisites pass `doctor`.
+`start` refuses a dirty integration worktree and creates one writable writer
+worktree. The writer commits a checkpoint and runs `agent-arena submit RUN_ID`.
+Cursor then receives a detached review snapshot, runs the configured validation
+gate, writes a SHA-bound decision, and relays the next step to the writer.
+
+## Writer profiles and limitations
+
+| Profile | Writer contract | Session and safety limits |
+| --- | --- | --- |
+| `pi-cursor` | Pi runs in Arena's writer worktree with an Arena session directory and stable session ID. | It receives no merge, push, reset, or permission-bypass instruction. Resume behavior must remain covered by adapter tests. |
+| `codex-cursor` | Codex is targeted at the writer worktree with `workspace-write` sandboxing and on-request approval. | Codex can resume a known session, but does not expose creation-time naming or a session directory; Arena must not promise automatic resume. No `--search`, `--add-dir`, or dangerous bypass flag. |
+| `opencode-cursor` | OpenCode starts in the Arena writer worktree with a dedicated writer-agent policy; project configuration and external skills are disabled where supported. | Never use `--auto`. Its CLI exposes session commands but no documented Arena-owned session creation/directory contract, so automatic resume remains unverified. Its permissions are not an OS or network sandbox. |
+| `gemini-cursor` | Gemini must start after `cd` into the writer worktree, with extensions/MCP access restricted and `auto_edit` approval for writer edits. | A session can resume only after its initial process exits successfully and Arena records its UUID; interruption does not promise auto-resume. Never use `--worktree`, `--yolo`, or automatic `--skip-trust`. Its built-in sandbox is not a no-network guarantee. |
+
+All writer prompts prohibit editing the integration worktree, merging, pushing,
+resetting, and dangerous permission bypasses. Git worktrees separate code
+handoff, but are not a general operating-system, credential, or network sandbox.
+Keep credentials in each CLI's normal login/environment mechanism and never put
+them in project config or relay messages.
 
 ## Commands
 
@@ -54,9 +77,11 @@ agent-arena status RUN_ID
 ```
 
 Relay delivery is direct but best effort: tmux cannot know whether an interactive
-model is mid-turn. The decision record, not a pane message, is the audit truth.
+model is mid-turn. Writers can send progress or a question to Cursor; Cursor can
+send review feedback and the next step back to the writer. The decision record,
+not a pane message, is the audit truth.
 
-## Cursor policy boundary
+## Cursor-only formal gate
 
 Formal Cursor review runs in normal interactive mode so it can invoke only the
 generated gate wrapper for `validate`, `decision`, `relay`, and `status`. It does
@@ -67,5 +92,10 @@ gate. Keep those paths untracked for an Arena run, or use a future adapter that
 supports a verified policy merge. Before relying on the gate, complete the manual
 authenticated Cursor smoke recorded in the implementation plan.
 
-See [the v0.1 spec](docs/superpowers/specs/2026-08-13-agent-arena-v1.md) for the
-workflow, boundaries, and acceptance criteria.
+Codex, OpenCode, and Gemini must not be substituted for Cursor in this gate.
+Their advisory review capabilities do not establish permission to modify Arena
+reports or make a formal decision from an immutable snapshot.
+
+See [the v0.2 writer-profile spec](docs/superpowers/specs/2026-08-13-pluggable-writer-adapters.md)
+and [implementation plan](docs/superpowers/plans/2026-08-13-pluggable-writer-adapters.md)
+for current acceptance criteria, evidence, risks, and release gates.

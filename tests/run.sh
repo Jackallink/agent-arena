@@ -24,19 +24,124 @@ require_match() {
     grep -Fq -- "$expected" "$file" || fail "missing '$expected' in $file"
 }
 
+require_no_match() {
+    local forbidden="$1"
+    local file="$2"
+
+    if grep -Fq -- "$forbidden" "$file"; then
+        fail "unexpected '$forbidden' in $file"
+    fi
+}
+
+manifest_value() {
+    local manifest="$1"
+    local key="$2"
+
+    awk -F $'\t' -v key="$key" '$1 == key { print $2 }' "$manifest"
+}
+
+assert_no_dangerous_writer_flags() {
+    local file="$1"
+    local flag
+
+    for flag in \
+        --auto \
+        --force \
+        --yolo \
+        --full-auto \
+        --search \
+        --add-dir \
+        --worktree \
+        --skip-trust \
+        --dangerously-skip-permissions \
+        --dangerously-bypass-approvals-and-sandbox; do
+        require_no_match "arg=${flag}" "$file"
+    done
+}
+
+assert_no_run_manifest() {
+    local run_id="$1"
+
+    if find "${state_base}/runs" -mindepth 3 -maxdepth 3 -type f \
+        -name manifest.tsv -path "*/${run_id}/manifest.tsv" -print -quit 2>/dev/null | grep -q .; then
+        fail "unexpected run manifest for ${run_id}"
+    fi
+}
+
 fake_bin="${tmp_root}/fake-bin"
 mkdir -p "$fake_bin"
 fake_tmux_log="${tmp_root}/tmux.log"
 fake_tmuxp_log="${tmp_root}/tmuxp.log"
 fake_agent_log="${tmp_root}/agent.log"
+fake_pi_log="${tmp_root}/pi.log"
+fake_codex_log="${tmp_root}/codex.log"
+fake_opencode_log="${tmp_root}/opencode.log"
+fake_gemini_log="${tmp_root}/gemini.log"
 cat >"${fake_bin}/pi" <<'EOF'
 #!/usr/bin/env bash
-exit 0
+set -euo pipefail
+{
+    printf 'cwd=%s\n' "$PWD"
+    printf 'profile=%s\n' "${ARENA_PROFILE:-}"
+    printf 'writer_adapter=%s\n' "${ARENA_WRITER_ADAPTER:-}"
+    printf 'writer_session_dir=%s\n' "${ARENA_WRITER_SESSION_DIR:-}"
+    for argument in "$@"; do
+        printf 'arg=%q\n' "$argument"
+    done
+    printf '%s\n' '--'
+} >>"${FAKE_PI_LOG:?}"
 EOF
 cat >"${fake_bin}/agent" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${FAKE_AGENT_LOG:?}"
 exit 0
+EOF
+cat >"${fake_bin}/codex" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+{
+    printf 'cwd=%s\n' "$PWD"
+    printf 'profile=%s\n' "${ARENA_PROFILE:-}"
+    printf 'writer_adapter=%s\n' "${ARENA_WRITER_ADAPTER:-}"
+    printf 'writer_session_dir=%s\n' "${ARENA_WRITER_SESSION_DIR:-}"
+    for argument in "$@"; do
+        printf 'arg=%q\n' "$argument"
+    done
+    printf '%s\n' '--'
+} >>"${FAKE_CODEX_LOG:?}"
+EOF
+cat >"${fake_bin}/opencode" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+{
+    printf 'cwd=%s\n' "$PWD"
+    printf 'profile=%s\n' "${ARENA_PROFILE:-}"
+    printf 'writer_adapter=%s\n' "${ARENA_WRITER_ADAPTER:-}"
+    printf 'writer_session_dir=%s\n' "${ARENA_WRITER_SESSION_DIR:-}"
+    printf 'pure=%s\n' "${OPENCODE_PURE:-}"
+    printf 'disable_project_config=%s\n' "${OPENCODE_DISABLE_PROJECT_CONFIG:-}"
+    printf 'disable_external_skills=%s\n' "${OPENCODE_DISABLE_EXTERNAL_SKILLS:-}"
+    printf 'config_content=%q\n' "${OPENCODE_CONFIG_CONTENT:-}"
+    for argument in "$@"; do
+        printf 'arg=%q\n' "$argument"
+    done
+    printf '%s\n' '--'
+} >>"${FAKE_OPENCODE_LOG:?}"
+EOF
+cat >"${fake_bin}/gemini" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+{
+    printf 'cwd=%s\n' "$PWD"
+    printf 'profile=%s\n' "${ARENA_PROFILE:-}"
+    printf 'writer_adapter=%s\n' "${ARENA_WRITER_ADAPTER:-}"
+    printf 'writer_session_dir=%s\n' "${ARENA_WRITER_SESSION_DIR:-}"
+    for argument in "$@"; do
+        printf 'arg=%q\n' "$argument"
+    done
+    printf '%s\n' '--'
+} >>"${FAKE_GEMINI_LOG:?}"
+exit "${FAKE_GEMINI_EXIT:-0}"
 EOF
 cat >"${fake_bin}/tmuxp" <<'EOF'
 #!/usr/bin/env bash
@@ -51,11 +156,16 @@ command_name="${1:-}"
 shift || true
 case "$command_name" in
     has-session)
-        [[ "${FAKE_TMUX_MODE:-offline}" != offline ]] && exit 0
+        case "${FAKE_TMUX_MODE:-offline}" in
+            relay|live) exit 0 ;;
+        esac
         exit 1
         ;;
     list-panes)
-        [[ "${FAKE_TMUX_MODE:-offline}" == relay ]] || exit 1
+        case "${FAKE_TMUX_MODE:-offline}" in
+            relay|live) ;;
+            *) exit 1 ;;
+        esac
         session=''
         while [[ $# -gt 0 ]]; do
             if [[ "$1" == -t && $# -ge 2 ]]; then
@@ -92,6 +202,12 @@ case "$command_name" in
     send-keys)
         printf '%s\n' "$*" >>"${FAKE_TMUX_LOG:?}"
         ;;
+    set-environment)
+        printf 'set-environment %s\n' "$*" >>"${FAKE_TMUX_LOG:?}"
+        ;;
+    respawn-pane)
+        printf 'respawn-pane %s\n' "$*" >>"${FAKE_TMUX_LOG:?}"
+        ;;
     *)
         exit 0
         ;;
@@ -115,6 +231,11 @@ run_arena() {
         FAKE_TMUX_LOG="$fake_tmux_log" \
         FAKE_TMUXP_LOG="$fake_tmuxp_log" \
         FAKE_AGENT_LOG="$fake_agent_log" \
+        FAKE_PI_LOG="$fake_pi_log" \
+        FAKE_CODEX_LOG="$fake_codex_log" \
+        FAKE_OPENCODE_LOG="$fake_opencode_log" \
+        FAKE_GEMINI_LOG="$fake_gemini_log" \
+        FAKE_GEMINI_EXIT="${FAKE_GEMINI_EXIT:-0}" \
         ARENA_STATE_ROOT="$state_base" \
         ARENA_WORKTREE_ROOT="$worktree_base" \
         "$arena" "$@"
@@ -122,9 +243,11 @@ run_arena() {
 
 printf '%s\n' '1. doctor'
 run_arena doctor >"${tmp_root}/doctor.out"
-require_match 'pi               enabled' "${tmp_root}/doctor.out"
-require_match 'cursor           enabled' "${tmp_root}/doctor.out"
-require_match 'codex            planned' "${tmp_root}/doctor.out"
+require_match 'cursor' "${tmp_root}/doctor.out"
+require_match 'profile:pi-cursor' "${tmp_root}/doctor.out"
+require_match 'profile:codex-cursor' "${tmp_root}/doctor.out"
+require_match 'profile:opencode-cursor' "${tmp_root}/doctor.out"
+require_match 'profile:gemini-cursor' "${tmp_root}/doctor.out"
 
 printf '%s\n' '2. init'
 run_arena init --repo "$project"
@@ -154,7 +277,9 @@ state_root="$state_base"
 run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/run-one/manifest.tsv' -exec dirname {} \;)"
 [[ -n "$run_dir" ]] || fail 'start did not create run manifest'
 writer_worktree="$(awk -F $'\t' '$1 == "writer_worktree" { print $2 }' "${run_dir}/manifest.tsv")"
+writer_session_dir="$(awk -F $'\t' '$1 == "writer_session_dir" { print $2 }' "${run_dir}/manifest.tsv")"
 [[ -d "$writer_worktree" ]] || fail 'start did not create writer worktree'
+[[ -d "$writer_session_dir" ]] || fail 'start did not create private writer session directory'
 [[ "$(git -C "$writer_worktree" branch --show-current)" == agent-arena/pi/run-one ]] || \
     fail 'writer worktree branch is incorrect'
 expect_failure run_arena submit run-one
@@ -382,7 +507,354 @@ run_arena submit run-ignored >/dev/null
 run_arena validate run-ignored >"${tmp_root}/ignored-validation.out"
 require_match 'RESULT: PASS' "${tmp_root}/ignored-validation.out"
 
-printf '%s\n' '16. local package and protected install'
+printf '%s\n' '16. selected writer profile preflight fails closed'
+export FAKE_TMUX_MODE=offline
+tmuxp_log_before="$(wc -l <"$fake_tmuxp_log")"
+unknown_profile_run='profile-unknown'
+expect_failure run_arena start "$unknown_profile_run" --repo "$project" \
+    --profile 'not-a-profile' --no-attach
+assert_no_run_manifest "$unknown_profile_run"
+
+profile_injection_target="${tmp_root}/profile-injection-target"
+malicious_profile_run='profile-malicious'
+expect_failure run_arena start "$malicious_profile_run" --repo "$project" \
+    --profile "codex-cursor; touch ${profile_injection_target}" --no-attach
+assert_no_run_manifest "$malicious_profile_run"
+[[ ! -e "$profile_injection_target" ]] || fail 'malicious profile text reached a shell'
+
+start_with_missing_writer() {
+    local profile_name="$1"
+    local binary_variable="$2"
+    local run_id="$3"
+
+    (
+        export "${binary_variable}=agent-arena-test-missing-${run_id}"
+        run_arena start "$run_id" --repo "$project" --profile "$profile_name" --no-attach
+    )
+}
+
+missing_profiles=(pi-cursor codex-cursor opencode-cursor gemini-cursor)
+missing_variables=(ARENA_PI_BIN ARENA_CODEX_BIN ARENA_OPENCODE_BIN ARENA_GEMINI_BIN)
+missing_run_ids=(profile-missing-pi profile-missing-codex profile-missing-opencode profile-missing-gemini)
+for profile_index in "${!missing_profiles[@]}"; do
+    expect_failure start_with_missing_writer "${missing_profiles[$profile_index]}" \
+        "${missing_variables[$profile_index]}" "${missing_run_ids[$profile_index]}"
+    assert_no_run_manifest "${missing_run_ids[$profile_index]}"
+done
+[[ "$(wc -l <"$fake_tmuxp_log")" == "$tmuxp_log_before" ]] || \
+    fail 'invalid or missing selected writer started tmuxp'
+
+printf '%s\n' '17. profile manifest selection, branch, and closed mapping'
+profile_names=(codex-cursor opencode-cursor gemini-cursor)
+profile_adapters=(codex opencode gemini)
+profile_labels=(Codex OpenCode Gemini)
+profile_run_ids=(profile-codex profile-opencode profile-gemini)
+for profile_index in "${!profile_names[@]}"; do
+    profile_name="${profile_names[$profile_index]}"
+    writer_adapter="${profile_adapters[$profile_index]}"
+    writer_label="${profile_labels[$profile_index]}"
+    profile_run_id="${profile_run_ids[$profile_index]}"
+    run_arena start "$profile_run_id" --repo "$project" --profile "$profile_name" --no-attach >/dev/null
+    profile_run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f \
+        -name manifest.tsv -path "*/${profile_run_id}/manifest.tsv" -exec dirname {} \;)"
+    [[ -n "$profile_run_dir" ]] || fail "missing ${profile_name} run manifest"
+    profile_run_dir="$(CDPATH='' cd -- "$profile_run_dir" && pwd -P)"
+    profile_manifest="${profile_run_dir}/manifest.tsv"
+    [[ "$(manifest_value "$profile_manifest" profile)" == "$profile_name" ]] || \
+        fail "manifest did not preserve ${profile_name}"
+    [[ "$(manifest_value "$profile_manifest" writer_adapter)" == "$writer_adapter" ]] || \
+        fail "manifest did not select ${writer_adapter}"
+    [[ "$(manifest_value "$profile_manifest" writer_label)" == "$writer_label" ]] || \
+        fail "manifest did not preserve ${writer_label} label"
+    profile_writer="$(manifest_value "$profile_manifest" writer_worktree)"
+    profile_session_dir="$(manifest_value "$profile_manifest" writer_session_dir)"
+    [[ -d "$profile_session_dir" && "$profile_session_dir" == "${profile_run_dir}/"* ]] || \
+        fail "${profile_name} session directory is not private run state"
+    [[ "$(git -C "$profile_writer" branch --show-current)" == \
+        "agent-arena/${writer_adapter}/${profile_run_id}" ]] || \
+        fail "${profile_name} writer branch is incorrect"
+    case "$writer_adapter" in
+        codex)
+            codex_run_dir="$profile_run_dir"
+            codex_manifest="$profile_manifest"
+            codex_writer="$profile_writer"
+            codex_session_dir="$profile_session_dir"
+            ;;
+        opencode)
+            opencode_run_dir="$profile_run_dir"
+            opencode_manifest="$profile_manifest"
+            opencode_writer="$profile_writer"
+            opencode_session_dir="$profile_session_dir"
+            ;;
+        gemini)
+            gemini_run_dir="$profile_run_dir"
+            gemini_manifest="$profile_manifest"
+            gemini_writer="$profile_writer"
+            gemini_session_dir="$profile_session_dir"
+            ;;
+    esac
+done
+
+expect_failure run_arena start profile-codex --repo "$project" --profile gemini-cursor --no-attach
+manifest_backup="${tmp_root}/profile-codex.manifest.tsv"
+cp "$codex_manifest" "$manifest_backup"
+manifest_replacement="$(mktemp "${codex_run_dir}/.manifest-test.XXXXXX")"
+awk -F $'\t' 'BEGIN { OFS = FS } $1 == "writer_adapter" { $2 = "pi" } { print }' \
+    "$codex_manifest" >"$manifest_replacement"
+mv "$manifest_replacement" "$codex_manifest"
+expect_failure run_arena start profile-codex --repo "$project" --no-attach
+mv "$manifest_backup" "$codex_manifest"
+chmod 600 "$codex_manifest"
+
+printf '%s\n' '18. legacy Pi direct submit refreshes a live session for v0.2 panes'
+legacy_manifest_backup="${tmp_root}/run-one-v0.2.manifest.tsv"
+cp "${run_dir}/manifest.tsv" "$legacy_manifest_backup"
+legacy_manifest_tmp="$(mktemp "${run_dir}/.legacy-manifest.XXXXXX")"
+awk -F $'\t' '$1 != "profile" && $1 != "writer_adapter" && $1 != "writer_label" && \
+    $1 != "writer_session_dir" { print }' "${run_dir}/manifest.tsv" >"$legacy_manifest_tmp"
+mv "$legacy_manifest_tmp" "${run_dir}/manifest.tsv"
+chmod 600 "${run_dir}/manifest.tsv"
+printf '%s\n' 'legacy direct submit checkpoint' >"${writer_worktree}/legacy-submit.txt"
+git -C "$writer_worktree" add legacy-submit.txt
+git -C "$writer_worktree" commit -m 'feat: add legacy direct submit fixture' >/dev/null
+: >"$fake_tmux_log"
+export FAKE_TMUX_MODE=live
+ARENA_RUN_DIR="$run_dir" run_arena submit run-one >"${tmp_root}/legacy-live-submit.out"
+require_match 'set-environment -t =agent-arena-' "$fake_tmux_log"
+require_match 'ARENA_WRITER_SESSION_DIR' "$fake_tmux_log"
+require_match 'ARENA_WRITER_ADAPTER pi' "$fake_tmux_log"
+require_match 'ARENA_WRITER_LABEL Pi' "$fake_tmux_log"
+require_match 'ARENA_SOURCE_ROOT ' "$fake_tmux_log"
+require_match 'ARENA_COMMAND ' "$fake_tmux_log"
+require_match 'respawn-pane -k -t %13' "$fake_tmux_log"
+[[ -d "${run_dir}/pi-session" ]] || fail 'legacy Pi session directory was not restored privately'
+export FAKE_TMUX_MODE=offline
+mv "$legacy_manifest_backup" "${run_dir}/manifest.tsv"
+chmod 600 "${run_dir}/manifest.tsv"
+
+printf '%s\n' '19. non-Pi writer stays bound to the Cursor gate'
+printf '%s\n' 'codex checkpoint' >"${codex_writer}/codex-checkpoint.txt"
+git -C "$codex_writer" add codex-checkpoint.txt
+git -C "$codex_writer" commit -m 'feat: add Codex checkpoint fixture' >/dev/null
+run_arena submit profile-codex >"${tmp_root}/codex-submit.out"
+codex_review_worktree="$(manifest_value "${codex_run_dir}/review.tsv" review_worktree)"
+codex_writer_head="$(git -C "$codex_writer" rev-parse HEAD)"
+[[ "$(git -C "$codex_review_worktree" rev-parse HEAD)" == "$codex_writer_head" ]] || \
+    fail 'Codex checkpoint review snapshot is not bound to its writer HEAD'
+: >"$fake_agent_log"
+PATH="${fake_bin}:${PATH}" \
+    FAKE_AGENT_LOG="$fake_agent_log" \
+    ARENA_CURSOR_BIN=agent \
+    ARENA_CURSOR_WORKSPACE="$codex_review_worktree" \
+    ARENA_CURSOR_PHASE=review \
+    ARENA_RUN_ID=profile-codex \
+    ARENA_RUN_DIR="$codex_run_dir" \
+    ARENA_WRITER_LABEL=Codex \
+    ARENA_COMMAND="$arena" \
+    "${source_root}/adapters/cursor.sh" launch
+require_match "--sandbox enabled --workspace ${codex_review_worktree}" "$fake_agent_log"
+require_match 'Codex' "$fake_agent_log"
+require_no_match '--mode plan' "$fake_agent_log"
+run_arena validate profile-codex >"${tmp_root}/codex-validation.out"
+require_match 'RESULT: PASS' "${tmp_root}/codex-validation.out"
+run_arena decision profile-codex --verdict APPROVE --summary 'Codex fixture approved' \
+    --next 'handoff to human' --no-relay >"${tmp_root}/codex-decision.out"
+require_match 'VERDICT: APPROVE' "${codex_run_dir}/decision.md"
+
+printf '%s\n' '20. selected writer relay label'
+export FAKE_TMUX_MODE=relay
+export FAKE_TMUX_PANES=normal
+run_arena relay profile-codex --to reviewer --from writer --message 'codex profile checkpoint ready'
+require_match '%13 -l -- [Codex] codex profile checkpoint ready' "$fake_tmux_log"
+export FAKE_TMUX_MODE=offline
+
+run_writer_adapter() {
+    local adapter="$1"
+    local profile_name="$2"
+    local writer_label="$3"
+    local writer_worktree="$4"
+    local writer_session_dir="$5"
+    local run_dir="$6"
+    local run_id="$7"
+
+    PATH="${fake_bin}:${PATH}" \
+        FAKE_PI_LOG="$fake_pi_log" \
+        FAKE_CODEX_LOG="$fake_codex_log" \
+        FAKE_OPENCODE_LOG="$fake_opencode_log" \
+        FAKE_GEMINI_LOG="$fake_gemini_log" \
+        ARENA_PI_BIN=pi \
+        ARENA_CODEX_BIN=codex \
+        ARENA_OPENCODE_BIN=opencode \
+        ARENA_GEMINI_BIN=gemini \
+        ARENA_REPOSITORY="$project" \
+        ARENA_RUN_ID="$run_id" \
+        ARENA_RUN_DIR="$run_dir" \
+        ARENA_WRITER_WORKTREE="$writer_worktree" \
+        ARENA_WRITER_SESSION_DIR="$writer_session_dir" \
+        ARENA_PROFILE="$profile_name" \
+        ARENA_WRITER_ADAPTER="$adapter" \
+        ARENA_WRITER_LABEL="$writer_label" \
+        ARENA_COMMAND="$arena" \
+        "${source_root}/adapters/${adapter}.sh" launch
+}
+
+printf '%s\n' '21. writer adapters stay in the isolated worktree and reject bypass flags'
+: >"$fake_pi_log"
+run_writer_adapter pi pi-cursor Pi "$writer_worktree" "$writer_session_dir" "$run_dir" run-one
+require_match "cwd=${writer_worktree}" "$fake_pi_log"
+require_match 'profile=pi-cursor' "$fake_pi_log"
+require_match 'writer_adapter=pi' "$fake_pi_log"
+require_match "writer_session_dir=${writer_session_dir}" "$fake_pi_log"
+require_match 'arg=--session-dir' "$fake_pi_log"
+require_match "arg=${writer_session_dir}" "$fake_pi_log"
+require_match 'arg=--session-id' "$fake_pi_log"
+require_match 'arg=agent-arena-run-one' "$fake_pi_log"
+require_match 'arg=--name' "$fake_pi_log"
+require_match 'arg=Agent\ Arena\ Pi\ run-one' "$fake_pi_log"
+require_match 'arg=--append-system-prompt' "$fake_pi_log"
+require_match 'submit' "$fake_pi_log"
+require_match 'relay' "$fake_pi_log"
+assert_no_dangerous_writer_flags "$fake_pi_log"
+"${source_root}/adapters/pi.sh" capabilities >"${tmp_root}/pi.capabilities"
+require_match 'automatic_resume=true' "${tmp_root}/pi.capabilities"
+: >"$fake_pi_log"
+run_writer_adapter pi pi-cursor Pi "$writer_worktree" "$writer_session_dir" "$run_dir" run-one
+require_match 'arg=--session-id' "$fake_pi_log"
+require_match 'arg=agent-arena-run-one' "$fake_pi_log"
+require_match 'arg=--session-dir' "$fake_pi_log"
+require_match "arg=${writer_session_dir}" "$fake_pi_log"
+
+: >"$fake_codex_log"
+run_writer_adapter codex codex-cursor Codex "$codex_writer" "$codex_session_dir" \
+    "$codex_run_dir" profile-codex
+require_match 'profile=codex-cursor' "$fake_codex_log"
+require_match 'writer_adapter=codex' "$fake_codex_log"
+require_match "writer_session_dir=${codex_session_dir}" "$fake_codex_log"
+require_match 'arg=-C' "$fake_codex_log"
+require_match "arg=${codex_writer}" "$fake_codex_log"
+require_match 'arg=--sandbox' "$fake_codex_log"
+require_match 'arg=workspace-write' "$fake_codex_log"
+require_match 'arg=--ask-for-approval' "$fake_codex_log"
+require_match 'arg=on-request' "$fake_codex_log"
+require_match 'arg=--no-alt-screen' "$fake_codex_log"
+require_match 'submit' "$fake_codex_log"
+require_match 'relay' "$fake_codex_log"
+assert_no_dangerous_writer_flags "$fake_codex_log"
+"${source_root}/adapters/codex.sh" capabilities >"${tmp_root}/codex.capabilities"
+require_match 'automatic_resume=false' "${tmp_root}/codex.capabilities"
+
+: >"$fake_opencode_log"
+run_writer_adapter opencode opencode-cursor OpenCode "$opencode_writer" \
+    "$opencode_session_dir" "$opencode_run_dir" profile-opencode
+require_match "cwd=${opencode_writer}" "$fake_opencode_log"
+require_match 'profile=opencode-cursor' "$fake_opencode_log"
+require_match 'writer_adapter=opencode' "$fake_opencode_log"
+require_match "writer_session_dir=${opencode_session_dir}" "$fake_opencode_log"
+require_match "arg=${opencode_writer}" "$fake_opencode_log"
+require_match 'arg=--pure' "$fake_opencode_log"
+require_match 'arg=--agent' "$fake_opencode_log"
+require_match 'arg=arena_writer' "$fake_opencode_log"
+require_match 'arg=--prompt' "$fake_opencode_log"
+require_match 'disable_project_config=1' "$fake_opencode_log"
+require_match 'disable_external_skills=1' "$fake_opencode_log"
+require_match 'arena_writer' "$fake_opencode_log"
+require_match 'submit' "$fake_opencode_log"
+require_match 'relay' "$fake_opencode_log"
+assert_no_dangerous_writer_flags "$fake_opencode_log"
+"${source_root}/adapters/opencode.sh" capabilities >"${tmp_root}/opencode.capabilities"
+require_match 'automatic_resume=false' "${tmp_root}/opencode.capabilities"
+
+: >"$fake_gemini_log"
+run_writer_adapter gemini gemini-cursor Gemini "$gemini_writer" "$gemini_session_dir" \
+    "$gemini_run_dir" profile-gemini
+gemini_initial_log="${tmp_root}/gemini-initial.log"
+cp "$fake_gemini_log" "$gemini_initial_log"
+gemini_session_id="$(<"${gemini_session_dir}/gemini.session-id")"
+[[ "$gemini_session_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || \
+    fail 'Gemini initial launch did not persist a valid UUID session marker'
+require_match "cwd=${gemini_writer}" "$gemini_initial_log"
+require_match 'profile=gemini-cursor' "$gemini_initial_log"
+require_match 'writer_adapter=gemini' "$gemini_initial_log"
+require_match "writer_session_dir=${gemini_session_dir}" "$gemini_initial_log"
+require_match 'arg=--extensions' "$gemini_initial_log"
+require_match 'arg=none' "$gemini_initial_log"
+require_match 'arg=--allowed-mcp-server-names' "$gemini_initial_log"
+require_match 'arg=--approval-mode=auto_edit' "$gemini_initial_log"
+require_match 'arg=--session-id' "$gemini_initial_log"
+require_match "arg=${gemini_session_id}" "$gemini_initial_log"
+require_match 'arg=--prompt-interactive' "$gemini_initial_log"
+require_match 'submit' "$gemini_initial_log"
+require_match 'relay' "$gemini_initial_log"
+require_no_match 'arg=--resume' "$gemini_initial_log"
+require_no_match 'arg=--sandbox' "$gemini_initial_log"
+assert_no_dangerous_writer_flags "$gemini_initial_log"
+gemini_session_marker="${gemini_session_dir}/gemini.session-id"
+[[ -f "$gemini_session_marker" ]] || fail 'Gemini initial launch did not persist a private session marker'
+require_match "$gemini_session_id" "$gemini_session_marker"
+
+: >"$fake_gemini_log"
+run_writer_adapter gemini gemini-cursor Gemini "$gemini_writer" "$gemini_session_dir" \
+    "$gemini_run_dir" profile-gemini
+require_match 'arg=--resume' "$fake_gemini_log"
+require_match "arg=${gemini_session_id}" "$fake_gemini_log"
+require_no_match 'arg=--session-id' "$fake_gemini_log"
+require_no_match 'arg=--sandbox' "$fake_gemini_log"
+assert_no_dangerous_writer_flags "$fake_gemini_log"
+
+printf '%s\n' '22. dotted run IDs retain a valid Gemini resume marker'
+gemini_dotted_session_dir="${gemini_session_dir}-dotted-run"
+mkdir -p "$gemini_dotted_session_dir"
+chmod 700 "$gemini_dotted_session_dir"
+: >"$fake_gemini_log"
+run_writer_adapter gemini gemini-cursor Gemini "$gemini_writer" "$gemini_dotted_session_dir" \
+    "$gemini_run_dir" profile.gemini
+dotted_gemini_session_id="$(<"${gemini_dotted_session_dir}/gemini.session-id")"
+[[ "$dotted_gemini_session_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || \
+    fail 'dotted run ID did not receive a valid Gemini UUID session marker'
+[[ "$dotted_gemini_session_id" != "$gemini_session_id" ]] || \
+    fail 'Gemini session IDs crossed writer runs'
+: >"$fake_gemini_log"
+run_writer_adapter gemini gemini-cursor Gemini "$gemini_writer" "$gemini_dotted_session_dir" \
+    "$gemini_run_dir" profile.gemini
+require_match 'arg=--resume' "$fake_gemini_log"
+require_match "arg=${dotted_gemini_session_id}" "$fake_gemini_log"
+
+printf '%s\n' '23. failed Gemini first launch does not publish a resume marker'
+gemini_failed_session_dir="${gemini_session_dir}-failed-first"
+mkdir -p "$gemini_failed_session_dir"
+chmod 700 "$gemini_failed_session_dir"
+: >"$fake_gemini_log"
+if FAKE_GEMINI_EXIT=7 run_writer_adapter gemini gemini-cursor Gemini "$gemini_writer" \
+    "$gemini_failed_session_dir" "$gemini_run_dir" profile-gemini-failed; then
+    fail 'failed Gemini first launch unexpectedly succeeded'
+fi
+[[ ! -e "${gemini_failed_session_dir}/gemini.session-id" ]] || \
+    fail 'failed Gemini first launch published a resume marker'
+require_match 'arg=--session-id' "$fake_gemini_log"
+require_no_match 'arg=--resume' "$fake_gemini_log"
+
+printf '%s\n' '24. writer pane dispatches the manifest-selected adapter'
+: >"$fake_codex_log"
+PATH="${fake_bin}:${PATH}" \
+    FAKE_CODEX_LOG="$fake_codex_log" \
+    ARENA_REPOSITORY="$project" \
+    ARENA_RUN_ID=profile-codex \
+    ARENA_RUN_DIR="$codex_run_dir" \
+    ARENA_WRITER_WORKTREE="$codex_writer" \
+    ARENA_WRITER_SESSION_DIR="$codex_session_dir" \
+    ARENA_SESSION_NAME="$(manifest_value "$codex_manifest" session_name)" \
+    ARENA_PROFILE=codex-cursor \
+    ARENA_WRITER_ADAPTER=codex \
+    ARENA_WRITER_LABEL=Codex \
+    ARENA_COMMAND="$arena" \
+    ARENA_CODEX_BIN=codex \
+    ARENA_LOG_PANES=0 \
+    TMUX_PANE='' \
+    "${source_root}/lib/pane.sh" writer
+require_match 'writer_adapter=codex' "$fake_codex_log"
+require_match 'arg=--sandbox' "$fake_codex_log"
+
+printf '%s\n' '25. local package and protected install'
 bash "${source_root}/packaging/test.sh" >"${tmp_root}/package.out"
 require_match 'package test: ok' "${tmp_root}/package.out"
 

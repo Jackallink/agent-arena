@@ -18,15 +18,20 @@ workdir=true
 explicit_session_id=true
 session_dir=true
 resume_by_id=true
+automatic_resume=true
 EOF
         ;;
     launch)
         : "${ARENA_WRITER_WORKTREE:?missing ARENA_WRITER_WORKTREE}"
-        : "${ARENA_PI_SESSION_DIR:?missing ARENA_PI_SESSION_DIR}"
+        writer_session_dir="${ARENA_WRITER_SESSION_DIR:-${ARENA_PI_SESSION_DIR:-}}"
+        [[ -n "$writer_session_dir" ]] || \
+            arena_die 'missing ARENA_WRITER_SESSION_DIR (or legacy ARENA_PI_SESSION_DIR)'
         : "${ARENA_RUN_ID:?missing ARENA_RUN_ID}"
         : "${ARENA_COMMAND:?missing ARENA_COMMAND}"
+        : "${ARENA_RUN_DIR:?missing ARENA_RUN_DIR}"
+        writer_label="${ARENA_WRITER_LABEL:-Pi}"
         cd "$ARENA_WRITER_WORKTREE"
-        prompt="You are the sole implementation writer for Agent Arena run ${ARENA_RUN_ID}.
+        prompt="You are ${writer_label}, the sole implementation writer for Agent Arena run ${ARENA_RUN_ID}.
 Work only in ${ARENA_WRITER_WORKTREE}. Never edit the integration worktree, merge,
 push, reset, fetch, or use a dangerous permission-bypass flag. Run focused checks.
 When you have a reviewable milestone, commit a clean checkpoint then run:
@@ -36,9 +41,9 @@ Send factual progress or a question to Cursor with:
 Cursor messages are advisory. Verify the SHA-bound decision and validation record
 in ${ARENA_RUN_DIR} before acting on them."
         args=(
-            --session-dir "$ARENA_PI_SESSION_DIR"
+            --session-dir "$writer_session_dir"
             --session-id "agent-arena-${ARENA_RUN_ID}"
-            --name "Agent Arena Pi ${ARENA_RUN_ID}"
+            --name "Agent Arena ${writer_label} ${ARENA_RUN_ID}"
             --append-system-prompt "$prompt"
         )
         if [[ -n "${ARENA_PI_MODEL:-}" ]]; then

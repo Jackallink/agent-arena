@@ -4,7 +4,9 @@ set -euo pipefail
 source_root="${ARENA_SOURCE_ROOT:-$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}"
 source "${source_root}/lib/common.sh"
 
-for variable_name in ARENA_REPOSITORY ARENA_RUN_ID ARENA_RUN_DIR ARENA_WRITER_WORKTREE ARENA_SESSION_NAME; do
+for variable_name in ARENA_REPOSITORY ARENA_RUN_ID ARENA_RUN_DIR ARENA_WRITER_WORKTREE \
+    ARENA_WRITER_SESSION_DIR ARENA_SESSION_NAME ARENA_PROFILE ARENA_WRITER_ADAPTER \
+    ARENA_WRITER_LABEL; do
     [[ -n "${!variable_name:-}" ]] || arena_die "missing environment variable $variable_name"
 done
 
@@ -16,9 +18,22 @@ arena_same_directory "$ARENA_MANIFEST_WRITER_WORKTREE" "$ARENA_WRITER_WORKTREE" 
     arena_die 'writer worktree differs from manifest'
 [[ "$ARENA_MANIFEST_SESSION_NAME" == "$ARENA_SESSION_NAME" ]] || \
     arena_die 'session differs from manifest'
+[[ "$ARENA_MANIFEST_PROFILE" == "$ARENA_PROFILE" ]] || \
+    arena_die 'profile differs from manifest'
+[[ "$ARENA_MANIFEST_WRITER_ADAPTER" == "$ARENA_WRITER_ADAPTER" ]] || \
+    arena_die 'writer adapter differs from manifest'
+[[ "$ARENA_MANIFEST_WRITER_LABEL" == "$ARENA_WRITER_LABEL" ]] || \
+    arena_die 'writer label differs from manifest'
+arena_same_directory "$ARENA_MANIFEST_WRITER_SESSION_DIR" "$ARENA_WRITER_SESSION_DIR" || \
+    arena_die 'writer session directory differs from manifest'
+arena_profile_resolve "$ARENA_PROFILE"
+[[ "$ARENA_PROFILE_WRITER_ADAPTER" == "$ARENA_WRITER_ADAPTER" && \
+    "$ARENA_PROFILE_WRITER_LABEL" == "$ARENA_WRITER_LABEL" ]] || \
+    arena_die 'writer profile is not a supported closed mapping'
 arena_assert_worktree "$ARENA_WRITER_WORKTREE"
 [[ "$(git -C "$ARENA_WRITER_WORKTREE" branch --show-current)" == "$ARENA_MANIFEST_BRANCH" ]] || \
     arena_die 'writer worktree is not on its recorded branch'
+arena_make_private_dir "$ARENA_WRITER_SESSION_DIR"
 
 declared_review_worktree="${ARENA_REVIEW_WORKTREE:-}"
 if [[ -n "$declared_review_worktree" ]]; then

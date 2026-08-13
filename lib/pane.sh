@@ -10,7 +10,9 @@ case "$role" in
     *) arena_die 'usage: pane.sh {control|writer|reviewer|validation}' ;;
 esac
 
-for variable_name in ARENA_REPOSITORY ARENA_RUN_ID ARENA_RUN_DIR ARENA_WRITER_WORKTREE ARENA_SESSION_NAME; do
+for variable_name in ARENA_REPOSITORY ARENA_RUN_ID ARENA_RUN_DIR ARENA_WRITER_WORKTREE \
+    ARENA_WRITER_SESSION_DIR ARENA_SESSION_NAME ARENA_PROFILE ARENA_WRITER_ADAPTER \
+    ARENA_WRITER_LABEL; do
     [[ -n "${!variable_name:-}" ]] || arena_die "missing environment variable $variable_name"
 done
 
@@ -45,8 +47,9 @@ set_pane_mode initializing
 
 if [[ "${ARENA_TEST_MODE:-0}" == 1 ]]; then
     set_pane_mode test
-    printf 'role=%s\nrepository=%s\nwriter_worktree=%s\nrun_dir=%s\n' \
-        "$role" "$ARENA_REPOSITORY" "$ARENA_WRITER_WORKTREE" "$ARENA_RUN_DIR"
+    printf 'role=%s\nprofile=%s\nwriter_adapter=%s\nrepository=%s\nwriter_worktree=%s\nrun_dir=%s\n' \
+        "$role" "$ARENA_PROFILE" "$ARENA_WRITER_ADAPTER" "$ARENA_REPOSITORY" \
+        "$ARENA_WRITER_WORKTREE" "$ARENA_RUN_DIR"
     exit 0
 fi
 
@@ -58,7 +61,7 @@ case "$role" in
 Agent Arena integration control
   Repository: $ARENA_REPOSITORY
   Run:        $ARENA_RUN_ID
-  Writer:     $ARENA_WRITER_WORKTREE
+  Writer:     $ARENA_WRITER_LABEL ($ARENA_WRITER_WORKTREE)
 
 This is the human integration worktree. Agents must not write here.
 Useful commands:
@@ -69,7 +72,16 @@ EOF
         ;;
     writer)
         set_pane_mode writer-agent
-        exec "${source_root}/adapters/pi.sh" launch
+        arena_read_manifest "$ARENA_RUN_DIR"
+        [[ "$ARENA_MANIFEST_PROFILE" == "$ARENA_PROFILE" ]] || \
+            arena_die 'writer pane profile differs from manifest'
+        [[ "$ARENA_MANIFEST_WRITER_ADAPTER" == "$ARENA_WRITER_ADAPTER" ]] || \
+            arena_die 'writer pane adapter differs from manifest'
+        [[ "$ARENA_MANIFEST_WRITER_LABEL" == "$ARENA_WRITER_LABEL" ]] || \
+            arena_die 'writer pane label differs from manifest'
+        arena_same_directory "$ARENA_MANIFEST_WRITER_SESSION_DIR" "$ARENA_WRITER_SESSION_DIR" || \
+            arena_die 'writer pane session directory differs from manifest'
+        exec "${source_root}/adapters/${ARENA_MANIFEST_WRITER_ADAPTER}.sh" launch
         ;;
     reviewer)
         set_pane_mode reviewer-agent
@@ -101,7 +113,7 @@ EOF
 Agent Arena validation pane
   Run state: $ARENA_RUN_DIR
 
-After Pi commits and submits a checkpoint, run:
+After the writer commits and submits a checkpoint, run:
   $ARENA_COMMAND validate $ARENA_RUN_ID
 
 Cursor owns the review/validation/decision gate. This pane is a deterministic
