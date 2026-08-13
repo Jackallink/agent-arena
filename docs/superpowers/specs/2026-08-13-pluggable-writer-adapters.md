@@ -9,17 +9,22 @@ owner: 'local owner'
 ## Summary and scope
 
 Add supported writer profiles `codex-cursor`, `opencode-cursor`, and
-`gemini-cursor` beside `pi-cursor`. Each profile keeps Cursor as the sole
+`agy-cursor` beside `pi-cursor`. Each profile keeps Cursor as the sole
 review/validation/decision gate. The selected writer alone receives the isolated
 Git worktree; no profile introduces a second writer, automatic merge/push, or
-dangerous permission bypass. Codex, OpenCode, and Gemini as reviewers are out of
+dangerous permission bypass. Codex, OpenCode, and Agy as reviewers are out of
 scope until each has a separately verified immutable review-policy contract.
+The retired `gemini-cursor` profile (Gemini CLI 0.46.0, provider endpoint
+unreachable and replaced by Antigravity's `agy` CLI 1.1.7) is removed; its
+closed mapping no longer resolves, and old gemini manifests fail closed with an
+unknown-profile error.
 
 This specification is **review-ready**. It records the implemented v0.2
 contracts and no-model validation evidence; it does not certify a provider's
 authenticated live behavior or production safety. The Cursor gate authenticated
 smoke completed on 2026-08-13 (see the v0.1 plan Gate 4 evidence); `complete`
-remains blocked on the Codex/OpenCode/Gemini writer live-permission smokes.
+remains blocked on the Codex/OpenCode writer live-permission smokes; the agy
+live writer smoke completed on 2026-08-13.
 
 ## Profiles and operator usage
 
@@ -34,7 +39,7 @@ SHA-bound validation report and decision are authoritative.
 agent-arena doctor
 agent-arena init --repo /path/to/project
 agent-arena start RUN_ID --repo /path/to/project --profile pi-cursor
-# Or choose: --profile codex-cursor | opencode-cursor | gemini-cursor
+# Or choose: --profile codex-cursor | opencode-cursor | agy-cursor
 ```
 
 `doctor` reports a locally usable profile only when its executable and Cursor
@@ -47,7 +52,7 @@ selected profile or its required executable is unavailable.
 | `pi-cursor` | Pi receives the Arena writer worktree, a private session directory, and a stable Arena session ID. | The prompt forbids integration-tree edits, merge, push, reset, and bypass flags; worktree isolation is not a general OS/network sandbox. |
 | `codex-cursor` | Codex targets the writer worktree with `--sandbox workspace-write`, `--ask-for-approval on-request`, and `--no-alt-screen`. | Do not pass `--search`, `--add-dir`, or dangerous bypass flags. Codex has no creation-time Arena-owned session name/directory, so automatic resume must not be promised. |
 | `opencode-cursor` | OpenCode targets the writer worktree in pure mode with a dedicated writer policy; project config and external skills are disabled where supported. | Never pass `--auto`. Its permissions are not an OS or network sandbox. Its session commands do not establish an Arena-owned creation/directory contract, so automatic resume remains unverified. |
-| `gemini-cursor` | Gemini first `cd`s to the writer worktree, restricts extensions/MCP access, and uses `--approval-mode=auto_edit` only for writer edits. | Arena derives a private UUID for the initial session and publishes it only after clean exit; only then can a later launch use `--resume`. Interruption has no automatic-resume promise. Never pass `--worktree`, `--yolo`, or automatic `--skip-trust`; its built-in sandbox is not a no-network guarantee. |
+| `agy-cursor` | Agy (Antigravity CLI 1.1.7) starts after `cd` into the writer worktree with `--prompt-interactive`, `--new-project`, `--sandbox`, and `--mode accept-edits`; the human confirms the interactive trust prompt. `--new-project` binds the CLI session to the writer worktree (without it, agy works in its scratch workspace). | Agy exposes no creation-time session ID and no session directory; resume is possible only with an explicit `--conversation <ID>` from the operator, so Arena never promises automatic resume. Never pass `--continue`, `--dangerously-skip-permissions`, or `--worktree`; its terminal-restrictions sandbox is not a no-network guarantee. |
 
 Credentials remain in each provider's normal login, keychain, or environment
 configuration. They must not be added to project configuration, a session
@@ -69,7 +74,7 @@ manifest, a relay message, or a tracked file.
 | ID | Acceptance criterion | Test intent |
 | --- | --- | --- |
 | AC1 | `doctor` reports Cursor plus every detected writer and lists only profiles whose required CLIs exist. | fake-CLI doctor matrix |
-| AC2 | Each supported profile selects its writer adapter, records `profile`, adapter, and label, and uses a writer-specific branch namespace. | lifecycle fixture for Pi/Codex/OpenCode/Gemini |
+| AC2 | Each supported profile selects its writer adapter, records `profile`, adapter, and label, and uses a writer-specific branch namespace. | lifecycle fixture for Pi/Codex/OpenCode/Agy |
 | AC3 | Unknown profiles or a missing selected writer fail before a worktree or tmux session is created. | negative profile/probe fixtures |
 | AC4 | Every writer adapter launches in the isolated workspace with a fixed safety prompt and no force/yolo/dangerous-bypass flag. | fake-CLI argument assertions |
 | AC5 | The writer pane dispatches the adapter recorded in the manifest; tmux role/mode and direct relay safety remain unchanged. | pane dispatch + tmuxp smoke |
@@ -92,7 +97,7 @@ manifest → tmuxp exports the chosen adapter/session context → writer pane re
 the manifest and `exec`s that adapter in the isolated worktree. `submit` and the
 remaining gate flow stay provider-neutral: clean writer HEAD → detached snapshot
 → Cursor policy → validation → decision → literal relay. `relay` reads the
-manifest label so a message is visibly from Pi, Codex, OpenCode, or Gemini.
+manifest label so a message is visibly from Pi, Codex, OpenCode, or Agy.
 
 The manifest is the state boundary. New fields are profile, writer adapter, writer
 label, and generic writer session directory. A legacy manifest missing those fields
@@ -115,7 +120,7 @@ writer clean committed HEAD
   -> direct relay of the result/next step to the selected writer
 ```
 
-No Codex, OpenCode, or Gemini profile may short-circuit this path by writing a
+No Codex, OpenCode, or Agy profile may short-circuit this path by writing a
 decision record, merging a branch, pushing, or treating an advisory relay as
 approval.
 
@@ -141,12 +146,17 @@ Tests use temporary Git fixtures and fake executables only; local CLI checks are
 The hermetic suite, tmuxp smoke, packaging test, and local CLI-contract smoke
 passed on 2026-08-13. The authenticated Cursor gate smoke (gate wrapper
 validation, write/commit/network rejection under the generated deny list) also
-passed on 2026-08-13; Codex/OpenCode/Gemini authenticated permission, network,
-and session-resume smokes remain open. Hermetic tests are necessary but
-insufficient: they prove Arena's argument and lifecycle handling, not the
-provider's behavior after authentication.
+passed on 2026-08-13; Codex/OpenCode writer permission smokes and the agy
+writer live smoke complete, Gemini retired (endpoint unreachable, replaced by
+agy). Hermetic tests are necessary but insufficient: they prove Arena's
+argument and lifecycle handling, not the provider's behavior after
+authentication.
 
-Drift: v0.2 expands writers, not gates, to preserve the Cursor control boundary. The design walkthrough (2026-08-13) found and fixed four operational defects: `submit` treated an unavailable reviewer pane as fatal after committing state (now best-effort, AC11); a deleted review snapshot permanently bricked `submit`/`start` (now recreated via stale-registry pruning, AC12); stale validation/decision pointers misled `status` after a resubmit (now invalidated, AC13); and `status` performed no integrity verification (now fail-closed, AC14). A follow-up hardening pass removes `Shell(sed *)` from the generated Cursor policy (in-place writes were a deny-list gap), preserves prior validation reports under `validation-<sha>.rN.md` instead of overwriting them, and cleans stale Gemini marker temporaries left by killed first launches. A `list` command (AC15), a condensed preflight failure path that hides the tmuxp traceback, and a documented decision-order constraint (a writer that commits before a decision forfeits a decision on the reviewed checkpoint) complete the walkthrough backlog. The Cursor gate smoke found and fixed two policy drifts: the generated `.cursor/cli.json` used keys the real CLI rejects (now a minimal `permissions` schema), and the allow list is not deny-by-default, so high-frequency write channels (`echo`/`printf`/`tee`/`cp`/`mv`/`bash`/`sh`/`zsh`/`python3`/`curl`/`wget`) were added to the deny list; the re-run confirmed writes are blocked. The same-UID threat model above is a documented limitation, not a certified boundary.
+Drift: v0.2 expands writers, not gates, to preserve the Cursor control boundary. The design walkthrough (2026-08-13) found and fixed four operational defects: `submit` treated an unavailable reviewer pane as fatal after committing state (now best-effort, AC11); a deleted review snapshot permanently bricked `submit`/`start` (now recreated via stale-registry pruning, AC12); stale validation/decision pointers misled `status` after a resubmit (now invalidated, AC13); and `status` performed no integrity verification (now fail-closed, AC14). A follow-up hardening pass removes `Shell(sed *)` from the generated Cursor policy (in-place writes were a deny-list gap), preserves prior validation reports under `validation-<sha>.rN.md` instead of overwriting them, and cleans stale Gemini marker temporaries left by killed first launches. The
+`gemini-cursor` profile was retired on 2026-08-13 (provider endpoint
+unreachable) and replaced by `agy-cursor` (Antigravity CLI 1.1.7), whose
+adapter declares no creation-time session contract and never passes
+`--continue` or `--dangerously-skip-permissions`. A `list` command (AC15), a condensed preflight failure path that hides the tmuxp traceback, and a documented decision-order constraint (a writer that commits before a decision forfeits a decision on the reviewed checkpoint) complete the walkthrough backlog. The Cursor gate smoke found and fixed two policy drifts: the generated `.cursor/cli.json` used keys the real CLI rejects (now a minimal `permissions` schema), and the allow list is not deny-by-default, so high-frequency write channels (`echo`/`printf`/`tee`/`cp`/`mv`/`bash`/`sh`/`zsh`/`python3`/`curl`/`wget`) were added to the deny list; the re-run confirmed writes are blocked. The same-UID threat model above is a documented limitation, not a certified boundary.
 Risk: provider CLI flags, policy semantics, trust behavior, or session storage can
 change without an Arena source change. Additional risks are overclaiming a CLI
 permission layer as OS/network isolation and resuming an unrelated conversation.
@@ -165,7 +175,7 @@ live-model certification.
 | Pi | Existing adapter contract: worktree plus private session directory and stable session ID. | Hermetic session/relay/writer-dispatch regression passed; live provider smoke remains open. |
 | Codex 0.146.0 | Interactive `-C`, `--sandbox workspace-write`, `--ask-for-approval on-request`, and `--no-alt-screen` are available. Creation-time session naming/directory is not. | Fake-CLI argument/cwd and no-automatic-resume coverage passed; **live smoke passed 2026-08-13** (`codex exec -C <worktree> --sandbox workspace-write`: created the requested file with exact content, `git status` showed only that file; `--ask-for-approval` is interactive-only and absent from `exec`). Codex is not a formal gate: read-only mode cannot write Arena records and workspace-write violates the immutable snapshot boundary. |
 | OpenCode 1.18.11 | `--pure`, writer agent selection, project/external-skill disablement, and session-related commands are available; `--auto` is dangerous. No CLI OS sandbox was found. | Generated writer policy parse and fake-CLI launch contract passed; **live smoke passed 2026-08-13** (`opencode run --pure --agent arena_writer` with the generated policy environment: edit allowed, file created with exact content, workspace otherwise untouched; webfetch/websearch deny not exercised because the model did not attempt network). Do not equate policy permissions with network isolation. |
-| Gemini 0.46.0 | `--approval-mode`, `--session-id`, `--resume`, `--extensions`, `--allowed-mcp-server-names`, and `--prompt-interactive` are available; there is no `--cwd`/`--workspace`. `--worktree` is experimental. | Fake initial/resume lifecycle and failed-initial-marker handling passed; **live smoke blocked 2026-08-13 by provider endpoint unavailability** (custom `GOOGLE_GEMINI_BASE_URL` endpoint unreachable: `fetch failed sending request`), not by the adapter. Two drift notes: `--approval-mode=auto_edit` is silently downgraded to `default` in untrusted folders, and headless runs require `--skip-trust` where the interactive flow uses a human trust prompt. Retry when the endpoint is reachable. |
+| Agy 1.1.7 | `--prompt-interactive`/`-i`, `--print`/`-p`, `--sandbox`, `--mode accept-edits`, `--conversation`, `--continue`, and `--dangerously-skip-permissions` are available; there is no creation-time session ID and no `--cwd` (the adapter `cd`s first). `--new-project` binds the session to the current directory. | Fake-CLI launch/pane dispatch coverage passed; **live writer smoke passed 2026-08-13** (headless `-p --sandbox` replied correctly; interactive trust prompt confirmed; the adapter never passes `--continue` or `--dangerously-skip-permissions`). |
 
 For formal review, validation, and decision, Cursor's generated local gate policy
 and detached snapshot integrity checks remain mandatory. A provider writer's own

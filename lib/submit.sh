@@ -121,7 +121,7 @@ refresh_live_session_environment() {
     export ARENA_PI_BIN="${ARENA_PI_BIN:-pi}"
     export ARENA_CODEX_BIN="${ARENA_CODEX_BIN:-codex}"
     export ARENA_OPENCODE_BIN="${ARENA_OPENCODE_BIN:-opencode}"
-    export ARENA_GEMINI_BIN="${ARENA_GEMINI_BIN:-gemini}"
+    export ARENA_AGY_BIN="${ARENA_AGY_BIN:-agy}"
     export ARENA_CURSOR_BIN="${ARENA_CURSOR_BIN:-agent}"
     arena_make_private_dir "$ARENA_WRITER_SESSION_DIR"
 
@@ -130,7 +130,7 @@ refresh_live_session_environment() {
         ARENA_STATE_ROOT ARENA_WRITER_WORKTREE ARENA_WRITER_SESSION_DIR \
         ARENA_REVIEW_WORKTREE ARENA_SESSION_NAME ARENA_PROFILE \
         ARENA_WRITER_ADAPTER ARENA_WRITER_LABEL ARENA_TEST_MODE ARENA_PI_BIN \
-        ARENA_CODEX_BIN ARENA_OPENCODE_BIN ARENA_GEMINI_BIN ARENA_CURSOR_BIN; do
+        ARENA_CODEX_BIN ARENA_OPENCODE_BIN ARENA_AGY_BIN ARENA_CURSOR_BIN; do
         environment_value="${!environment_name}"
         tmux set-environment -t "=${ARENA_MANIFEST_SESSION_NAME}" \
             "$environment_name" "$environment_value"

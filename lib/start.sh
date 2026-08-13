@@ -14,7 +14,7 @@ Create or resume one isolated writer + Cursor gate run.
 Options:
   --run-id ID             Alternative to the positional RUN_ID
   --repo PATH             Integration Git worktree (default: current directory)
-  --profile NAME          pi-cursor, codex-cursor, opencode-cursor, or gemini-cursor
+  --profile NAME          pi-cursor, codex-cursor, opencode-cursor, or agy-cursor
                            (default: pi-cursor)
   --state-root PATH       Private run-state root override
   --worktree-root PATH    Private worktree root override
@@ -198,7 +198,7 @@ export ARENA_TEST_MODE="${ARENA_TEST_MODE:-0}"
 export ARENA_PI_BIN="${ARENA_PI_BIN:-pi}"
 export ARENA_CODEX_BIN="${ARENA_CODEX_BIN:-codex}"
 export ARENA_OPENCODE_BIN="${ARENA_OPENCODE_BIN:-opencode}"
-export ARENA_GEMINI_BIN="${ARENA_GEMINI_BIN:-gemini}"
+export ARENA_AGY_BIN="${ARENA_AGY_BIN:-agy}"
 export ARENA_CURSOR_BIN="${ARENA_CURSOR_BIN:-agent}"
 
 arena_update_live_session_environment() {
@@ -210,7 +210,7 @@ arena_update_live_session_environment() {
         ARENA_STATE_ROOT ARENA_WRITER_WORKTREE ARENA_WRITER_SESSION_DIR \
         ARENA_REVIEW_WORKTREE ARENA_SESSION_NAME ARENA_LOG_PANES ARENA_PROFILE \
         ARENA_WRITER_ADAPTER ARENA_WRITER_LABEL ARENA_TEST_MODE ARENA_PI_BIN \
-        ARENA_CODEX_BIN ARENA_OPENCODE_BIN ARENA_GEMINI_BIN ARENA_CURSOR_BIN; do
+        ARENA_CODEX_BIN ARENA_OPENCODE_BIN ARENA_AGY_BIN ARENA_CURSOR_BIN; do
         environment_value="${!environment_name}"
         tmux set-environment -t "=${session_name}" "$environment_name" "$environment_value"
     done

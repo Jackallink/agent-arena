@@ -34,12 +34,11 @@ require_help_text 'Codex approval' "${ARENA_CODEX_BIN:-codex}" '--ask-for-approv
 require_help_text 'Codex terminal mode' "${ARENA_CODEX_BIN:-codex}" '--no-alt-screen'
 require_help_text 'OpenCode pure mode' "${ARENA_OPENCODE_BIN:-opencode}" '--pure'
 require_help_text 'OpenCode agent mode' "${ARENA_OPENCODE_BIN:-opencode}" '--agent'
-require_help_text 'Gemini approval mode' "${ARENA_GEMINI_BIN:-gemini}" '--approval-mode'
-require_help_text 'Gemini session id' "${ARENA_GEMINI_BIN:-gemini}" '--session-id'
-require_help_text 'Gemini resume' "${ARENA_GEMINI_BIN:-gemini}" '--resume'
-require_help_text 'Gemini extensions' "${ARENA_GEMINI_BIN:-gemini}" '--extensions'
-require_help_text 'Gemini MCP allowlist' "${ARENA_GEMINI_BIN:-gemini}" '--allowed-mcp-server-names'
-require_help_text 'Gemini interactive prompt' "${ARENA_GEMINI_BIN:-gemini}" '--prompt-interactive'
+require_help_text 'Agy interactive prompt' "${ARENA_AGY_BIN:-agy}" '--prompt-interactive'
+require_help_text 'Agy print mode' "${ARENA_AGY_BIN:-agy}" '--print'
+require_help_text 'Agy sandbox' "${ARENA_AGY_BIN:-agy}" '--sandbox'
+require_help_text 'Agy edit mode' "${ARENA_AGY_BIN:-agy}" 'accept-edits'
+require_help_text 'Agy conversation' "${ARENA_AGY_BIN:-agy}" '--conversation'
 
 if command -v "${ARENA_OPENCODE_BIN:-opencode}" >/dev/null 2>&1; then
     opencode_policy='{"$schema":"https://opencode.ai/config.json","agent":{"arena_writer":{"description":"Agent Arena isolated writer","mode":"primary","permission":{"*":"deny","read":"allow","glob":"allow","grep":"allow","bash":"allow","edit":"allow","webfetch":"deny","websearch":"deny","task":"deny","question":"deny","external_directory":"deny"}}}}'
@@ -57,7 +56,7 @@ if command -v "${ARENA_OPENCODE_BIN:-opencode}" >/dev/null 2>&1; then
     printf '%s\n' 'ok: OpenCode generated writer policy'
 fi
 
-for adapter in pi codex opencode gemini; do
+for adapter in pi codex opencode agy; do
     capabilities="$("${source_root}/adapters/${adapter}.sh" capabilities)"
     grep -Fqx 'writer=true' <<<"$capabilities" || {
         printf '%s\n' "${adapter}: adapter does not declare writer=true" >&2

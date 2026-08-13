@@ -26,19 +26,19 @@ arena_profile_resolve() {
             ARENA_PROFILE_WRITER_ADAPTER='opencode'
             ARENA_PROFILE_WRITER_LABEL='OpenCode'
             ;;
-        gemini-cursor)
-            ARENA_PROFILE_NAME='gemini-cursor'
-            ARENA_PROFILE_WRITER_ADAPTER='gemini'
-            ARENA_PROFILE_WRITER_LABEL='Gemini'
+        agy-cursor)
+            ARENA_PROFILE_NAME='agy-cursor'
+            ARENA_PROFILE_WRITER_ADAPTER='agy'
+            ARENA_PROFILE_WRITER_LABEL='Agy'
             ;;
         *)
-            arena_die "unknown profile '$profile'; choose pi-cursor, codex-cursor, opencode-cursor, or gemini-cursor"
+            arena_die "unknown profile '$profile'; choose pi-cursor, codex-cursor, opencode-cursor, or agy-cursor"
             ;;
     esac
 }
 
 arena_profile_list() {
-    printf '%s\n' pi-cursor codex-cursor opencode-cursor gemini-cursor
+    printf '%s\n' pi-cursor codex-cursor opencode-cursor agy-cursor
 }
 
 arena_profile_branch() {
@@ -46,7 +46,7 @@ arena_profile_branch() {
     local run_id="$2"
 
     case "$writer_adapter" in
-        pi|codex|opencode|gemini) printf 'agent-arena/%s/%s' "$writer_adapter" "$run_id" ;;
+        pi|codex|opencode|agy) printf 'agent-arena/%s/%s' "$writer_adapter" "$run_id" ;;
         *) arena_die "unknown writer adapter '$writer_adapter'" ;;
     esac
 }

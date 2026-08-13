@@ -53,6 +53,7 @@ assert_no_dangerous_writer_flags() {
         --add-dir \
         --worktree \
         --skip-trust \
+        --continue \
         --dangerously-skip-permissions \
         --dangerously-bypass-approvals-and-sandbox; do
         require_no_match "arg=${flag}" "$file"
@@ -76,7 +77,7 @@ fake_agent_log="${tmp_root}/agent.log"
 fake_pi_log="${tmp_root}/pi.log"
 fake_codex_log="${tmp_root}/codex.log"
 fake_opencode_log="${tmp_root}/opencode.log"
-fake_gemini_log="${tmp_root}/gemini.log"
+fake_agy_log="${tmp_root}/agy.log"
 cat >"${fake_bin}/pi" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -128,7 +129,7 @@ set -euo pipefail
     printf '%s\n' '--'
 } >>"${FAKE_OPENCODE_LOG:?}"
 EOF
-cat >"${fake_bin}/gemini" <<'EOF'
+cat >"${fake_bin}/agy" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 {
@@ -140,8 +141,8 @@ set -euo pipefail
         printf 'arg=%q\n' "$argument"
     done
     printf '%s\n' '--'
-} >>"${FAKE_GEMINI_LOG:?}"
-exit "${FAKE_GEMINI_EXIT:-0}"
+} >>"${FAKE_AGY_LOG:?}"
+exit "${FAKE_AGY_EXIT:-0}"
 EOF
 cat >"${fake_bin}/tmuxp" <<'EOF'
 #!/usr/bin/env bash
@@ -235,7 +236,7 @@ run_arena() {
         FAKE_PI_LOG="$fake_pi_log" \
         FAKE_CODEX_LOG="$fake_codex_log" \
         FAKE_OPENCODE_LOG="$fake_opencode_log" \
-        FAKE_GEMINI_LOG="$fake_gemini_log" \
+        FAKE_AGY_LOG="$fake_agy_log" \
         FAKE_GEMINI_EXIT="${FAKE_GEMINI_EXIT:-0}" \
         ARENA_STATE_ROOT="$state_base" \
         ARENA_WORKTREE_ROOT="$worktree_base" \
@@ -248,7 +249,7 @@ require_match 'cursor' "${tmp_root}/doctor.out"
 require_match 'profile:pi-cursor' "${tmp_root}/doctor.out"
 require_match 'profile:codex-cursor' "${tmp_root}/doctor.out"
 require_match 'profile:opencode-cursor' "${tmp_root}/doctor.out"
-require_match 'profile:gemini-cursor' "${tmp_root}/doctor.out"
+require_match 'profile:agy-cursor' "${tmp_root}/doctor.out"
 
 printf '%s\n' '2. init'
 run_arena init --repo "$project"
@@ -549,9 +550,9 @@ start_with_missing_writer() {
     )
 }
 
-missing_profiles=(pi-cursor codex-cursor opencode-cursor gemini-cursor)
-missing_variables=(ARENA_PI_BIN ARENA_CODEX_BIN ARENA_OPENCODE_BIN ARENA_GEMINI_BIN)
-missing_run_ids=(profile-missing-pi profile-missing-codex profile-missing-opencode profile-missing-gemini)
+missing_profiles=(pi-cursor codex-cursor opencode-cursor agy-cursor)
+missing_variables=(ARENA_PI_BIN ARENA_CODEX_BIN ARENA_OPENCODE_BIN ARENA_AGY_BIN)
+missing_run_ids=(profile-missing-pi profile-missing-codex profile-missing-opencode profile-missing-agy)
 for profile_index in "${!missing_profiles[@]}"; do
     expect_failure start_with_missing_writer "${missing_profiles[$profile_index]}" \
         "${missing_variables[$profile_index]}" "${missing_run_ids[$profile_index]}"
@@ -561,10 +562,10 @@ done
     fail 'invalid or missing selected writer started tmuxp'
 
 printf '%s\n' '17. profile manifest selection, branch, and closed mapping'
-profile_names=(codex-cursor opencode-cursor gemini-cursor)
-profile_adapters=(codex opencode gemini)
-profile_labels=(Codex OpenCode Gemini)
-profile_run_ids=(profile-codex profile-opencode profile-gemini)
+profile_names=(codex-cursor opencode-cursor agy-cursor)
+profile_adapters=(codex opencode agy)
+profile_labels=(Codex OpenCode Agy)
+profile_run_ids=(profile-codex profile-opencode profile-agy)
 for profile_index in "${!profile_names[@]}"; do
     profile_name="${profile_names[$profile_index]}"
     writer_adapter="${profile_adapters[$profile_index]}"
@@ -602,16 +603,16 @@ for profile_index in "${!profile_names[@]}"; do
             opencode_writer="$profile_writer"
             opencode_session_dir="$profile_session_dir"
             ;;
-        gemini)
-            gemini_run_dir="$profile_run_dir"
-            gemini_manifest="$profile_manifest"
-            gemini_writer="$profile_writer"
-            gemini_session_dir="$profile_session_dir"
+        agy)
+            agy_run_dir="$profile_run_dir"
+            agy_manifest="$profile_manifest"
+            agy_writer="$profile_writer"
+            agy_session_dir="$profile_session_dir"
             ;;
     esac
 done
 
-expect_failure run_arena start profile-codex --repo "$project" --profile gemini-cursor --no-attach
+expect_failure run_arena start profile-codex --repo "$project" --profile agy-cursor --no-attach
 manifest_backup="${tmp_root}/profile-codex.manifest.tsv"
 cp "$codex_manifest" "$manifest_backup"
 manifest_replacement="$(mktemp "${codex_run_dir}/.manifest-test.XXXXXX")"
@@ -697,11 +698,11 @@ run_writer_adapter() {
         FAKE_PI_LOG="$fake_pi_log" \
         FAKE_CODEX_LOG="$fake_codex_log" \
         FAKE_OPENCODE_LOG="$fake_opencode_log" \
-        FAKE_GEMINI_LOG="$fake_gemini_log" \
+        FAKE_AGY_LOG="$fake_agy_log" \
         ARENA_PI_BIN=pi \
         ARENA_CODEX_BIN=codex \
         ARENA_OPENCODE_BIN=opencode \
-        ARENA_GEMINI_BIN=gemini \
+        ARENA_AGY_BIN=agy \
         ARENA_REPOSITORY="$project" \
         ARENA_RUN_ID="$run_id" \
         ARENA_RUN_DIR="$run_dir" \
@@ -780,80 +781,32 @@ assert_no_dangerous_writer_flags "$fake_opencode_log"
 "${source_root}/adapters/opencode.sh" capabilities >"${tmp_root}/opencode.capabilities"
 require_match 'automatic_resume=false' "${tmp_root}/opencode.capabilities"
 
-: >"$fake_gemini_log"
-run_writer_adapter gemini gemini-cursor Gemini "$gemini_writer" "$gemini_session_dir" \
-    "$gemini_run_dir" profile-gemini
-gemini_initial_log="${tmp_root}/gemini-initial.log"
-cp "$fake_gemini_log" "$gemini_initial_log"
-gemini_session_id="$(<"${gemini_session_dir}/gemini.session-id")"
-[[ "$gemini_session_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || \
-    fail 'Gemini initial launch did not persist a valid UUID session marker'
-require_match "cwd=${gemini_writer}" "$gemini_initial_log"
-require_match 'profile=gemini-cursor' "$gemini_initial_log"
-require_match 'writer_adapter=gemini' "$gemini_initial_log"
-require_match "writer_session_dir=${gemini_session_dir}" "$gemini_initial_log"
-require_match 'arg=--extensions' "$gemini_initial_log"
-require_match 'arg=none' "$gemini_initial_log"
-require_match 'arg=--allowed-mcp-server-names' "$gemini_initial_log"
-require_match 'arg=--approval-mode=auto_edit' "$gemini_initial_log"
-require_match 'arg=--session-id' "$gemini_initial_log"
-require_match "arg=${gemini_session_id}" "$gemini_initial_log"
-require_match 'arg=--prompt-interactive' "$gemini_initial_log"
-require_match 'submit' "$gemini_initial_log"
-require_match 'relay' "$gemini_initial_log"
-require_no_match 'arg=--resume' "$gemini_initial_log"
-require_no_match 'arg=--sandbox' "$gemini_initial_log"
-assert_no_dangerous_writer_flags "$gemini_initial_log"
-gemini_session_marker="${gemini_session_dir}/gemini.session-id"
-[[ -f "$gemini_session_marker" ]] || fail 'Gemini initial launch did not persist a private session marker'
-require_match "$gemini_session_id" "$gemini_session_marker"
+: >"$fake_agy_log"
+run_writer_adapter agy agy-cursor Agy "$agy_writer" "$agy_session_dir" \
+    "$agy_run_dir" profile-agy
+agy_initial_log="${tmp_root}/agy-initial.log"
+cp "$fake_agy_log" "$agy_initial_log"
+require_match "cwd=${agy_writer}" "$agy_initial_log"
+require_match 'profile=agy-cursor' "$agy_initial_log"
+require_match 'writer_adapter=agy' "$agy_initial_log"
+require_match "writer_session_dir=${agy_session_dir}" "$agy_initial_log"
+require_match 'arg=--prompt-interactive' "$agy_initial_log"
+require_match 'arg=--new-project' "$agy_initial_log"
+require_match 'arg=--sandbox' "$agy_initial_log"
+require_match 'arg=--mode' "$agy_initial_log"
+require_match 'arg=accept-edits' "$agy_initial_log"
+require_match 'submit' "$agy_initial_log"
+require_match 'relay' "$agy_initial_log"
+require_no_match 'arg=--continue' "$agy_initial_log"
+require_no_match 'arg=--conversation' "$agy_initial_log"
+require_no_match 'arg=--dangerously-skip-permissions' "$agy_initial_log"
+assert_no_dangerous_writer_flags "$agy_initial_log"
+"${source_root}/adapters/agy.sh" capabilities >"${tmp_root}/agy.capabilities"
+require_match 'explicit_session_id=false' "${tmp_root}/agy.capabilities"
+require_match 'session_dir=false' "${tmp_root}/agy.capabilities"
+require_match 'automatic_resume=false' "${tmp_root}/agy.capabilities"
 
-: >"$fake_gemini_log"
-run_writer_adapter gemini gemini-cursor Gemini "$gemini_writer" "$gemini_session_dir" \
-    "$gemini_run_dir" profile-gemini
-require_match 'arg=--resume' "$fake_gemini_log"
-require_match "arg=${gemini_session_id}" "$fake_gemini_log"
-require_no_match 'arg=--session-id' "$fake_gemini_log"
-require_no_match 'arg=--sandbox' "$fake_gemini_log"
-assert_no_dangerous_writer_flags "$fake_gemini_log"
-
-printf '%s\n' '22. dotted run IDs retain a valid Gemini resume marker'
-gemini_dotted_session_dir="${gemini_session_dir}-dotted-run"
-mkdir -p "$gemini_dotted_session_dir"
-chmod 700 "$gemini_dotted_session_dir"
-: >"$fake_gemini_log"
-run_writer_adapter gemini gemini-cursor Gemini "$gemini_writer" "$gemini_dotted_session_dir" \
-    "$gemini_run_dir" profile.gemini
-dotted_gemini_session_id="$(<"${gemini_dotted_session_dir}/gemini.session-id")"
-[[ "$dotted_gemini_session_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] || \
-    fail 'dotted run ID did not receive a valid Gemini UUID session marker'
-[[ "$dotted_gemini_session_id" != "$gemini_session_id" ]] || \
-    fail 'Gemini session IDs crossed writer runs'
-: >"$fake_gemini_log"
-run_writer_adapter gemini gemini-cursor Gemini "$gemini_writer" "$gemini_dotted_session_dir" \
-    "$gemini_run_dir" profile.gemini
-require_match 'arg=--resume' "$fake_gemini_log"
-require_match "arg=${dotted_gemini_session_id}" "$fake_gemini_log"
-
-printf '%s\n' '23. failed Gemini first launch does not publish a resume marker'
-gemini_failed_session_dir="${gemini_session_dir}-failed-first"
-mkdir -p "$gemini_failed_session_dir"
-chmod 700 "$gemini_failed_session_dir"
-printf '%s\n' stale >"${gemini_failed_session_dir}/.gemini-session-id.stale"
-: >"$fake_gemini_log"
-if FAKE_GEMINI_EXIT=7 run_writer_adapter gemini gemini-cursor Gemini "$gemini_writer" \
-    "$gemini_failed_session_dir" "$gemini_run_dir" profile-gemini-failed; then
-    fail 'failed Gemini first launch unexpectedly succeeded'
-fi
-[[ ! -e "${gemini_failed_session_dir}/gemini.session-id" ]] || \
-    fail 'failed Gemini first launch published a resume marker'
-if find "$gemini_failed_session_dir" -maxdepth 1 -name '.gemini-session-id.*' -print -quit | grep -q .; then
-    fail 'stale Gemini marker temporaries were not cleaned'
-fi
-require_match 'arg=--session-id' "$fake_gemini_log"
-require_no_match 'arg=--resume' "$fake_gemini_log"
-
-printf '%s\n' '24. writer pane dispatches the manifest-selected adapter'
+printf '%s\n' '22. writer pane dispatches the manifest-selected adapter'
 : >"$fake_codex_log"
 PATH="${fake_bin}:${PATH}" \
     FAKE_CODEX_LOG="$fake_codex_log" \
@@ -874,11 +827,11 @@ PATH="${fake_bin}:${PATH}" \
 require_match 'writer_adapter=codex' "$fake_codex_log"
 require_match 'arg=--sandbox' "$fake_codex_log"
 
-printf '%s\n' '25. local package and protected install'
+printf '%s\n' '23. local package and protected install'
 bash "${source_root}/packaging/test.sh" >"${tmp_root}/package.out"
 require_match 'package test: ok' "${tmp_root}/package.out"
 
-printf '%s\n' '26. submit records a checkpoint when the reviewer pane is unavailable'
+printf '%s\n' '24. submit records a checkpoint when the reviewer pane is unavailable'
 run_arena start run-pane-dead --repo "$project" --no-attach >/dev/null
 pane_dead_run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f \
     -name manifest.tsv -path '*/run-pane-dead/manifest.tsv' -exec dirname {} \;)"
@@ -900,7 +853,7 @@ require_no_match 'respawn-pane' "$fake_tmux_log"
 export FAKE_TMUX_PANES=normal
 export FAKE_TMUX_MODE=offline
 
-printf '%s\n' '27. submit recreates a lost review snapshot'
+printf '%s\n' '25. submit recreates a lost review snapshot'
 pane_dead_review="$(manifest_value "${pane_dead_run_dir}/review.tsv" review_worktree)"
 rm -rf "$pane_dead_review"
 if ! run_arena submit run-pane-dead >"${tmp_root}/pane-dead-resubmit.out"; then
@@ -913,7 +866,7 @@ fi
 [[ "$(manifest_value "${pane_dead_run_dir}/review.tsv" cursor_policy_hash)" =~ ^[0-9a-f]{64}$ ]] || \
     fail 'recreated review manifest lacks fresh policy hashes'
 
-printf '%s\n' '28. submitting a new checkpoint invalidates stale validation and decision pointers'
+printf '%s\n' '26. submitting a new checkpoint invalidates stale validation and decision pointers'
 run_arena validate run-pane-dead >"${tmp_root}/pane-dead-validate.out" 2>/dev/null
 run_arena decision run-pane-dead --verdict APPROVE --summary 'approved' \
     --next 'continue' --no-relay >/dev/null
@@ -934,7 +887,7 @@ run_arena submit run-pane-dead >/dev/null
 [[ -f "${pane_dead_run_dir}/decision-${pane_dead_short}.md" ]] || \
     fail 'submit removed the previous decision archive'
 
-printf '%s\n' '29. status verifies snapshot integrity and binds reports to the current checkpoint'
+printf '%s\n' '27. status verifies snapshot integrity and binds reports to the current checkpoint'
 run_arena status run-pane-dead >"${tmp_root}/pane-dead-status.out"
 require_match 'Integrity: OK' "${tmp_root}/pane-dead-status.out"
 require_match 'Validation: not run' "${tmp_root}/pane-dead-status.out"
@@ -951,7 +904,7 @@ chmod 600 "${pane_dead_run_dir}/validation.md"
 run_arena status run-pane-dead >"${tmp_root}/pane-dead-bound-status.out"
 require_match 'Validation: not run for current checkpoint' "${tmp_root}/pane-dead-bound-status.out"
 
-printf '%s\n' '30. start surfaces preflight errors instead of a tmuxp traceback'
+printf '%s\n' '28. start surfaces preflight errors instead of a tmuxp traceback'
 export FAKE_TMUXP_EXIT=1
 export FAKE_TMUXP_OUTPUT=$'Traceback (most recent call last):\nError output:\nagent-arena: preflight boom'
 if run_arena start run-tmuxp-fail --repo "$project" --no-attach >"${tmp_root}/tmuxp-fail.out" 2>&1; then
@@ -961,7 +914,7 @@ require_match 'agent-arena: preflight boom' "${tmp_root}/tmuxp-fail.out"
 require_no_match 'Traceback' "${tmp_root}/tmuxp-fail.out"
 unset FAKE_TMUXP_EXIT FAKE_TMUXP_OUTPUT
 
-printf '%s\n' '31. list reports runs with derived state'
+printf '%s\n' '29. list reports runs with derived state'
 run_arena list >"${tmp_root}/list.out"
 require_match 'run-one' "${tmp_root}/list.out"
 require_match 'run-pane-dead' "${tmp_root}/list.out"

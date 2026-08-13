@@ -6,7 +6,7 @@ panes; Git worktrees isolate the handoff; `tmux` relays short messages directly
 between the agents.
 
 Every v0.2 profile pairs one writer with **Cursor Agent**, which is the only
-formal review, validation, and decision gate. Pi, Codex, OpenCode, and Gemini
+formal review, validation, and decision gate. Pi, Codex, OpenCode, and Agy
 are writers only. A direct relay is useful feedback, but the SHA-bound Cursor
 validation report and decision record remain the audit truth.
 
@@ -41,7 +41,7 @@ From a clean Git project:
 /Users/jakeliu/Workspace/agent-arena/bin/agent-arena start tui-sink --repo . --profile pi-cursor
 ```
 
-Replace `pi-cursor` with `codex-cursor`, `opencode-cursor`, or `gemini-cursor`
+Replace `pi-cursor` with `codex-cursor`, `opencode-cursor`, or `agy-cursor`
 after its local prerequisites pass `doctor`.
 `start` refuses a dirty integration worktree and creates one writable writer
 worktree. The writer commits a checkpoint and runs `agent-arena submit RUN_ID`.
@@ -55,7 +55,7 @@ gate, writes a SHA-bound decision, and relays the next step to the writer.
 | `pi-cursor` | Pi runs in Arena's writer worktree with an Arena session directory and stable session ID. | It receives no merge, push, reset, or permission-bypass instruction. Resume behavior must remain covered by adapter tests. |
 | `codex-cursor` | Codex is targeted at the writer worktree with `workspace-write` sandboxing and on-request approval. | Codex can resume a known session, but does not expose creation-time naming or a session directory; Arena must not promise automatic resume. No `--search`, `--add-dir`, or dangerous bypass flag. |
 | `opencode-cursor` | OpenCode starts in the Arena writer worktree with a dedicated writer-agent policy; project configuration and external skills are disabled where supported. | Never use `--auto`. Its CLI exposes session commands but no documented Arena-owned session creation/directory contract, so automatic resume remains unverified. Its permissions are not an OS or network sandbox. |
-| `gemini-cursor` | Gemini must start after `cd` into the writer worktree, with extensions/MCP access restricted and `auto_edit` approval for writer edits. | A session can resume only after its initial process exits successfully and Arena records its UUID; interruption does not promise auto-resume. Never use `--worktree`, `--yolo`, or automatic `--skip-trust`. Its built-in sandbox is not a no-network guarantee. |
+| `agy-cursor` | Agy (Antigravity CLI) starts after `cd` into the writer worktree with `--prompt-interactive`, `--new-project`, `--sandbox`, and `--mode accept-edits`; the human confirms the interactive trust prompt. | Agy exposes no creation-time session ID or session directory, and its CLI sessions bind to a project workspace, so Arena never promises automatic resume. Never use `--continue`, `--conversation`, or `--dangerously-skip-permissions`. Its terminal-restrictions sandbox is not a no-network guarantee. |
 
 All writer prompts prohibit editing the integration worktree, merging, pushing,
 resetting, and dangerous permission bypasses. Git worktrees separate code
@@ -101,7 +101,7 @@ gate. Keep those paths untracked for an Arena run, or use a future adapter that
 supports a verified policy merge. Before relying on the gate, complete the manual
 authenticated Cursor smoke recorded in the implementation plan.
 
-Codex, OpenCode, and Gemini must not be substituted for Cursor in this gate.
+Codex, OpenCode, and Agy must not be substituted for Cursor in this gate.
 Their advisory review capabilities do not establish permission to modify Arena
 reports or make a formal decision from an immutable snapshot.
 
