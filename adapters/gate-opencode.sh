@@ -7,7 +7,9 @@ case "${1:-}" in
     capabilities)
         printf '%s\n' 'policy_path=opencode.json' 'wrapper_path=.agent-arena-gate'
         ;;
-    launch) exit 0 ;;
+    launch)
+        printf '%s\n' "gate-launch $*" >>"${FAKE_GATE_LOG:-/dev/null}"
+        ;;
     policy)
         printf 'policy\topencode.json\t%s\n' \
             '2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881'

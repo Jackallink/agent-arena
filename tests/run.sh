@@ -78,6 +78,7 @@ fake_pi_log="${tmp_root}/pi.log"
 fake_codex_log="${tmp_root}/codex.log"
 fake_opencode_log="${tmp_root}/opencode.log"
 fake_agy_log="${tmp_root}/agy.log"
+fake_gate_log="${tmp_root}/gate.log"
 cat >"${fake_bin}/pi" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -363,8 +364,8 @@ printf '%s\n' '6. Cursor reviewer command contract'
 PATH="${fake_bin}:${PATH}" \
     FAKE_AGENT_LOG="$fake_agent_log" \
     ARENA_CURSOR_BIN=agent \
-    ARENA_CURSOR_WORKSPACE="$review_worktree" \
-    ARENA_CURSOR_PHASE=review \
+    ARENA_GATE_WORKSPACE="$review_worktree" \
+    ARENA_GATE_PHASE=review \
     ARENA_RUN_ID=run-one \
     ARENA_RUN_DIR="$run_dir" \
     ARENA_COMMAND="$arena" \
@@ -379,13 +380,27 @@ fi
 PATH="${fake_bin}:${PATH}" \
     FAKE_AGENT_LOG="$fake_agent_log" \
     ARENA_CURSOR_BIN=agent \
-    ARENA_CURSOR_WORKSPACE="$writer_worktree" \
-    ARENA_CURSOR_PHASE=intake \
+    ARENA_GATE_WORKSPACE="$writer_worktree" \
+    ARENA_GATE_PHASE=intake \
     ARENA_RUN_ID=run-one \
     ARENA_RUN_DIR="$run_dir" \
     ARENA_COMMAND="$arena" \
     "${source_root}/adapters/cursor.sh" launch
 require_match "--workspace ${writer_worktree} --mode plan" "$fake_agent_log"
+: >"$fake_agent_log"
+PATH="${fake_bin}:${PATH}" \
+    FAKE_AGENT_LOG="$fake_agent_log" \
+    ARENA_CURSOR_BIN=agent \
+    ARENA_CURSOR_WORKSPACE="$review_worktree" \
+    ARENA_CURSOR_PHASE=review \
+    ARENA_RUN_ID=run-one \
+    ARENA_RUN_DIR="$run_dir" \
+    ARENA_COMMAND="$arena" \
+    "${source_root}/adapters/cursor.sh" launch
+require_match "--sandbox enabled --workspace ${review_worktree}" "$fake_agent_log"
+if grep -Fq -- '--mode plan' "$fake_agent_log"; then
+    fail 'legacy Cursor reviewer env unexpectedly uses read-only plan mode'
+fi
 
 printf '%s\n' '7. validation binding and dirty snapshot rejection'
 run_arena validate run-one >"${tmp_root}/validation.out"
@@ -985,5 +1000,25 @@ ocg_manifest="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name 
 [[ "$(manifest_value "$ocg_manifest" profile)" == 'pi-opencode' ]] || \
     fail 'pi-opencode did not record the combined profile'
 expect_failure run_arena start run-opencode-gate --repo "$project" --profile pi-opencode --gate cursor --no-attach
+
+printf '%s\n' '31. reviewer pane dispatches the manifest gate adapter'
+: >"$fake_gate_log"
+PATH="${fake_bin}:${PATH}" \
+    FAKE_GATE_LOG="$fake_gate_log" \
+    ARENA_REPOSITORY="$project" \
+    ARENA_RUN_ID=run-opencode-gate \
+    ARENA_RUN_DIR="$(dirname "$ocg_manifest")" \
+    ARENA_WRITER_WORKTREE="$(manifest_value "$ocg_manifest" writer_worktree)" \
+    ARENA_WRITER_SESSION_DIR="$(manifest_value "$ocg_manifest" writer_session_dir)" \
+    ARENA_SESSION_NAME="$(manifest_value "$ocg_manifest" session_name)" \
+    ARENA_PROFILE=pi-opencode \
+    ARENA_WRITER_ADAPTER=pi \
+    ARENA_WRITER_LABEL=Pi \
+    ARENA_GATE_ADAPTER=opencode \
+    ARENA_REVIEW_WORKTREE='' \
+    ARENA_COMMAND="$arena" \
+    TMUX_PANE='' \
+    "${source_root}/lib/pane.sh" reviewer
+require_match 'gate-launch' "$fake_gate_log"
 
 printf '%s\n' 'tests: ok'

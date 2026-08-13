@@ -85,6 +85,7 @@ EOF
         ;;
     reviewer)
         set_pane_mode reviewer-agent
+        arena_read_manifest "$ARENA_RUN_DIR"
         if [[ -n "${ARENA_REVIEW_WORKTREE:-}" ]]; then
             review_worktree="$ARENA_REVIEW_WORKTREE"
             arena_assert_worktree "$review_worktree"
@@ -95,13 +96,14 @@ EOF
                 "$ARENA_REVIEW_CURSOR_POLICY_HASH" "$ARENA_REVIEW_GATE_WRAPPER_HASH" \
                 "$ARENA_REVIEW_GATE_POLICY_PATH" || \
                 arena_die 'review snapshot is not an intact submitted checkpoint'
-            export ARENA_CURSOR_WORKSPACE="$ARENA_REVIEW_WORKTREE"
-            export ARENA_CURSOR_PHASE=review
+            export ARENA_GATE_WORKSPACE="$ARENA_REVIEW_WORKTREE"
+            export ARENA_GATE_PHASE=review
         else
-            export ARENA_CURSOR_WORKSPACE="$ARENA_WRITER_WORKTREE"
-            export ARENA_CURSOR_PHASE=intake
+            export ARENA_GATE_WORKSPACE="$ARENA_WRITER_WORKTREE"
+            export ARENA_GATE_PHASE=intake
         fi
-        exec "${source_root}/adapters/cursor.sh" launch
+        arena_gate_resolve "$ARENA_MANIFEST_GATE_ADAPTER"
+        exec "${source_root}/adapters/gate-${ARENA_GATE_NAME}.sh" launch
         ;;
     validation)
         set_pane_mode validation-shell
