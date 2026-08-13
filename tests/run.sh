@@ -1021,4 +1021,26 @@ PATH="${fake_bin}:${PATH}" \
     "${source_root}/lib/pane.sh" reviewer
 require_match 'gate-launch' "$fake_gate_log"
 
+printf '%s\n' '32. submit fails before snapshot creation when the gate adapter file vanished'
+ocg_writer="$(manifest_value "$ocg_manifest" writer_worktree)"
+printf '%s\n' 'vanished gate adapter checkpoint' >"${ocg_writer}/vanished.txt"
+git -C "$ocg_writer" add vanished.txt
+git -C "$ocg_writer" commit -m 'test: checkpoint with a missing gate adapter file' >/dev/null
+mv "${source_root}/adapters/gate-opencode.sh" \
+    "${source_root}/adapters/gate-opencode.sh.missing"
+if run_arena submit run-opencode-gate >"${tmp_root}/vanished-gate.out" 2>&1; then
+    vanished_gate_status=0
+else
+    vanished_gate_status=$?
+fi
+mv "${source_root}/adapters/gate-opencode.sh.missing" \
+    "${source_root}/adapters/gate-opencode.sh"
+[[ "$vanished_gate_status" -ne 0 ]] || \
+    fail 'submit unexpectedly succeeded with the gate adapter file missing'
+require_match 'gate adapter is missing' "${tmp_root}/vanished-gate.out"
+if find "$(dirname "$ocg_writer")" -mindepth 1 -maxdepth 1 -name 'review-*' \
+    -print -quit | grep -q .; then
+    fail 'submit created a review worktree despite the missing gate adapter'
+fi
+
 printf '%s\n' 'tests: ok'

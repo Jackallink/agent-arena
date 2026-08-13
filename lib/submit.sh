@@ -77,6 +77,11 @@ if [[ -e "$review_worktree" || -L "$review_worktree" ]]; then
         "$ARENA_REVIEW_GATE_POLICY_PATH" || \
         arena_die 'existing review snapshot is not an intact submitted checkpoint'
 else
+    # The tracked-policy loop above runs arena_gate_policy_paths inside a
+    # process substitution, which swallows its missing-adapter die. Re-check
+    # here so a vanished gate adapter fails submit before any snapshot exists.
+    adapter_check="${source_root}/adapters/gate-${ARENA_MANIFEST_GATE_ADAPTER}.sh"
+    [[ -x "$adapter_check" ]] || arena_die "gate adapter is missing: $adapter_check"
     arena_make_private_dir "$(dirname "$review_worktree")"
     # A manually deleted review snapshot stays registered in the Git worktree
     # list and blocks re-creation. Prune only the stale registry entry; this
