@@ -59,8 +59,20 @@ validation report, or Cursor decision record.
 | Session handling | Fixtures distinguish first launch from valid explicit resume; unsupported automatic resume fails safely. | Passed 2026-08-13 |
 | Cursor gate | A non-Pi writer follows submit → detached snapshot → SHA-bound formal `validate` and `decision` commands; Cursor remains the designated gate by the generated policy. | Passed 2026-08-13 |
 | tmuxp / packaging | `bash tests/tmuxp-smoke.sh` and `bash packaging/package.sh --check` pass. | Passed 2026-08-13 |
-| Manual smoke | An authorized operator records authenticated provider/permission/session observations without placing credentials or transcripts in Git. | Cursor gate smoke completed 2026-08-13 (see the v0.1 plan Gate 4 evidence); Codex/OpenCode/Gemini writer live smokes remain open |
+| Manual smoke | An authorized operator records authenticated provider/permission/session observations without placing credentials or transcripts in Git. | Cursor gate smoke completed 2026-08-13 (v0.1 plan Gate 4 evidence). Codex and OpenCode writer live smokes completed 2026-08-13 (disposable worktrees, real authenticated CLIs; each created the requested file with exact content and left the workspace otherwise untouched). Gemini live smoke blocked on 2026-08-13 by provider endpoint unavailability; retry when reachable. Pi's live behavior is exercised continuously as the daily driver. |
 
 Store command output, findings, drift, and rollback notes in the private run-state
 audit location. Do not record credentials, raw provider transcripts, or secrets in
 this repository.
+
+## Writer live smoke evidence (2026-08-13)
+
+Disposable `/tmp/arena-writer-smoke/{codex,opencode,gemini}` repositories, real
+authenticated CLIs, headless mode, one minimal task each: create `smoke.txt`
+containing exactly `smoke-ok`, then report `git status --porcelain`.
+
+| Writer | Command | Result | Drift notes |
+| --- | --- | --- | --- |
+| Codex 0.146.0 | `codex exec -C <wt> --sandbox workspace-write` | exit 0; `smoke.txt` content exact; status shows only `?? smoke.txt` | `--ask-for-approval` is interactive-only (absent from `exec`); sandbox is the headless enforcement. |
+| OpenCode 1.18.11 | `opencode run --pure --agent arena_writer --dir <wt>` with generated policy env | exit 0; edit allowed; content exact; workspace otherwise untouched | webfetch/websearch deny not exercised (model attempted no network). |
+| Gemini 0.46.0 | `gemini -p ... --extensions none --allowed-mcp-server-names <sentinel> --approval-mode=auto_edit` | blocked: provider endpoint unreachable (`fetch failed sending request`; custom `GOOGLE_GEMINI_BASE_URL`) | `--approval-mode=auto_edit` silently downgrades to `default` in untrusted folders; headless needs `--skip-trust` (interactive flow uses the human trust prompt). Retry when the endpoint is reachable. |
