@@ -227,7 +227,18 @@ if tmux has-session -t "=${session_name}" 2>/dev/null; then
     exit 0
 fi
 
-tmuxp load --yes --no-progress -d -s "$session_name" "$configuration"
+tmuxp_log="$(mktemp "${TMPDIR:-/tmp}/agent-arena-tmuxp.XXXXXX")"
+if ! tmuxp load --yes --no-progress -d -s "$session_name" "$configuration" >"$tmuxp_log" 2>&1; then
+    # tmuxp wraps the preflight failure in a Python traceback; surface the
+    # Arena error (or the last output lines) instead of the raw stack.
+    arena_note 'tmuxp failed to create the session; the cause is:'
+    if ! grep -E '^agent-arena: ' "$tmuxp_log" | head -8; then
+        tail -8 "$tmuxp_log"
+    fi
+    rm -f "$tmuxp_log"
+    arena_die 'tmuxp load failed; fix the reported error and retry start'
+fi
+rm -f "$tmuxp_log"
 arena_note "run '$run_id' is ready"
 arena_note "${writer_label} writer worktree: $writer_worktree"
 arena_note "Run state and audit records: $run_dir"

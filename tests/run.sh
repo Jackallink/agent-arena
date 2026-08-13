@@ -146,7 +146,8 @@ EOF
 cat >"${fake_bin}/tmuxp" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${FAKE_TMUXP_LOG:?}"
-exit 0
+printf '%s\n' "${FAKE_TMUXP_OUTPUT:-}"
+exit "${FAKE_TMUXP_EXIT:-0}"
 EOF
 cat >"${fake_bin}/tmux" <<'EOF'
 #!/usr/bin/env bash
@@ -942,5 +943,26 @@ printf '%s\n' 'Latest validation report: validation-000000000000.md' >"${pane_de
 chmod 600 "${pane_dead_run_dir}/validation.md"
 run_arena status run-pane-dead >"${tmp_root}/pane-dead-bound-status.out"
 require_match 'Validation: not run for current checkpoint' "${tmp_root}/pane-dead-bound-status.out"
+
+printf '%s\n' '30. start surfaces preflight errors instead of a tmuxp traceback'
+export FAKE_TMUXP_EXIT=1
+export FAKE_TMUXP_OUTPUT=$'Traceback (most recent call last):\nError output:\nagent-arena: preflight boom'
+if run_arena start run-tmuxp-fail --repo "$project" --no-attach >"${tmp_root}/tmuxp-fail.out" 2>&1; then
+    fail 'start unexpectedly succeeded with a failing tmuxp'
+fi
+require_match 'agent-arena: preflight boom' "${tmp_root}/tmuxp-fail.out"
+require_no_match 'Traceback' "${tmp_root}/tmuxp-fail.out"
+unset FAKE_TMUXP_EXIT FAKE_TMUXP_OUTPUT
+
+printf '%s\n' '31. list reports runs with derived state'
+run_arena list >"${tmp_root}/list.out"
+require_match 'run-one' "${tmp_root}/list.out"
+require_match 'run-pane-dead' "${tmp_root}/list.out"
+require_match 'pi-cursor' "${tmp_root}/list.out"
+require_match 'DECIDED' "${tmp_root}/list.out"
+require_match 'SUBMITTED' "${tmp_root}/list.out"
+PATH="${fake_bin}:${PATH}" ARENA_STATE_ROOT="${tmp_root}/empty-state" \
+    "$arena" list >"${tmp_root}/list-empty.out"
+require_match 'no runs recorded' "${tmp_root}/list-empty.out"
 
 printf '%s\n' 'tests: ok'

@@ -82,6 +82,7 @@ agent-arena validate RUN_ID
 agent-arena decision RUN_ID --verdict APPROVE --summary "..." --next "..."
 agent-arena relay RUN_ID --to writer --from reviewer --message "..."
 agent-arena status RUN_ID
+agent-arena list
 ```
 
 Relay delivery is direct but best effort: tmux cannot know whether an interactive
@@ -103,6 +104,28 @@ authenticated Cursor smoke recorded in the implementation plan.
 Codex, OpenCode, and Gemini must not be substituted for Cursor in this gate.
 Their advisory review capabilities do not establish permission to modify Arena
 reports or make a formal decision from an immutable snapshot.
+
+Decisions bind to the checkpoint under review: `decision` requires the writer to
+stay exactly on the reviewed HEAD. If the writer commits a new checkpoint before
+the reviewer records a decision, the old checkpoint can no longer be decided;
+submit the new checkpoint for review instead. The recommended rhythm is writer
+waits for the decision before committing the next checkpoint.
+
+## Recovery and cleanup
+
+Agent Arena never fetches, stashes, resets, merges, pushes, or removes
+worktrees. `list` shows every recorded run and its derived state. Manual
+recovery notes:
+
+- A review snapshot deleted behind Arena's back is recreated automatically by
+the next `submit` (stale Git worktree registrations are pruned, never data).
+- Orphan worktree registrations from crashed or manually removed runs can be
+cleaned with `git worktree prune`; run state and session logs are never removed
+by Arena.
+- An orphan writer branch can be removed with `git branch -D
+agent-arena/<adapter>/<run_id>` after confirming no run manifest references it.
+- An interrupted `start` may leave a run directory without a tmux session;
+re-running `start` resumes it.
 
 See [the v0.2 writer-profile spec](docs/superpowers/specs/2026-08-13-pluggable-writer-adapters.md)
 and [implementation plan](docs/superpowers/plans/2026-08-13-pluggable-writer-adapters.md)
