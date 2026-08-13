@@ -78,7 +78,6 @@ fake_pi_log="${tmp_root}/pi.log"
 fake_codex_log="${tmp_root}/codex.log"
 fake_opencode_log="${tmp_root}/opencode.log"
 fake_agy_log="${tmp_root}/agy.log"
-fake_gate_log="${tmp_root}/gate.log"
 cat >"${fake_bin}/pi" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1002,9 +1001,9 @@ ocg_manifest="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name 
 expect_failure run_arena start run-opencode-gate --repo "$project" --profile pi-opencode --gate cursor --no-attach
 
 printf '%s\n' '31. reviewer pane dispatches the manifest gate adapter'
-: >"$fake_gate_log"
+: >"$fake_opencode_log"
 PATH="${fake_bin}:${PATH}" \
-    FAKE_GATE_LOG="$fake_gate_log" \
+    FAKE_OPENCODE_LOG="$fake_opencode_log" \
     ARENA_REPOSITORY="$project" \
     ARENA_RUN_ID=run-opencode-gate \
     ARENA_RUN_DIR="$(dirname "$ocg_manifest")" \
@@ -1019,7 +1018,16 @@ PATH="${fake_bin}:${PATH}" \
     ARENA_COMMAND="$arena" \
     TMUX_PANE='' \
     "${source_root}/lib/pane.sh" reviewer
-require_match 'gate-launch' "$fake_gate_log"
+require_match "cwd=$(manifest_value "$ocg_manifest" writer_worktree)" "$fake_opencode_log"
+require_match 'arg=--pure' "$fake_opencode_log"
+require_match 'arg=--agent' "$fake_opencode_log"
+require_match 'arg=arena_gate' "$fake_opencode_log"
+require_match 'arg=--prompt' "$fake_opencode_log"
+require_match 'advisory reviewer' "$fake_opencode_log"
+require_match 'config_content=' "$fake_opencode_log"
+require_match 'external_directory' "$fake_opencode_log"
+require_match 'disable_project_config=1' "$fake_opencode_log"
+require_match 'disable_external_skills=1' "$fake_opencode_log"
 
 printf '%s\n' '32. submit fails before snapshot creation when the gate adapter file vanished'
 ocg_writer="$(manifest_value "$ocg_manifest" writer_worktree)"
@@ -1042,5 +1050,27 @@ if find "$(dirname "$ocg_writer")" -mindepth 1 -maxdepth 1 -name 'review-*' \
     -print -quit | grep -q .; then
     fail 'submit created a review worktree despite the missing gate adapter'
 fi
+
+printf '%s\n' '33. opencode gate adapter generates a deny-first gate policy'
+ocg_review="$(awk -F $'\t' '$1 == "review_worktree" { print $2 }' "$(dirname "$ocg_manifest")/review.tsv" 2>/dev/null || true)"
+if [[ -z "$ocg_review" ]]; then
+    # build a review snapshot through the real submit path
+    ocg_writer="$(manifest_value "$ocg_manifest" writer_worktree)"
+    printf '%s\n' 'gate checkpoint' >"${ocg_writer}/gate-checkpoint.txt"
+    git -C "$ocg_writer" add gate-checkpoint.txt
+    git -C "$ocg_writer" commit -m 'feat: add opencode gate checkpoint' >/dev/null
+    run_arena submit run-opencode-gate >/dev/null
+    ocg_review="$(awk -F $'\t' '$1 == "review_worktree" { print $2 }' "$(dirname "$ocg_manifest")/review.tsv")"
+fi
+[[ -f "${ocg_review}/opencode.json" ]] || fail 'opencode gate policy file missing'
+require_match '"arena_gate"' "${ocg_review}/opencode.json"
+require_match '"edit":"deny"' "${ocg_review}/opencode.json"
+require_match '"webfetch":"deny"' "${ocg_review}/opencode.json"
+require_match '"websearch":"deny"' "${ocg_review}/opencode.json"
+require_match '"task":"deny"' "${ocg_review}/opencode.json"
+require_match '"external_directory":"deny"' "${ocg_review}/opencode.json"
+[[ "$(manifest_value "$(dirname "$ocg_manifest")/review.tsv" gate_adapter)" == 'opencode' ]] || \
+    fail 'opencode gate review manifest is not bound to the opencode gate'
+expect_failure "${ocg_review}/.agent-arena-gate" start run-opencode-gate
 
 printf '%s\n' 'tests: ok'
