@@ -77,6 +77,10 @@ manifest, a relay message, or a tracked file.
 | AC8 | Cursor remains the only formal reviewer, validator, and decider for every writer profile; other provider CLIs cannot replace the immutable snapshot gate. | profile-to-Cursor gate regression |
 | AC9 | Session metadata and resume behavior are explicit per provider; an unsupported automatic resume fails safely rather than selecting an unrelated local conversation. | fake-CLI initial/resume lifecycle fixtures |
 | AC10 | The README and adapter metadata distinguish local CLI inspection from authenticated live-model testing and do not claim network isolation where a CLI does not provide it. | documentation and capability-output review |
+| AC11 | A submitted checkpoint is recorded even when the live reviewer pane is unavailable (dead or still initializing); the pane respawn degrades to a note instead of failing the command after state was committed. | fake-CLI live-session dead/ambiguous-pane fixture |
+| AC12 | `submit` recreates a lost-but-registered review snapshot (pruning only stale Git worktree registry entries, never worktree data) and rewrites `review.tsv` with fresh policy hashes. | deleted-review-worktree fixture |
+| AC13 | Submitting a new checkpoint invalidates the previous checkpoint's `validation.md` and `decision.md` pointers; the per-SHA archives remain for the audit trail. | two-checkpoint lifecycle fixture |
+| AC14 | `status` verifies review-snapshot integrity and displays validation/decision state bound to the current review HEAD; a tampered snapshot makes `status` fail closed. | tampered-snapshot and stale-pointer fixtures |
 
 ## Walkthrough round 2: technical trace
 
@@ -113,6 +117,10 @@ No Codex, OpenCode, or Gemini profile may short-circuit this path by writing a
 decision record, merging a branch, pushing, or treating an advisory relay as
 approval.
 
+## Threat model note
+
+All provider CLIs run with the operator's user identity. A writer that ignores its prompt can technically invoke the gate commands and forge local report files: the run directory is private only by permission (0700) and the writer shares the operator's UID. The "Cursor-only gate" is therefore a role declaration enforced by the Cursor-side allowlist policy and the writer's prompt, not a capability boundary; the human operator remains the ultimate authority over decision records. The generated allowlist and gate wrapper still prevent Cursor itself from doing anything but the four gate commands.
+
 ## Walkthrough round 3: integration and errors
 
 Missing `tmux`, `tmuxp`, Cursor, or the selected writer fails closed before
@@ -134,7 +142,7 @@ session-resume, or permission smoke test has been performed. Hermetic tests are
 necessary but insufficient: they prove Arena's argument and lifecycle handling,
 not the provider's behavior after authentication.
 
-Drift: v0.2 expands writers, not gates, to preserve the Cursor control boundary.
+Drift: v0.2 expands writers, not gates, to preserve the Cursor control boundary. The design walkthrough (2026-08-13) found and fixed four operational defects: `submit` treated an unavailable reviewer pane as fatal after committing state (now best-effort, AC11); a deleted review snapshot permanently bricked `submit`/`start` (now recreated via stale-registry pruning, AC12); stale validation/decision pointers misled `status` after a resubmit (now invalidated, AC13); and `status` performed no integrity verification (now fail-closed, AC14). The same-UID threat model above is a documented limitation, not a certified boundary.
 Risk: provider CLI flags, policy semantics, trust behavior, or session storage can
 change without an Arena source change. Additional risks are overclaiming a CLI
 permission layer as OS/network isolation and resuming an unrelated conversation.

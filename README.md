@@ -63,6 +63,14 @@ handoff, but are not a general operating-system, credential, or network sandbox.
 Keep credentials in each CLI's normal login/environment mechanism and never put
 them in project config or relay messages.
 
+> **Threat model:** all provider CLIs run with the operator's user identity. A
+> writer that ignores its prompt can technically invoke the gate commands and
+> forge local report files, because the private run directory and the gate CLI
+> are reachable by the same user. The "Cursor-only gate" is therefore a role
+> declaration enforced by the Cursor-side allowlist policy and the writer's
+> prompt, not an operating-system capability boundary; the human operator
+> remains the ultimate authority over decision records.
+
 ## Commands
 
 ```bash
