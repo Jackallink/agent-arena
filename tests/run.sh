@@ -2159,4 +2159,82 @@ fi
 require_match 'retry: agent-arena start plock-dead' "${tmp_root}/precheck-parent-dead.out"
 rm -rf "${intent_root}/runs/proj-id/.parent-lock"
 
+printf '%s\n' '42. start creation intent, T1/T1r recovery, and lock ordering'
+# (a) a completed start leaves no creation intent and no parent lock
+intent_check_run='intent-clean'
+run_arena start "$intent_check_run" --repo "$project" --no-attach >/dev/null
+intent_check_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f \
+    -name manifest.tsv -path "*/${intent_check_run}/manifest.tsv" -exec dirname {} \;)"
+repo_id="$(basename "$(dirname "$intent_check_dir")")"
+[[ ! -e "${state_root}/runs/${repo_id}/.creating-${intent_check_run}" ]] || \
+    fail 'creation intent left behind'
+[[ ! -e "${state_root}/runs/${repo_id}/.parent-lock" ]] || fail 'parent lock left behind'
+require_match $'checkpoint_round\t0' <(cat "${intent_check_dir}/run-state.tsv")
+# (b) S5 recovery: manifest+worktree present, state missing, intent present
+# → start commits state round=0
+s5_run='s5-recover'
+run_arena start "$s5_run" --repo "$project" --no-attach >/dev/null
+s5_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f \
+    -name manifest.tsv -path "*/${s5_run}/manifest.tsv" -exec dirname {} \;)"
+s5_repo="$(basename "$(dirname "$s5_dir")")"
+printf '%s\n' "run_id=${s5_run}" >"${state_root}/runs/${s5_repo}/.creating-${s5_run}"
+rm -f "${s5_dir}/run-state.tsv"
+run_arena start "$s5_run" --repo "$project" --no-attach >/dev/null
+require_match $'phase\tintake' <(cat "${s5_dir}/run-state.tsv")
+[[ ! -e "${state_root}/runs/${s5_repo}/.creating-${s5_run}" ]] || fail 'S5 intent not removed'
+# (c) parameter mismatch on retry fails closed (exit 2)
+s5b_run='s5-mismatch'
+run_arena start "$s5b_run" --repo "$project" --no-attach >/dev/null
+s5b_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f \
+    -name manifest.tsv -path "*/${s5b_run}/manifest.tsv" -exec dirname {} \;)"
+s5b_repo="$(basename "$(dirname "$s5b_dir")")"
+printf '%s\n' "run_id=${s5b_run}" >"${state_root}/runs/${s5b_repo}/.creating-${s5b_run}"
+rm -f "${s5b_dir}/run-state.tsv"
+# rewrite the intent with a differing profile, then retry must exit 2
+printf 'run_id\t%s\nprofile\tcodex-cursor\n' "$s5b_run" >"${state_root}/runs/${s5b_repo}/.creating-${s5b_run}"
+if run_arena start "$s5b_run" --repo "$project" --no-attach >"${tmp_root}/s5b.out" 2>&1; then
+    fail 'mismatched intent retry succeeded'
+fi
+require_match 'differ' "${tmp_root}/s5b.out"
+# (d) S6: state present + intent remains → start removes intent
+s6_run='s6-recover'
+run_arena start "$s6_run" --repo "$project" --no-attach >/dev/null
+s6_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f \
+    -name manifest.tsv -path "*/${s6_run}/manifest.tsv" -exec dirname {} \;)"
+s6_repo="$(basename "$(dirname "$s6_dir")")"
+printf '%s\n' "run_id=${s6_run}" >"${state_root}/runs/${s6_repo}/.creating-${s6_run}"
+run_arena start "$s6_run" --repo "$project" --no-attach >/dev/null
+[[ ! -e "${state_root}/runs/${s6_repo}/.creating-${s6_run}" ]] || fail 'S6 intent not removed'
+# (e) S3: non-empty run dir without manifest → start exits 2 with the abort protocol
+s3_run='s3-abort'
+mkdir -p "${state_root}/runs/${repo_id}/${s3_run}"
+printf x >"${state_root}/runs/${repo_id}/${s3_run}/junk"
+printf 'run_id\t%s\n' "$s3_run" >"${state_root}/runs/${repo_id}/.creating-${s3_run}"
+if run_arena start "$s3_run" --repo "$project" --no-attach >"${tmp_root}/s3.out" 2>&1; then
+    fail 'S3 start succeeded'
+fi
+require_match 'interrupted start stage S3' "${tmp_root}/s3.out"
+# (f) S1 retry with a drifted base SHA fails closed (exit 2)
+s1_run='s1-mismatch'
+s1_base="$(git -C "$project" rev-parse HEAD)"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_creation_intent_write "$2/runs" "$3" "$4" \
+        "repository=$5" "state_root=$2" "worktree_root=$6" \
+        "profile=pi-cursor" "gate_adapter=cursor" \
+        "session_name=agent-arena-$3-$4" "base_sha=$7" \
+        "branch=agent-arena/pi/$4" "writer_worktree=$6/$3/$4/writer" \
+        "writer_adapter_path=$1/adapters/pi.sh" \
+        "gate_adapter_path=$1/adapters/gate-cursor.sh"
+' _ "$source_root" "$state_root" "$repo_id" "$s1_run" "$project" "$worktree_base" "$s1_base" || \
+    fail 'S1 intent fixture write failed'
+printf '%s\n' fixture >>"${project}/README.md"
+git -C "$project" add README.md
+git -C "$project" commit -m 'test: drift the base SHA' >/dev/null
+s1_exit=0
+run_arena start "$s1_run" --repo "$project" --no-attach >"${tmp_root}/s1-mismatch.out" 2>&1 || s1_exit=$?
+[[ "$s1_exit" == 2 ]] || fail "S1 mismatched retry did not fail closed (exit ${s1_exit})"
+require_match 'differ' "${tmp_root}/s1-mismatch.out"
+
 printf '%s\n' 'tests: ok'
