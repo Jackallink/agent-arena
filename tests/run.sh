@@ -1424,5 +1424,74 @@ run_arena status state-wire --state-root "$state_fixture_dir" \
 [[ "$state_status_exit" == 2 ]] || \
     fail "status accepted a duplicate state key (exit ${state_status_exit})"
 require_match 'duplicate key phase' "${tmp_root}/state-wire-dup.out"
+# last_transition_action must be a spec enum value; unknown actions fail closed
+cp "$state_pristine" "$state_file"
+sed 's/^last_transition_action\tstart$/last_transition_action\tbogus/' "$state_pristine" >"$state_file"
+state_status_exit=0
+run_arena status state-wire --state-root "$state_fixture_dir" \
+    >"${tmp_root}/state-wire-action.out" 2>&1 || state_status_exit=$?
+[[ "$state_status_exit" == 2 ]] || \
+    fail "status accepted an invalid last_transition_action (exit ${state_status_exit})"
+require_match 'corrupted state file' "${tmp_root}/state-wire-action.out"
+# blocked/reviewer_unreachable inherits the source-phase V/VR/VD/CS constraints
+wire_sha40='0123456789abcdef0123456789abcdef01234567'
+wire_sha64='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+cp "$state_pristine" "$state_file"
+sed -e 's/^run_status\tactive$/run_status\tblocked/' \
+    -e 's/^phase\tintake$/phase\tsubmitted/' \
+    -e 's/^responsible_party\twriter$/responsible_party\thuman/' \
+    -e 's/^reason_code\tnone$/reason_code\treviewer_unreachable/' \
+    -e 's/^checkpoint_round\t0$/checkpoint_round\t1/' \
+    -e "s/^checkpoint_sha\t/checkpoint_sha\t${wire_sha40}/" \
+    -e 's/^verdict\t/verdict\tAPPROVE/' "$state_pristine" >"$state_file"
+state_status_exit=0
+run_arena status state-wire --state-root "$state_fixture_dir" \
+    >"${tmp_root}/state-wire-blocked-submitted.out" 2>&1 || state_status_exit=$?
+[[ "$state_status_exit" == 2 ]] || \
+    fail "status accepted a blocked/submitted state with a non-empty verdict (exit ${state_status_exit})"
+require_match 'corrupted state file' "${tmp_root}/state-wire-blocked-submitted.out"
+cp "$state_pristine" "$state_file"
+sed -e 's/^run_status\tactive$/run_status\tblocked/' \
+    -e 's/^phase\tintake$/phase\tvalidated/' \
+    -e 's/^responsible_party\twriter$/responsible_party\thuman/' \
+    -e 's/^reason_code\tnone$/reason_code\treviewer_unreachable/' \
+    -e 's/^checkpoint_round\t0$/checkpoint_round\t1/' \
+    -e "s/^checkpoint_sha\t/checkpoint_sha\t${wire_sha40}/" \
+    -e "s/^validation_digest\t/validation_digest\t${wire_sha64}/" "$state_pristine" >"$state_file"
+state_status_exit=0
+run_arena status state-wire --state-root "$state_fixture_dir" \
+    >"${tmp_root}/state-wire-blocked-validated.out" 2>&1 || state_status_exit=$?
+[[ "$state_status_exit" == 2 ]] || \
+    fail "status accepted a blocked/validated state with an empty validation_result (exit ${state_status_exit})"
+require_match 'corrupted state file' "${tmp_root}/state-wire-blocked-validated.out"
+# checkpoint_round must be positive-or-unknown in every non-intake phase
+cp "$state_pristine" "$state_file"
+sed -e 's/^phase\tintake$/phase\tvalidated/' \
+    -e 's/^responsible_party\twriter$/responsible_party\treviewer/' \
+    -e 's/^reason_code\tnone$/reason_code\tdecision_pending/' \
+    -e 's/^validation_result\t/validation_result\tPASS/' \
+    -e "s/^checkpoint_sha\t/checkpoint_sha\t${wire_sha40}/" \
+    -e "s/^validation_digest\t/validation_digest\t${wire_sha64}/" "$state_pristine" >"$state_file"
+state_status_exit=0
+run_arena status state-wire --state-root "$state_fixture_dir" \
+    >"${tmp_root}/state-wire-validated-round0.out" 2>&1 || state_status_exit=$?
+[[ "$state_status_exit" == 2 ]] || \
+    fail "status accepted a validated state with checkpoint_round 0 (exit ${state_status_exit})"
+require_match 'corrupted state file' "${tmp_root}/state-wire-validated-round0.out"
+cp "$state_pristine" "$state_file"
+sed -e 's/^run_status\tactive$/run_status\tblocked/' \
+    -e 's/^phase\tintake$/phase\tdecided/' \
+    -e 's/^responsible_party\twriter$/responsible_party\thuman/' \
+    -e 's/^reason_code\tnone$/reason_code\tblock_resolution_required/' \
+    -e 's/^verdict\t/verdict\tBLOCKED/' \
+    -e 's/^validation_result\t/validation_result\tFAIL/' \
+    -e "s/^checkpoint_sha\t/checkpoint_sha\t${wire_sha40}/" \
+    -e "s/^validation_digest\t/validation_digest\t${wire_sha64}/" "$state_pristine" >"$state_file"
+state_status_exit=0
+run_arena status state-wire --state-root "$state_fixture_dir" \
+    >"${tmp_root}/state-wire-blocked-decided-round0.out" 2>&1 || state_status_exit=$?
+[[ "$state_status_exit" == 2 ]] || \
+    fail "status accepted a blocked/decided state with checkpoint_round 0 (exit ${state_status_exit})"
+require_match 'corrupted state file' "${tmp_root}/state-wire-blocked-decided-round0.out"
 
 printf '%s\n' 'tests: ok'

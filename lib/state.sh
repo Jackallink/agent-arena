@@ -83,11 +83,19 @@ arena_state_validate() {
     case "$ARENA_STATE_VERDICT" in ''|APPROVE|CHANGES_REQUESTED|BLOCKED) ;; *) arena_state_die 'corrupted state file: invalid verdict' ;; esac
     case "$ARENA_STATE_VALIDATION_RESULT" in ''|PASS|FAIL) ;; *) arena_state_die 'corrupted state file: invalid validation_result' ;; esac
     [[ "$ARENA_STATE_CHECKPOINT_ROUND" == unknown || "$ARENA_STATE_CHECKPOINT_ROUND" =~ ^[0-9]+$ ]] || arena_state_die 'corrupted state file: invalid checkpoint_round'
+    # CR=0 only in intake; every non-intake phase is positive-or-unknown.
+    if [[ "$ARENA_STATE_PHASE" == intake ]]; then
+        [[ "$ARENA_STATE_CHECKPOINT_ROUND" == 0 ]] || arena_state_die 'corrupted state file: intake phase requires checkpoint_round 0'
+    else
+        [[ "$ARENA_STATE_CHECKPOINT_ROUND" == unknown || "$ARENA_STATE_CHECKPOINT_ROUND" =~ ^[1-9][0-9]*$ ]] || \
+            arena_state_die 'corrupted state file: non-intake phase requires positive-or-unknown checkpoint_round'
+    fi
     [[ "$ARENA_STATE_CHECKPOINT_SHA" == '' || "$ARENA_STATE_CHECKPOINT_SHA" =~ ^[0-9a-f]{40}$ ]] || arena_state_die 'corrupted state file: invalid checkpoint_sha'
     [[ "$ARENA_STATE_VALIDATION_DIGEST" == '' || "$ARENA_STATE_VALIDATION_DIGEST" =~ ^[0-9a-f]{64}$ ]] || arena_state_die 'corrupted state file: invalid validation_digest'
     [[ "$ARENA_STATE_WAITING_SINCE" == '' || "$ARENA_STATE_WAITING_SINCE" == unknown || "$ARENA_STATE_WAITING_SINCE" =~ ^[0-9]+$ ]] || arena_state_die 'corrupted state file: invalid waiting_since'
     [[ "$ARENA_STATE_LAST_TRANSITION_AT" =~ ^[0-9]+$ ]] || arena_state_die 'corrupted state file: invalid last_transition_at'
     case "$ARENA_STATE_LAST_TRANSITION_ACTOR" in writer|reviewer|human|system) ;; *) arena_state_die 'corrupted state file: invalid last_transition_actor' ;; esac
+    case "$ARENA_STATE_LAST_TRANSITION_ACTION" in start|submit|validate|decision|escalate|resolve-approve|resolve-reject|resolve-recover|resolve-cancel|repair-state) ;; *) arena_state_die 'corrupted state file: invalid last_transition_action' ;; esac
     [[ "$ARENA_STATE_REASON_DETAIL" == '' || ! "$ARENA_STATE_REASON_DETAIL" =~ [[:cntrl:]] && "${#ARENA_STATE_REASON_DETAIL}" -le 256 ]] || arena_state_die 'corrupted state file: invalid reason_detail'
 
     # Legal-combination invariants (spec: layered by run_status)
@@ -139,8 +147,20 @@ arena_state_validate() {
         blocked)
             [[ "$ARENA_STATE_RESPONSIBLE_PARTY" == human && -n "$ARENA_STATE_WAITING_SINCE" ]] || \
                 arena_state_die 'corrupted state file: illegal blocked combination'
+            # reviewer_unreachable inherits the source-phase V/VR/VD/CS
+            # constraints (CR positive-or-unknown is enforced globally above).
             case "$ARENA_STATE_REASON_CODE:$ARENA_STATE_PHASE" in
-                reviewer_unreachable:submitted|reviewer_unreachable:validated|block_resolution_required:decided) ;;
+                reviewer_unreachable:submitted)
+                    [[ -z "$ARENA_STATE_VERDICT" && -z "$ARENA_STATE_VALIDATION_RESULT" && \
+                        -z "$ARENA_STATE_VALIDATION_DIGEST" && -n "$ARENA_STATE_CHECKPOINT_SHA" ]] || \
+                        arena_state_die 'corrupted state file: illegal blocked/submitted combination'
+                    ;;
+                reviewer_unreachable:validated)
+                    [[ -z "$ARENA_STATE_VERDICT" && -n "$ARENA_STATE_VALIDATION_RESULT" && \
+                        -n "$ARENA_STATE_VALIDATION_DIGEST" && -n "$ARENA_STATE_CHECKPOINT_SHA" ]] || \
+                        arena_state_die 'corrupted state file: illegal blocked/validated combination'
+                    ;;
+                block_resolution_required:decided) ;;
                 *) arena_state_die 'corrupted state file: illegal blocked combination' ;;
             esac
             if [[ "$ARENA_STATE_REASON_CODE" == block_resolution_required ]]; then
