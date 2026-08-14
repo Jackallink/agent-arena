@@ -1577,6 +1577,59 @@ ARENA_SOURCE_ROOT="$source_root" bash -c '
     arena_lock_release "$2" token-any
 ' _ "$source_root" "$lock_root/eight" || fail 'release on a metadata-less lock died'
 [[ ! -e "$lock_root/eight" ]] || fail 'release on a metadata-less lock left the directory behind'
+# GNU-style stat failure simulation: -f takes '%m' as an invalid filesystem
+# specifier, emits a multi-line table to stdout, and exits 1; -c '%Y'
+# serves the mtime epoch. Other invocations fall through to the real stat.
+gnu_stat_bin="${tmp_root}/gnu-stat-bin"
+mkdir -p "$gnu_stat_bin"
+cat >"$gnu_stat_bin/stat" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == '-f' ]]; then
+    printf 'contaminated\nline\n'
+    exit 1
+fi
+if [[ "$1" == '-c' && "$2" == '%Y' ]]; then
+    exec /usr/bin/stat -f '%m' "${@:3}"
+fi
+exec /usr/bin/stat "$@"
+EOF
+chmod +x "$gnu_stat_bin/stat"
+# arena_lock_mtime must return the clean epoch when the BSD-style attempt
+# fails noisily: the failed attempt's stdout must not contaminate the capture
+mkdir -p "$lock_root/nine"
+touch -t 200001010000 "$lock_root/nine"
+expected_mtime="$(/usr/bin/stat -f '%m' "$lock_root/nine")"
+lock_mtime_out="$(PATH="$gnu_stat_bin:$PATH" ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/lock.sh"
+    arena_lock_mtime "$2"
+' _ "$source_root" "$lock_root/nine")" || \
+    fail 'arena_lock_mtime failed under GNU-style stat failure'
+[[ "$lock_mtime_out" == "$expected_mtime" ]] || \
+    fail "arena_lock_mtime output contaminated under GNU-style stat failure ($lock_mtime_out)"
+# an unreadable mtime must fail closed: exit 1, no stdout
+broken_stat_bin="${tmp_root}/broken-stat-bin"
+mkdir -p "$broken_stat_bin"
+printf '#!/usr/bin/env bash\nexit 1\n' >"$broken_stat_bin/stat"
+chmod +x "$broken_stat_bin/stat"
+lock_mtime_exit=0
+lock_mtime_out="$(PATH="$broken_stat_bin:$PATH" ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/lock.sh"
+    arena_lock_mtime "$2"
+' _ "$source_root" "$lock_root/nine")" || lock_mtime_exit=$?
+[[ "$lock_mtime_exit" == 1 && -z "$lock_mtime_out" ]] || \
+    fail "arena_lock_mtime did not fail closed on unreadable mtime (exit ${lock_mtime_exit}, output '${lock_mtime_out}')"
+# a metadata-less stale lock must still be recoverable under the GNU failure mode
+mkdir -p "$lock_root/ten"
+touch -t 200001010000 "$lock_root/ten"
+PATH="$gnu_stat_bin:$PATH" ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/lock.sh"
+    arena_lock_acquire "$2" token-i
+' _ "$source_root" "$lock_root/ten" || \
+    fail 'stale metadata-less lock not recoverable under GNU-style stat failure'
 
 printf '%s\n' '40. legacy projection rows, precheck, and conflicts'
 legacy_proj_dir="${tmp_root}/legacy-proj"
@@ -2010,6 +2063,28 @@ else
 fi
 [[ "$precheck_rc" == 5 ]] || fail "stale metadata-less run lock blocked precheck (rc=$precheck_rc)"
 require_match 'retry: agent-arena start lock-stale' "${tmp_root}/precheck-run-stale.out"
+# precheck: metadata-less stale run-dir lock under GNU-style stat failure
+# (stdout contamination + exit 1 on -f) must still be ignored → exit 5, not 4
+mkdir -p "${intent_root}/runs/proj-id/lock-stale-gnu/.run-lock"
+touch -t 200001010000 "${intent_root}/runs/proj-id/lock-stale-gnu/.run-lock"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_creation_intent_write "$2/runs" proj-id lock-stale-gnu
+' _ "$source_root" "$intent_root" || fail 'stale-gnu lock intent write failed'
+precheck_rc=''
+if PATH="$gnu_stat_bin:$PATH" ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_precheck_intents "$2/runs" proj-id lock-stale-gnu submit
+' _ "$source_root" "$intent_root" >"${tmp_root}/precheck-run-stale-gnu.out" 2>&1; then
+    precheck_rc=0
+else
+    precheck_rc=$?
+fi
+[[ "$precheck_rc" == 5 ]] || \
+    fail "stale metadata-less run lock under GNU-style stat failure blocked precheck (rc=$precheck_rc)"
+require_match 'retry: agent-arena start lock-stale-gnu' "${tmp_root}/precheck-run-stale-gnu.out"
 # precheck: parent creation lock held by a live owner → exit 4
 mkdir -p "${intent_root}/runs/proj-id/.parent-lock"
 printf 'pid=%s\ntoken=live\ncreated_at=1\n' "$$" >"${intent_root}/runs/proj-id/.parent-lock/owner"

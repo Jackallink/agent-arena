@@ -26,7 +26,10 @@ arena_lock_owner_alive() {
 }
 
 arena_lock_mtime() {
-    stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null || true
+    local path="$1" value
+    value="$(stat -c '%Y' "$path" 2>/dev/null)" && [[ -n "$value" ]] && { printf '%s\n' "$value"; return 0; }
+    value="$(stat -f '%m' "$path" 2>/dev/null)" && [[ -n "$value" ]] && { printf '%s\n' "$value"; return 0; }
+    return 1
 }
 
 # Metadata-less grace rule (mkdir→owner window): a lock directory without an
@@ -38,7 +41,7 @@ arena_lock_metadata_less_fresh() {
     local grace_cutoff mtime
     [[ -d "$lock_path" ]] || return 1
     arena_lock_is_held "$lock_path" && return 1
-    mtime="$(arena_lock_mtime "$lock_path")"
+    mtime="$(arena_lock_mtime "$lock_path")" || return 0
     [[ -n "$mtime" && "$mtime" =~ ^[0-9]+$ ]] || return 0
     grace_cutoff="$(($(date +%s) - 60))"
     [[ "$mtime" -ge "$grace_cutoff" ]]
@@ -47,7 +50,7 @@ arena_lock_metadata_less_fresh() {
 arena_lock_acquire() {
     local lock_path="$1"
     local token="$2"
-    local owner_tmp grace_cutoff pid
+    local owner_tmp grace_cutoff pid mtime
 
     [[ -n "$token" ]] || arena_die 'lock token must not be empty'
     if ! mkdir "$lock_path" 2>/dev/null; then
@@ -60,7 +63,8 @@ arena_lock_acquire() {
         else
             # metadata-less window: grace rule
             grace_cutoff="$(($(date +%s) - 60))"
-            if [[ "$(stat -f '%m' "$lock_path" 2>/dev/null || stat -c '%Y' "$lock_path" 2>/dev/null)" -lt "$grace_cutoff" ]]; then
+            mtime="$(arena_lock_mtime "$lock_path")" || mtime=''
+            if [[ -n "$mtime" && "$mtime" =~ ^[0-9]+$ && "$mtime" -lt "$grace_cutoff" ]]; then
                 rm -rf "$lock_path"
                 mkdir "$lock_path" 2>/dev/null || arena_die "cannot acquire lock: $lock_path"
             else
