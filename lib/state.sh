@@ -197,6 +197,211 @@ arena_state_validate() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Legacy projection (read-only; zero writes): derive a semantic state from
+# v0.3 evidence files when no run-state.tsv exists. Matching is by the binding
+# SHA inside the evidence, never by filename alone. A PRECHECK runs before the
+# row matching. Exit codes: 0 projected; 2 conflict (each conflict line is
+# printed to stderr and ARENA_PROJECTED_CONFLICTS is set); 5 evidence residue
+# owned by one command (ARENA_PROJECTED_RESIDUE names the owner).
+# ---------------------------------------------------------------------------
+
+arena_state_projection_clear() {
+    ARENA_PROJECTED_PHASE=''; ARENA_PROJECTED_PARTY=''; ARENA_PROJECTED_REASON=''
+    ARENA_PROJECTED_VERDICT=''; ARENA_PROJECTED_VR=''; ARENA_PROJECTED_VD=''
+    ARENA_PROJECTED_CS=''; ARENA_PROJECTED_ROUND='unknown'; ARENA_PROJECTED_LABEL='legacy'
+    ARENA_PROJECTED_WAITING_SINCE='unknown'; ARENA_PROJECTED_LAST_TRANSITION_AT='unknown'
+    ARENA_PROJECTED_RESIDUE=''
+    ARENA_PROJECTED_CONFLICTS=''
+}
+
+# Append one conflict line to ARENA_PROJECTED_CONFLICTS and print it to stderr.
+arena_state_projection_conflict() {
+    ARENA_PROJECTED_CONFLICTS="${ARENA_PROJECTED_CONFLICTS}${1};"
+    printf 'agent-arena: conflict: %s\n' "$1" >&2
+}
+
+arena_state_project_legacy() {
+    local run_dir="$1"
+    local review_head short_head file line sha
+    local dec_file='' dec_sha='' verdict='' state_rev='' dec_multiple=0
+    local pointer_name='' report_file='' bound_report='' vr='' vd=''
+
+    arena_state_projection_clear
+
+    if [[ ! -f "${run_dir}/review.tsv" ]]; then
+        # L6 requires no orphan evidence of any kind: no Val/Dec pointers,
+        # reports, or decision files.
+        for file in "${run_dir}"/validation.md "${run_dir}"/decision.md \
+            "${run_dir}"/validation-*.md "${run_dir}"/decision-*.md; do
+            [[ -f "$file" ]] || continue
+            arena_state_projection_conflict "orphan evidence with no review.tsv ($(basename "$file"))"
+        done
+        if [[ -n "$ARENA_PROJECTED_CONFLICTS" ]]; then
+            return 2
+        fi
+        ARENA_PROJECTED_PHASE='intake'; ARENA_PROJECTED_PARTY='writer'; ARENA_PROJECTED_REASON='none'
+        return 0
+    fi
+
+    review_head="$(awk -F $'\t' '$1 == "review_head" { print $2; exit }' "${run_dir}/review.tsv" || true)"
+    if [[ ! "$review_head" =~ ^[0-9a-f]{40}$ ]]; then
+        arena_state_projection_conflict 'review.tsv review_head unreadable'
+        return 2
+    fi
+    ARENA_PROJECTED_CS="$review_head"
+    short_head="$(arena_short_sha "$review_head")"
+
+    # PRECHECK scan: bind every decision archive by the SHA inside it.
+    for file in "${run_dir}"/decision-*.md; do
+        [[ -f "$file" ]] || continue
+        line="$(grep '^Review HEAD: [0-9a-f]\{40\}$' "$file" | head -1 || true)"
+        dec_sha="$(printf '%s\n' "$line" | sed 's/^Review HEAD: //')"
+        if [[ -z "$dec_sha" ]]; then
+            arena_state_projection_conflict "decision archive without a binding SHA ($(basename "$file"))"
+            continue
+        fi
+        if [[ "$dec_sha" != "$review_head" ]]; then
+            arena_state_projection_conflict "decision archive bound to differing SHA ($dec_sha)"
+            continue
+        fi
+        if [[ -n "$dec_file" ]]; then
+            dec_multiple=1
+            arena_state_projection_conflict 'multiple decision archives bound to review_head'
+            continue
+        fi
+        dec_file="$file"
+    done
+
+    if [[ -f "${run_dir}/validation.md" ]]; then
+        pointer_name="$(sed -n 's/^Latest validation report: //p' "${run_dir}/validation.md" | head -1)"
+        if [[ -z "$pointer_name" ]]; then
+            arena_state_projection_conflict 'validation pointer unparseable'
+        fi
+    fi
+
+    # PRECHECK scan: bind every validation report by the SHA inside it.
+    # Rotated .rN copies are audit artifacts, not canonical evidence.
+    for file in "${run_dir}"/validation-*.md; do
+        [[ -f "$file" ]] || continue
+        case "$file" in *.r[0-9]*.md) continue ;; esac
+        [[ "$file" == "${run_dir}/${pointer_name}" ]] && continue
+        line="$(grep '^Review HEAD: [0-9a-f]\{40\}$' "$file" | head -1 || true)"
+        sha="$(printf '%s\n' "$line" | sed 's/^Review HEAD: //')"
+        if [[ -z "$sha" ]]; then
+            arena_state_projection_conflict "validation report without a binding SHA ($(basename "$file"))"
+        elif [[ "$sha" != "$review_head" ]]; then
+            arena_state_projection_conflict "validation report bound to differing SHA ($sha)"
+        elif [[ -n "$bound_report" ]]; then
+            arena_state_projection_conflict 'multiple validation reports bound to review_head'
+        else
+            bound_report="$file"
+        fi
+    done
+
+    if [[ -n "$pointer_name" ]]; then
+        if [[ -f "${run_dir}/${pointer_name}" && ! -L "${run_dir}/${pointer_name}" ]]; then
+            report_file="${run_dir}/${pointer_name}"
+            if ! grep -Fqx "Review HEAD: ${review_head}" "$report_file"; then
+                arena_state_projection_conflict 'validation pointer bound to differing SHA'
+                report_file=''
+            fi
+        else
+            arena_state_projection_conflict 'validation pointer without a canonical report'
+        fi
+    fi
+
+    if [[ -z "$report_file" && -n "$bound_report" ]]; then
+        report_file="$bound_report"
+    fi
+    if [[ -n "$report_file" ]]; then
+        vr="$(grep '^RESULT: ' "$report_file" | tail -1 | sed 's/^RESULT: //' || true)"
+        case "$vr" in
+            PASS|FAIL) ;;
+            *) arena_state_projection_conflict 'validation report RESULT unparseable'; vr='' ;;
+        esac
+        if [[ -n "$vr" ]]; then
+            vd="$(arena_file_hash "$report_file")" || \
+                arena_state_projection_conflict 'cannot hash validation report'
+        fi
+    fi
+
+    if [[ -n "$dec_file" && "$dec_multiple" == 0 ]]; then
+        verdict="$(grep '^VERDICT: ' "$dec_file" | head -1 | sed 's/^VERDICT: //' || true)"
+        case "$verdict" in
+            APPROVE|CHANGES_REQUESTED|BLOCKED) ;;
+            *) arena_state_projection_conflict 'decision verdict unparseable'; verdict='' ;;
+        esac
+        state_rev="$(grep '^State revision: ' "$dec_file" | head -1 | sed 's/^State revision: //' || true)"
+        if [[ -n "$state_rev" && "$state_rev" != 0 ]]; then
+            arena_state_projection_conflict 'decision archive metadata references a missing state file'
+        fi
+    fi
+
+    # PRECHECK (a): report without pointer → validate-owned residue ONLY when
+    # R exists, the report parses, and it binds to the current review_head;
+    # otherwise it is a conflict.
+    if [[ -z "$pointer_name" && -n "$report_file" ]]; then
+        if [[ -z "$ARENA_PROJECTED_CONFLICTS" && -n "$vr" ]]; then
+            ARENA_PROJECTED_RESIDUE='validate'
+            ARENA_PROJECTED_PHASE='submitted'; ARENA_PROJECTED_PARTY='reviewer'
+            ARENA_PROJECTED_REASON='review_pending'
+            return 5
+        fi
+    fi
+
+    # PRECHECK (b): pending decision archive with no state → decision-owned
+    # residue ONLY with v0.4 metadata `State revision: 0`; a plain v0.3
+    # decision continues into rows L1–L3.
+    if [[ -n "$dec_file" && "$dec_multiple" == 0 && -n "$verdict" ]]; then
+        if [[ -z "$report_file" ]]; then
+            arena_state_projection_conflict 'decision without a canonical validation report'
+        elif [[ "$verdict" == APPROVE && "$vr" != PASS ]]; then
+            arena_state_projection_conflict 'legacy APPROVE requires RESULT: PASS'
+        fi
+        if [[ -z "$ARENA_PROJECTED_CONFLICTS" && -n "$vr" && -n "$vd" ]]; then
+            ARENA_PROJECTED_VERDICT="$verdict"; ARENA_PROJECTED_VR="$vr"; ARENA_PROJECTED_VD="$vd"
+            case "$verdict" in
+                APPROVE)
+                    ARENA_PROJECTED_PHASE='decided'; ARENA_PROJECTED_PARTY='human'
+                    ARENA_PROJECTED_REASON='approval_pending'
+                    ARENA_PROJECTED_LABEL='legacy_human_disposition_unknown'
+                    ;;
+                CHANGES_REQUESTED)
+                    ARENA_PROJECTED_PHASE='decided'; ARENA_PROJECTED_PARTY='writer'
+                    ARENA_PROJECTED_REASON='changes_requested'
+                    ;;
+                BLOCKED)
+                    ARENA_PROJECTED_PHASE='blocked'; ARENA_PROJECTED_PARTY='human'
+                    ARENA_PROJECTED_REASON='block_resolution_required'
+                    ;;
+            esac
+            if [[ "$state_rev" == 0 ]]; then
+                ARENA_PROJECTED_RESIDUE='decision'
+                return 5
+            fi
+            return 0
+        fi
+    fi
+
+    # L4: no Dec; Val pointer + canonical report bound to review_head.
+    if [[ -z "$dec_file" && -z "$ARENA_PROJECTED_CONFLICTS" && -n "$pointer_name" && \
+        -n "$report_file" && -n "$vr" && -n "$vd" ]]; then
+        ARENA_PROJECTED_PHASE='validated'; ARENA_PROJECTED_PARTY='reviewer'
+        ARENA_PROJECTED_REASON='decision_pending'
+        ARENA_PROJECTED_VR="$vr"; ARENA_PROJECTED_VD="$vd"
+        return 0
+    fi
+
+    # L5: no Dec, no Val, and no report or pointer artifacts of any kind.
+    if [[ -z "$ARENA_PROJECTED_CONFLICTS" ]]; then
+        ARENA_PROJECTED_PHASE='submitted'; ARENA_PROJECTED_PARTY='reviewer'
+        ARENA_PROJECTED_REASON='review_pending'
+        return 0
+    fi
+    return 2
+}
+
 arena_state_write() {
     local run_dir="$1"
     local tmp_file value

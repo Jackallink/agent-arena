@@ -1578,4 +1578,322 @@ ARENA_SOURCE_ROOT="$source_root" bash -c '
 ' _ "$source_root" "$lock_root/eight" || fail 'release on a metadata-less lock died'
 [[ ! -e "$lock_root/eight" ]] || fail 'release on a metadata-less lock left the directory behind'
 
+printf '%s\n' '40. legacy projection rows, precheck, and conflicts'
+legacy_proj_dir="${tmp_root}/legacy-proj"
+mkdir -p "$legacy_proj_dir"
+cat >"${legacy_proj_dir}/manifest.tsv" <<EOF
+run_id	legacy-run
+repository	$project
+base_sha	$(git -C "$project" rev-parse HEAD)
+writer_worktree	$project
+branch	agent-arena/pi/legacy-run
+session_name	agent-arena-legacy-run
+tool_root	$source_root
+worktree_root	$worktree_base
+project_config	$project/.agent-arena/project.conf
+profile	pi-cursor
+writer_adapter	pi
+writer_label	Pi
+writer_session_dir	${legacy_proj_dir}/writer-session
+gate_adapter	cursor
+EOF
+sha_40='0123456789abcdef0123456789abcdef01234567'
+short_40='0123456789ab'
+# L6: no evidence → intake projection
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_project_legacy "$2"
+    [[ "$ARENA_PROJECTED_PHASE" == intake && "$ARENA_PROJECTED_PARTY" == writer && "$ARENA_PROJECTED_ROUND" == unknown ]] || exit 9
+    [[ "$ARENA_PROJECTED_LABEL" == legacy && -z "$ARENA_PROJECTED_RESIDUE" && -z "$ARENA_PROJECTED_CONFLICTS" ]] || exit 9
+' _ "$source_root" "$legacy_proj_dir" || fail 'L6 projection wrong'
+# L5: review.tsv only → submitted
+printf 'review_head\t%s\nreview_worktree\t%s\ncursor_policy_hash\t%s\ngate_wrapper_hash\t%s\ngate_adapter\tcursor\ngate_policy_path\t.cursor/cli.json\n' \
+    "$sha_40" "$project" "$(printf x | shasum -a 256 | awk '{print $1}')" "$(printf y | shasum -a 256 | awk '{print $1}')" >"${legacy_proj_dir}/review.tsv"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_project_legacy "$2"
+    [[ "$ARENA_PROJECTED_PHASE" == submitted && "$ARENA_PROJECTED_PARTY" == reviewer && "$ARENA_PROJECTED_CS" == "'"$sha_40"'" ]] || exit 9
+    [[ "$ARENA_PROJECTED_REASON" == review_pending && "$ARENA_PROJECTED_LABEL" == legacy && -z "$ARENA_PROJECTED_RESIDUE" ]] || exit 9
+' _ "$source_root" "$legacy_proj_dir" || fail 'L5 projection wrong'
+# conflict: decision archive bound to a different SHA
+printf 'Review HEAD: %s\nVERDICT: APPROVE\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" >"${legacy_proj_dir}/decision-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.md"
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_project_legacy "$2"
+' _ "$source_root" "$legacy_proj_dir" >"${tmp_root}/proj-conflict.out" 2>&1; then
+    fail 'conflicting decision archive projected successfully'
+fi
+require_match 'conflict' "${tmp_root}/proj-conflict.out"
+require_match 'decision archive bound to differing SHA' "${tmp_root}/proj-conflict.out"
+# report-only with R + parseable + bound report = validate residue (exit 5), not conflict
+residue_dir="${tmp_root}/legacy-residue"
+mkdir -p "$residue_dir"
+printf 'review_head\t%s\n' "$sha_40" >"${residue_dir}/review.tsv"
+cat >"${residue_dir}/validation-${short_40}.md" <<EOF
+# Agent Arena Validation Report
+
+Run: legacy-run
+
+Review HEAD: ${sha_40}
+
+Project: fixture
+
+## Output
+
+all good
+
+RESULT: PASS
+EOF
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    if arena_state_project_legacy "$2"; then rc=0; else rc=$?; fi
+    [[ "$rc" == 5 ]] || exit 9
+    [[ "$ARENA_PROJECTED_RESIDUE" == validate && -z "$ARENA_PROJECTED_CONFLICTS" ]] || exit 9
+    [[ "$ARENA_PROJECTED_PHASE" == submitted && "$ARENA_PROJECTED_PARTY" == reviewer ]] || exit 9
+    [[ "$ARENA_PROJECTED_REASON" == review_pending && "$ARENA_PROJECTED_CS" == "'"$sha_40"'" ]] || exit 9
+' _ "$source_root" "$residue_dir" || fail 'report-without-pointer residue projection wrong'
+# L1 with RESULT: FAIL → conflict (v0.3 APPROVE required PASS)
+l1_fail_dir="${tmp_root}/legacy-l1-fail"
+mkdir -p "$l1_fail_dir"
+printf 'review_head\t%s\n' "$sha_40" >"${l1_fail_dir}/review.tsv"
+cat >"${l1_fail_dir}/validation-${short_40}.md" <<EOF
+# Agent Arena Validation Report
+
+Run: legacy-run
+
+Review HEAD: ${sha_40}
+
+RESULT: FAIL
+EOF
+printf 'Latest validation report: validation-%s.md\n' "$short_40" >"${l1_fail_dir}/validation.md"
+cat >"${l1_fail_dir}/decision-${short_40}.md" <<EOF
+# Agent Arena Gate Decision
+
+Run: legacy-run
+
+Review HEAD: ${sha_40}
+
+VERDICT: APPROVE
+
+## Summary
+
+looks good
+EOF
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_project_legacy "$2"
+' _ "$source_root" "$l1_fail_dir" >"${tmp_root}/proj-l1-fail.out" 2>&1; then
+    fail 'L1 APPROVE with RESULT: FAIL projected successfully'
+fi
+require_match 'conflict' "${tmp_root}/proj-l1-fail.out"
+require_match 'legacy APPROVE requires RESULT: PASS' "${tmp_root}/proj-l1-fail.out"
+# L1: decision APPROVE + canonical PASS report → decided/human/approval_pending
+l1_dir="${tmp_root}/legacy-l1"
+mkdir -p "$l1_dir"
+printf 'review_head\t%s\n' "$sha_40" >"${l1_dir}/review.tsv"
+cat >"${l1_dir}/validation-${short_40}.md" <<EOF
+# Agent Arena Validation Report
+
+Run: legacy-run
+
+Review HEAD: ${sha_40}
+
+Project: fixture
+
+## Output
+
+all good
+
+RESULT: PASS
+EOF
+printf 'Latest validation report: validation-%s.md\n' "$short_40" >"${l1_dir}/validation.md"
+cat >"${l1_dir}/decision-${short_40}.md" <<EOF
+# Agent Arena Gate Decision
+
+Run: legacy-run
+
+Review HEAD: ${sha_40}
+
+VERDICT: APPROVE
+
+## Summary
+
+ship it
+EOF
+l1_vd="$(shasum -a 256 "${l1_dir}/validation-${short_40}.md" | awk '{print $1}')"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_project_legacy "$2"
+    [[ "$ARENA_PROJECTED_PHASE" == decided && "$ARENA_PROJECTED_PARTY" == human ]] || exit 9
+    [[ "$ARENA_PROJECTED_REASON" == approval_pending && "$ARENA_PROJECTED_VERDICT" == APPROVE ]] || exit 9
+    [[ "$ARENA_PROJECTED_VR" == PASS && "$ARENA_PROJECTED_VD" == "$3" ]] || exit 9
+    [[ "$ARENA_PROJECTED_LABEL" == legacy_human_disposition_unknown && -z "$ARENA_PROJECTED_RESIDUE" ]] || exit 9
+    [[ "$ARENA_PROJECTED_CS" == "'"$sha_40"'" && "$ARENA_PROJECTED_ROUND" == unknown ]] || exit 9
+' _ "$source_root" "$l1_dir" "$l1_vd" || fail 'L1 projection wrong'
+# L2: CHANGES_REQUESTED with a FAIL report → decided/writer/changes_requested
+l2_dir="${tmp_root}/legacy-l2"
+mkdir -p "$l2_dir"
+printf 'review_head\t%s\n' "$sha_40" >"${l2_dir}/review.tsv"
+printf '# Report\n\nReview HEAD: %s\n\nRESULT: FAIL\n' "$sha_40" >"${l2_dir}/validation-${short_40}.md"
+printf 'Latest validation report: validation-%s.md\n' "$short_40" >"${l2_dir}/validation.md"
+printf '# Decision\n\nReview HEAD: %s\n\nVERDICT: CHANGES_REQUESTED\n' "$sha_40" >"${l2_dir}/decision-${short_40}.md"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_project_legacy "$2"
+    [[ "$ARENA_PROJECTED_PHASE" == decided && "$ARENA_PROJECTED_PARTY" == writer ]] || exit 9
+    [[ "$ARENA_PROJECTED_REASON" == changes_requested && "$ARENA_PROJECTED_VERDICT" == CHANGES_REQUESTED ]] || exit 9
+    [[ "$ARENA_PROJECTED_VR" == FAIL && "$ARENA_PROJECTED_LABEL" == legacy ]] || exit 9
+' _ "$source_root" "$l2_dir" || fail 'L2 projection wrong'
+# L3: BLOCKED → blocked/human/block_resolution_required
+l3_dir="${tmp_root}/legacy-l3"
+mkdir -p "$l3_dir"
+printf 'review_head\t%s\n' "$sha_40" >"${l3_dir}/review.tsv"
+printf '# Report\n\nReview HEAD: %s\n\nRESULT: FAIL\n' "$sha_40" >"${l3_dir}/validation-${short_40}.md"
+printf 'Latest validation report: validation-%s.md\n' "$short_40" >"${l3_dir}/validation.md"
+printf '# Decision\n\nReview HEAD: %s\n\nVERDICT: BLOCKED\n' "$sha_40" >"${l3_dir}/decision-${short_40}.md"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_project_legacy "$2"
+    [[ "$ARENA_PROJECTED_PHASE" == blocked && "$ARENA_PROJECTED_PARTY" == human ]] || exit 9
+    [[ "$ARENA_PROJECTED_REASON" == block_resolution_required && "$ARENA_PROJECTED_VERDICT" == BLOCKED ]] || exit 9
+    [[ "$ARENA_PROJECTED_VR" == FAIL && "$ARENA_PROJECTED_LABEL" == legacy ]] || exit 9
+' _ "$source_root" "$l3_dir" || fail 'L3 projection wrong'
+# L4: no Dec, pointer + canonical report → validated/reviewer/decision_pending
+l4_dir="${tmp_root}/legacy-l4"
+mkdir -p "$l4_dir"
+printf 'review_head\t%s\n' "$sha_40" >"${l4_dir}/review.tsv"
+printf '# Report\n\nReview HEAD: %s\n\nRESULT: PASS\n' "$sha_40" >"${l4_dir}/validation-${short_40}.md"
+printf 'Latest validation report: validation-%s.md\n' "$short_40" >"${l4_dir}/validation.md"
+l4_vd="$(shasum -a 256 "${l4_dir}/validation-${short_40}.md" | awk '{print $1}')"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_project_legacy "$2"
+    [[ "$ARENA_PROJECTED_PHASE" == validated && "$ARENA_PROJECTED_PARTY" == reviewer ]] || exit 9
+    [[ "$ARENA_PROJECTED_REASON" == decision_pending && "$ARENA_PROJECTED_VR" == PASS ]] || exit 9
+    [[ "$ARENA_PROJECTED_VD" == "$3" && "$ARENA_PROJECTED_LABEL" == legacy ]] || exit 9
+' _ "$source_root" "$l4_dir" "$l4_vd" || fail 'L4 projection wrong'
+# precheck (b): v0.4 archive with State revision: 0 → decision residue (exit 5)
+dec_res_dir="${tmp_root}/legacy-dec-res"
+mkdir -p "$dec_res_dir"
+printf 'review_head\t%s\n' "$sha_40" >"${dec_res_dir}/review.tsv"
+printf '# Report\n\nReview HEAD: %s\n\nRESULT: PASS\n' "$sha_40" >"${dec_res_dir}/validation-${short_40}.md"
+printf 'Latest validation report: validation-%s.md\n' "$short_40" >"${dec_res_dir}/validation.md"
+cat >"${dec_res_dir}/decision-${short_40}.md" <<EOF
+# Agent Arena Gate Decision
+
+Run: legacy-run
+
+Review HEAD: ${sha_40}
+
+State revision: 0
+
+VERDICT: APPROVE
+
+## Summary
+
+ship it
+EOF
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    if arena_state_project_legacy "$2"; then rc=0; else rc=$?; fi
+    [[ "$rc" == 5 ]] || exit 9
+    [[ "$ARENA_PROJECTED_RESIDUE" == decision && -z "$ARENA_PROJECTED_CONFLICTS" ]] || exit 9
+    [[ "$ARENA_PROJECTED_PHASE" == decided && "$ARENA_PROJECTED_PARTY" == human ]] || exit 9
+    [[ "$ARENA_PROJECTED_REASON" == approval_pending && "$ARENA_PROJECTED_VERDICT" == APPROVE ]] || exit 9
+    [[ "$ARENA_PROJECTED_VR" == PASS && "$ARENA_PROJECTED_LABEL" == legacy_human_disposition_unknown ]] || exit 9
+' _ "$source_root" "$dec_res_dir" || fail 'decision residue projection wrong'
+# v0.4 archive with a nonzero State revision in a stateless run → conflict
+dec_badrev_dir="${tmp_root}/legacy-dec-badrev"
+mkdir -p "$dec_badrev_dir"
+printf 'review_head\t%s\n' "$sha_40" >"${dec_badrev_dir}/review.tsv"
+printf '# Report\n\nReview HEAD: %s\n\nRESULT: PASS\n' "$sha_40" >"${dec_badrev_dir}/validation-${short_40}.md"
+printf 'Latest validation report: validation-%s.md\n' "$short_40" >"${dec_badrev_dir}/validation.md"
+printf '# Decision\n\nReview HEAD: %s\n\nState revision: 3\n\nVERDICT: APPROVE\n' "$sha_40" >"${dec_badrev_dir}/decision-${short_40}.md"
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_project_legacy "$2"
+' _ "$source_root" "$dec_badrev_dir" >"${tmp_root}/proj-dec-badrev.out" 2>&1; then
+    fail 'nonzero State revision archive projected successfully'
+fi
+require_match 'conflict' "${tmp_root}/proj-dec-badrev.out"
+# verdict unparseable → conflict
+verdict_bad_dir="${tmp_root}/legacy-verdict-bad"
+mkdir -p "$verdict_bad_dir"
+printf 'review_head\t%s\n' "$sha_40" >"${verdict_bad_dir}/review.tsv"
+printf '# Report\n\nReview HEAD: %s\n\nRESULT: PASS\n' "$sha_40" >"${verdict_bad_dir}/validation-${short_40}.md"
+printf 'Latest validation report: validation-%s.md\n' "$short_40" >"${verdict_bad_dir}/validation.md"
+printf '# Decision\n\nReview HEAD: %s\n\nVERDICT: MAYBE\n' "$sha_40" >"${verdict_bad_dir}/decision-${short_40}.md"
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_project_legacy "$2"
+' _ "$source_root" "$verdict_bad_dir" >"${tmp_root}/proj-verdict-bad.out" 2>&1; then
+    fail 'unparseable verdict projected successfully'
+fi
+require_match 'decision verdict unparseable' "${tmp_root}/proj-verdict-bad.out"
+# pointer without a canonical report → conflict
+pointer_bad_dir="${tmp_root}/legacy-pointer-bad"
+mkdir -p "$pointer_bad_dir"
+printf 'review_head\t%s\n' "$sha_40" >"${pointer_bad_dir}/review.tsv"
+printf 'Latest validation report: validation-%s.md\n' "$short_40" >"${pointer_bad_dir}/validation.md"
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_project_legacy "$2"
+' _ "$source_root" "$pointer_bad_dir" >"${tmp_root}/proj-pointer-bad.out" 2>&1; then
+    fail 'pointer without a canonical report projected successfully'
+fi
+require_match 'validation pointer without a canonical report' "${tmp_root}/proj-pointer-bad.out"
+# orphan evidence with no R → conflict (L6 does not apply)
+orphan_dir="${tmp_root}/legacy-orphan"
+mkdir -p "$orphan_dir"
+printf 'Review HEAD: %s\nVERDICT: APPROVE\n' "$sha_40" >"${orphan_dir}/decision-${short_40}.md"
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_project_legacy "$2"
+' _ "$source_root" "$orphan_dir" >"${tmp_root}/proj-orphan.out" 2>&1; then
+    fail 'orphan evidence without R projected successfully'
+fi
+require_match 'orphan evidence with no review.tsv' "${tmp_root}/proj-orphan.out"
+# unreadable review_head → conflict
+badhead_dir="${tmp_root}/legacy-badhead"
+mkdir -p "$badhead_dir"
+printf 'review_head\tnot-a-sha\n' >"${badhead_dir}/review.tsv"
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_project_legacy "$2"
+' _ "$source_root" "$badhead_dir" >"${tmp_root}/proj-badhead.out" 2>&1; then
+    fail 'unreadable review_head projected successfully'
+fi
+require_match 'review.tsv review_head unreadable' "${tmp_root}/proj-badhead.out"
+# multiple decision archives bound to review_head → conflict
+multi_dec_dir="${tmp_root}/legacy-multi-dec"
+mkdir -p "$multi_dec_dir"
+printf 'review_head\t%s\n' "$sha_40" >"${multi_dec_dir}/review.tsv"
+printf '# Report\n\nReview HEAD: %s\n\nRESULT: PASS\n' "$sha_40" >"${multi_dec_dir}/validation-${short_40}.md"
+printf 'Latest validation report: validation-%s.md\n' "$short_40" >"${multi_dec_dir}/validation.md"
+printf '# Decision\n\nReview HEAD: %s\n\nVERDICT: APPROVE\n' "$sha_40" >"${multi_dec_dir}/decision-${short_40}.md"
+printf '# Decision\n\nReview HEAD: %s\n\nVERDICT: APPROVE\n' "$sha_40" >"${multi_dec_dir}/decision-other.md"
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_project_legacy "$2"
+' _ "$source_root" "$multi_dec_dir" >"${tmp_root}/proj-multi-dec.out" 2>&1; then
+    fail 'multiple bound decision archives projected successfully'
+fi
+require_match 'multiple decision archives bound to review_head' "${tmp_root}/proj-multi-dec.out"
+
 printf '%s\n' 'tests: ok'
