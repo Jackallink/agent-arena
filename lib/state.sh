@@ -3,6 +3,7 @@ set -euo pipefail
 
 state_dir="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 source "${state_dir}/common.sh"
+source "${state_dir}/lock.sh"
 
 ARENA_STATE_KEYS='schema_version state_revision run_status phase responsible_party reason_code reason_detail verdict validation_result checkpoint_round checkpoint_sha waiting_since last_transition_at last_transition_actor last_transition_action validation_digest'
 
@@ -419,4 +420,97 @@ arena_state_write() {
     done >"$tmp_file"
     chmod 600 "$tmp_file"
     mv "$tmp_file" "${run_dir}/run-state.tsv"
+}
+
+arena_creation_intent_path() {
+    local runs_root="$1" repo_id="$2" run_id="$3"
+    printf '%s/%s/.creating-%s' "$runs_root" "$repo_id" "$run_id"
+}
+
+arena_creation_intent_write() {
+    local runs_root="$1" repo_id="$2" run_id="$3"
+    shift 3
+    local intent tmp_file arg
+    intent="$(arena_creation_intent_path "$runs_root" "$repo_id" "$run_id")"
+    tmp_file="$(mktemp "${runs_root}/${repo_id}/.creating-intent.XXXXXX")"
+    for arg in "$@"; do
+        printf '%s\n' "$arg"
+    done >"$tmp_file"
+    chmod 600 "$tmp_file"
+    mv "$tmp_file" "$intent"
+}
+
+arena_creation_intent_read() {
+    local runs_root="$1" repo_id="$2" run_id="$3"
+    local intent key value
+    intent="$(arena_creation_intent_path "$runs_root" "$repo_id" "$run_id")"
+    ARENA_INTENT_FIELDS=''
+    [[ -f "$intent" ]] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -z "$line" ]] && continue
+        key="${line%%=*}"
+        value="${line#*=}"
+        [[ "$key" != "$line" ]] || arena_die "corrupted creation intent: $intent"
+        ARENA_INTENT_FIELDS="$ARENA_INTENT_FIELDS $key"
+        printf -v "ARENA_INTENT_${key}" '%s' "$value"
+    done <"$intent"
+    return 0
+}
+
+arena_creation_intent_stage() {
+    local runs_root="$1" repo_id="$2" run_id="$3"
+    local run_dir="${runs_root}/${repo_id}/${run_id}" intent manifest writer_wt
+
+    intent="$(arena_creation_intent_path "$runs_root" "$repo_id" "$run_id")"
+    if [[ ! -e "$intent" ]]; then
+        printf 'NONE\n'
+        return 0
+    fi
+    if [[ ! -e "$run_dir" ]]; then printf 'S1\n'; return 0; fi
+    if [[ ! -e "${run_dir}/manifest.tsv" ]]; then
+        if find "$run_dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .; then
+            printf 'S3\n'
+        else
+            printf 'S2\n'
+        fi
+        return 0
+    fi
+    manifest="${run_dir}/manifest.tsv"
+    writer_wt="$(awk -F $'\t' '$1 == "writer_worktree" { print $2 }' "$manifest")"
+    if [[ -z "$writer_wt" || ! -e "$writer_wt" ]]; then printf 'S4\n'; return 0; fi
+    if [[ ! -e "${run_dir}/run-state.tsv" ]]; then printf 'S5\n'; else printf 'S6\n'; fi
+    return 0
+}
+
+arena_state_precheck_intents() {
+    local runs_root="$1" repo_id="$2" run_id="$3" caller="$4"
+    local stage intent lock_path run_dir
+
+    run_dir="${runs_root}/${repo_id}/${run_id}"
+    lock_path="${run_dir}/.run-lock"
+    if [[ -d "$run_dir" ]] && arena_lock_is_held "$lock_path" && arena_lock_owner_alive "$lock_path"; then
+        printf 'transition in progress\n' >&2
+        exit 4
+    fi
+    intent="$(arena_creation_intent_path "$runs_root" "$repo_id" "$run_id")"
+    [[ -e "$intent" ]] || return 0
+    stage="$(arena_creation_intent_stage "$runs_root" "$repo_id" "$run_id")"
+    case "$stage" in
+        S3|S4)
+            if [[ "$caller" == status || "$caller" == list || "$caller" == start ]]; then
+                printf 'interrupted start stage %s: inspect %s; if it contains only Arena-created artifacts, remove the directory, the creation intent, the Git worktree registration (git worktree remove; git worktree prune), and the writer branch, then re-run start\n' "$stage" "$run_dir" >&2
+                exit 2
+            fi
+            printf 'interrupted start; retry: agent-arena start %s\n' "$run_id" >&2
+            exit 5
+            ;;
+        S1|S2|S5|S6)
+            if [[ "$caller" == start ]]; then
+                return 0
+            fi
+            printf 'interrupted start; retry: agent-arena start %s\n' "$run_id" >&2
+            exit 5
+            ;;
+        *) return 0 ;;
+    esac
 }

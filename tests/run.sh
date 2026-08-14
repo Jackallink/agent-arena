@@ -1896,4 +1896,64 @@ if ARENA_SOURCE_ROOT="$source_root" bash -c '
 fi
 require_match 'multiple decision archives bound to review_head' "${tmp_root}/proj-multi-dec.out"
 
+printf '%s\n' '41. creation intent helpers and stage machine'
+intent_root="${tmp_root}/intent-root"
+mkdir -p "${intent_root}/runs/proj-id"
+sha40='0000000000000000000000000000000000000000'
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_creation_intent_write "$2/runs" proj-id s1-run run_id=s1-run repository=/x state_root=/y worktree_root=/z profile=pi-cursor gate_adapter=cursor session_name=agent-arena-x base_sha='"$sha40"' branch=agent-arena/pi/s1-run writer_worktree=/w writer_adapter_path=/a gate_adapter_path=/g
+    stage="$(arena_creation_intent_stage "$2/runs" proj-id s1-run)"
+    [[ "$stage" == S1 ]] || exit 9
+' _ "$source_root" "$intent_root" || fail 'S1 not detected'
+# S2: empty run dir
+mkdir -p "${intent_root}/runs/proj-id/s2-run"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_creation_intent_write "$2/runs" proj-id s2-run run_id=s2-run
+    stage="$(arena_creation_intent_stage "$2/runs" proj-id s2-run)"
+    [[ "$stage" == S2 ]] || exit 9
+' _ "$source_root" "$intent_root" || fail 'S2 not detected'
+# S3: non-empty run dir without manifest
+mkdir -p "${intent_root}/runs/proj-id/s3-run"
+printf x >"${intent_root}/runs/proj-id/s3-run/junk"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_creation_intent_write "$2/runs" proj-id s3-run run_id=s3-run
+    stage="$(arena_creation_intent_stage "$2/runs" proj-id s3-run)"
+    [[ "$stage" == S3 ]] || exit 9
+' _ "$source_root" "$intent_root" || fail 'S3 not detected'
+# S6: state present + intent remains
+mkdir -p "${intent_root}/runs/proj-id/s6-run"
+printf 'writer_worktree\t%s\n' "$project" >"${intent_root}/runs/proj-id/s6-run/manifest.tsv"
+printf 'schema_version\t1\nstate_revision\t1\nrun_status\tactive\nphase\tintake\nresponsible_party\twriter\nreason_code\tnone\nreason_detail\t\nverdict\t\nvalidation_result\t\ncheckpoint_round\t0\ncheckpoint_sha\t\nwaiting_since\t1\nlast_transition_at\t1\nlast_transition_actor\tsystem\nlast_transition_action\tstart\nvalidation_digest\t\n' >"${intent_root}/runs/proj-id/s6-run/run-state.tsv"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_creation_intent_write "$2/runs" proj-id s6-run run_id=s6-run
+    stage="$(arena_creation_intent_stage "$2/runs" proj-id s6-run)"
+    [[ "$stage" == S6 ]] || exit 9
+' _ "$source_root" "$intent_root" || fail 'S6 not detected'
+# precheck: S1 intent + foreign caller exits 5 with retry
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_precheck_intents "$2/runs" proj-id s1-run submit
+' _ "$source_root" "$intent_root" >"${tmp_root}/precheck-s1.out" 2>&1; then
+    fail 'precheck passed a foreign caller through S1'
+fi
+require_match 'retry: agent-arena start s1-run' "${tmp_root}/precheck-s1.out"
+# precheck: S3 + status caller exits 2 with the abort protocol
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_precheck_intents "$2/runs" proj-id s3-run status
+' _ "$source_root" "$intent_root" >"${tmp_root}/precheck-s3.out" 2>&1; then
+    fail 'precheck passed status through S3'
+fi
+require_match 'interrupted start stage S3' "${tmp_root}/precheck-s3.out"
+
 printf '%s\n' 'tests: ok'
