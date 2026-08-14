@@ -544,7 +544,10 @@ git -C "$drift_writer" commit -m 'test: add drifting validation' >/dev/null
 run_arena submit run-head-drift >/dev/null
 expect_failure run_arena validate run-head-drift
 drift_short_sha="$(git -C "$drift_writer" rev-parse HEAD | cut -c1-12)"
-require_match 'RESULT: FAIL' "${drift_run_dir}/validation-${drift_short_sha}.md"
+require_match 'RESULT: FAIL' "${drift_run_dir}/validation-${drift_short_sha}.diagnostic.md"
+[[ ! -e "${drift_run_dir}/validation-${drift_short_sha}.md" ]] || \
+    fail 'integrity failure wrote a canonical validation report'
+require_match $'phase\tsubmitted' <(cat "${drift_run_dir}/run-state.tsv")
 expect_failure run_arena decision run-head-drift --verdict CHANGES_REQUESTED \
     --summary 'snapshot moved' --next 'create a new checkpoint' --no-relay
 
@@ -2460,5 +2463,82 @@ require_match 'legacy projection submitted/reviewer/review_pending does not admi
 [[ ! -e "${illegit_dir}/run-state.tsv" ]] || fail 'illegal legacy submit materialized state'
 [[ "$(shasum -a 256 "${illegit_dir}/review.tsv" | awk '{print $1}')" == "$illegit_review_hash" ]] || \
     fail 'illegal legacy submit rewrote review.tsv'
+
+printf '%s\n' '44. validate op-token CAS and exit 10 on recorded FAIL'
+val_run='val-cas'
+run_arena start "$val_run" --repo "$project" --no-attach >/dev/null
+val_run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path "*/${val_run}/manifest.tsv" -exec dirname {} \;)"
+val_writer="$(manifest_value "${val_run_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' v >"${val_writer}/v.txt"
+git -C "$val_writer" add v.txt
+git -C "$val_writer" commit -m 'feat: v' >/dev/null
+run_arena submit "$val_run" >/dev/null
+# PASS: submitted -> validated, digest binds the canonical report
+run_arena validate "$val_run" >"${tmp_root}/val-pass.out"
+require_match 'RESULT: PASS' "${tmp_root}/val-pass.out"
+require_match $'phase\tvalidated' <(cat "${val_run_dir}/run-state.tsv")
+require_match $'reason_code\tdecision_pending' <(cat "${val_run_dir}/run-state.tsv")
+val_sha="$(awk -F $'\t' '$1 == "checkpoint_sha" { print $2 }' "${val_run_dir}/run-state.tsv")"
+val_short="${val_sha:0:12}"
+require_match $'validation_digest\t'"$(shasum -a 256 "${val_run_dir}/validation-${val_short}.md" | awk '{print $1}')" \
+    <(cat "${val_run_dir}/run-state.tsv")
+# a tampered snapshot writes ONLY the diagnostic report and does not touch state
+val_review="$(manifest_value "${val_run_dir}/review.tsv" review_worktree)"
+printf '%s\n' tampered >"${val_review}/tampered.txt"
+val_state_before="$(shasum -a 256 "${val_run_dir}/run-state.tsv" | awk '{print $1}')"
+val_report_before="$(shasum -a 256 "${val_run_dir}/validation-${val_short}.md" | awk '{print $1}')"
+val_tamper_exit=0
+run_arena validate "$val_run" >"${tmp_root}/val-tampered.out" 2>&1 || val_tamper_exit=$?
+[[ "$val_tamper_exit" == 2 ]] || fail "tampered validate exited $val_tamper_exit, expected 2"
+require_match 'RESULT: FAIL' "${val_run_dir}/validation-${val_short}.diagnostic.md"
+[[ "$(shasum -a 256 "${val_run_dir}/run-state.tsv" | awk '{print $1}')" == "$val_state_before" ]] || \
+    fail 'tampered validate changed the state file'
+[[ "$(shasum -a 256 "${val_run_dir}/validation-${val_short}.md" | awk '{print $1}')" == "$val_report_before" ]] || \
+    fail 'tampered validate rotated or replaced the canonical report'
+rm -f "${val_review}/tampered.txt"
+# revalidate: WS preserved, revision bumps
+val_waiting="$(awk -F $'\t' '$1 == "waiting_since" { print $2 }' "${val_run_dir}/run-state.tsv")"
+val_revision="$(awk -F $'\t' '$1 == "state_revision" { print $2 }' "${val_run_dir}/run-state.tsv")"
+run_arena validate "$val_run" >/dev/null
+require_match $'waiting_since\t'"${val_waiting}" <(cat "${val_run_dir}/run-state.tsv")
+val_new_revision="$(awk -F $'\t' '$1 == "state_revision" { print $2 }' "${val_run_dir}/run-state.tsv")"
+[[ "$val_new_revision" -gt "$val_revision" ]] || fail 'revalidate did not bump revision'
+# a pending decision archive blocks validate at the first lock: exit 5 and
+# the gate never runs (no new report rotation)
+run_arena decision "$val_run" --verdict CHANGES_REQUESTED --summary s --next n --no-relay >/dev/null
+val_state_before_refusal="$(shasum -a 256 "${val_run_dir}/run-state.tsv" | awk '{print $1}')"
+val_refusal_exit=0
+run_arena validate "$val_run" >"${tmp_root}/val-refusal.out" 2>&1 || val_refusal_exit=$?
+[[ "$val_refusal_exit" == 5 ]] || fail "validate with a pending decision archive exited $val_refusal_exit, expected 5"
+require_match 'pending decision residue' "${tmp_root}/val-refusal.out"
+[[ "$(shasum -a 256 "${val_run_dir}/run-state.tsv" | awk '{print $1}')" == "$val_state_before_refusal" ]] || \
+    fail 'pending-archive refusal changed the state file'
+[[ ! -e "${val_run_dir}/validation-${val_short}.r2.md" ]] || \
+    fail 'pending-archive refusal ran the gate and rotated the canonical report'
+# decision state commits land in a later task; fabricate the decided tuple
+# the decision above would produce so the next submit is a legal T2
+val_digest="$(awk -F $'\t' '$1 == "validation_digest" { print $2 }' "${val_run_dir}/run-state.tsv")"
+val_waiting_after="$(awk -F $'\t' '$1 == "waiting_since" { print $2 }' "${val_run_dir}/run-state.tsv")"
+val_transition_after="$(awk -F $'\t' '$1 == "last_transition_at" { print $2 }' "${val_run_dir}/run-state.tsv")"
+printf 'schema_version\t1\nstate_revision\t%s\nrun_status\tactive\nphase\tdecided\nresponsible_party\twriter\nreason_code\tchanges_requested\nreason_detail\t\nverdict\tCHANGES_REQUESTED\nvalidation_result\tPASS\ncheckpoint_round\t1\ncheckpoint_sha\t%s\nwaiting_since\t%s\nlast_transition_at\t%s\nlast_transition_actor\treviewer\nlast_transition_action\tdecision\nvalidation_digest\t%s\n' \
+    "$val_new_revision" "$val_sha" "$val_waiting_after" "$val_transition_after" "$val_digest" \
+    >"${val_run_dir}/.run-state-fabricated"
+mv "${val_run_dir}/.run-state-fabricated" "${val_run_dir}/run-state.tsv"
+# a fresh checkpoint whose snapshot carries the failing validation script
+printf '%s\n' f >"${val_writer}/f.txt"
+cat >"${val_writer}/.agent-arena/validate.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod 755 "${val_writer}/.agent-arena/validate.sh"
+git -C "$val_writer" add f.txt .agent-arena/validate.sh
+git -C "$val_writer" commit -m 'feat: f' >/dev/null
+run_arena submit "$val_run" >/dev/null
+# FAIL: the gate runs, the result is recorded, and validate exits 10
+val_fail_exit=0
+run_arena validate "$val_run" >"${tmp_root}/val-fail.out" 2>&1 || val_fail_exit=$?
+[[ "$val_fail_exit" == 10 ]] || fail "validate FAIL exited $val_fail_exit, expected 10"
+require_match 'RESULT: FAIL' "${tmp_root}/val-fail.out"
+require_match $'validation_result\tFAIL' <(cat "${val_run_dir}/run-state.tsv")
 
 printf '%s\n' 'tests: ok'
