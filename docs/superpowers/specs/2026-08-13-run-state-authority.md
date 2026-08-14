@@ -52,11 +52,11 @@ downgrade path (see rollback).
 | AC4 | `decision` from `validated/reviewer/decision_pending` maps the three verdicts to their exact target states; APPROVE requires `validation_result=PASS`. | decision matrix fixture |
 | AC5 | `escalate` is allowed only from `responsible_party=reviewer` with phase `submitted` or `validated`; requires `--reason-code` and `--reason`; moves to `blocked / human / reviewer_unreachable` (phase unchanged); repeating in that exact state returns "already escalated" with zero write; escalating while human is responsible for any other reason is an illegal transition. | escalate fixture |
 | AC6 | `resolve` is allowed only when `responsible_party=human`; per action: approve (only after reviewer APPROVE) → `completed / decided / none / none`; reject → `active / decided / writer / human_changes_requested` (writer must submit a new SHA); recover → requires the reviewer pane reachable as a precondition, else refuses with the two-step prerequisite (`resume` + trust confirm) and only handles operational escalation (never a formal BLOCKED verdict); cancel → `canceled / phase-kept / none / none`. BLOCKED admits only reject or cancel in v1. `reject`/`recover`/`cancel` require `--reason`. Terminal actions change Arena state only: no merge, push, worktree cleanup, or tmux teardown. `resume` respawns a dead reviewer pane in a live session. | resolve matrix fixture incl. unreachable-pane recover refusal and resume respawn |
-| AC7 | `waiting_since` resets only when the responsible party or reason changes; zero-write operations are exactly: same-SHA submit retry (T3), duplicate escalate, crash retries with matching evidence (T5b). A fresh revalidate (T5a) writes (report, `validation_result`, revision, transition fields) but preserves `waiting_since`. Terminal states have empty `waiting_since`. | waiting-since fixture incl. fresh revalidate |
+| AC7 | `waiting_since` resets only when the responsible party or reason changes; zero-write operations are exactly: same-SHA submit retry (T3) and duplicate escalate. `validate` is always a fresh execution (never zero-write); from `validated` it preserves `waiting_since`. Terminal states have empty `waiting_since`. | waiting-since fixture incl. fresh revalidate |
 | AC8 | Legacy runs (no `run-state.tsv`, no creation marker): `status`/`list` use the mutually exclusive projection rows L1–L6 (decision precedence, binding by evidence SHA, conflict conditions), labeled `legacy`, zero writes; the first successful transition command projects + migrates + transitions in one lock-internal commit (no TOCTOU); L4/L5 admit `escalate` and L1/L3 admit their resolve action sets as first migrations; contradictory evidence refuses to guess (status lists conflicts + repair candidates); legacy `checkpoint_round` is sticky `unknown`; legacy `validate` CAS baseline = state-absent + evidence digest + checkpoint_sha. | legacy fixtures (projection rows, precedence, conflicts, first-migration escalate/resolve, sticky round, repair candidates) |
 | AC9 | A corrupted state file, unknown higher `schema_version`, duplicate or missing or unknown keys, invalid enums, or an illegal field combination fails closed — never falls back to legacy derivation. `repair-state --candidate TOKEN --reason` accepts only a token that `status` printed, bound to the current evidence digest, re-validated under the lock; stale or foreign candidates are rejected. There is no `init-state`. | corruption/hostile-file and repair-token fixtures |
 | AC10 | All transitions run under a run lock: metadata carries PID, a unique owner token, and creation time; release requires the token match; `status` seeing a live lock prints `transition in progress` and exits with the lock code; `validate` captures `state_revision`+`checkpoint_sha` under the lock, runs the gate outside the lock, re-acquires, and CAS-publishes; `start` takes a parent-directory creation lock. | lock fixtures (owner token, stale PID, CAS publish, in-progress read) |
-| AC11 | Evidence is written before the state file; `run-state.tsv` replacement (mktemp+mv, mode 600) is the commit point; after a crash between evidence and commit, the next retry recognizes the same evidence and completes the commit; a run with evidence-first residue is reported by `status` as `incomplete transition` with the exact retry command and a dedicated exit code; relay and reviewer-pane respawn run best-effort after the state commit and lock release. | crash-injection, retry, incomplete-transition fixtures |
+| AC11 | Evidence is written before the state file; `run-state.tsv` replacement (mktemp+mv, mode 600) is the commit point. Crash recovery per command: submit/decision retries recognize the same evidence digest and complete the commit; validate recovers by re-execution (always-fresh; residue shapes: report-only, report+pointer, state-aligned all re-run cleanly). The CAS critical section writes report → pointer → state in fixed order, and a crash between any two files is covered by those rules (the lock does not claim multi-file atomicity). A run with evidence-first residue is reported by `status` as `incomplete transition` with the exact retry command and exit code 5; relay and reviewer-pane respawn run best-effort after the state commit and lock release. | crash-injection, retry, incomplete-transition fixtures |
 | AC12 | `status` prints the one-sentence diagnosis (who, what, since when, pane reachability, release command) and `list` reads the authoritative state; both are zero-write; outputs and exit codes for terminal, corrupt, legacy-conflict, live-lock, incomplete-transition, and missing-pane cases are per the output protocol table; `validate` exits 0 on PASS and 10 on a recorded FAIL (never 1, which stays usage); `list` aggregates run-level anomalies by numeric priority 5 > 4 > 3 > 2 > 0. | status/list output-and-exit-code fixtures |
 | AC13 | The complete v0.3 regression suite passes, except the one explicitly adapted assertion: the integrity-failure validation report now lives at the diagnostic path (`.diagnostic.md`) instead of the canonical report name. | full regression |
 
@@ -64,7 +64,7 @@ downgrade path (see rollback).
 
 `<run_dir>/run-state.tsv`, mode 600, atomically replaced (mktemp+mv).
 Every line is `key<TAB>value` with a trailing LF. CR is rejected. The key
-set is exactly the fifteen keys below; each appears exactly once, in any
+set is exactly the sixteen keys below; each appears exactly once, in any
 order. A missing key, a duplicate key, or an unknown key is a corrupted
 file and fails closed. Empty values are allowed only for the fields marked
 nullable, encoded as the key followed by TAB and immediately LF.
@@ -80,7 +80,7 @@ nullable, encoded as the key followed by TAB and immediately LF.
 | `reason_detail` | no TAB/CR/LF/control characters; at most 256 characters | yes |
 | `verdict` | `APPROVE \| CHANGES_REQUESTED \| BLOCKED` | yes |
 | `validation_result` | `PASS \| FAIL` | yes |
-| `validation_digest` | empty or 64 lowercase hex — sha256 of the canonical report content; binds the state to the exact report generation; empty unless `validated` | yes |
+| `validation_digest` | empty or 64 lowercase hex — sha256 of the canonical report content for the CURRENT checkpoint. Lifecycle: empty before the first validation of the current SHA; non-empty from the first validation and PRESERVED across `validated`, `decided`, `blocked`, `completed`, and `canceled`; cleared only by T2 (new-SHA submit) | yes |
 | `checkpoint_round` | non-negative integer or `unknown` (sticky: once `unknown`, stays `unknown`; the SHA is the real identity) | no |
 | `checkpoint_sha` | empty or 40 lowercase hex | yes |
 | `waiting_since` | epoch seconds or `unknown` (legacy-derived); empty in terminal states | yes |
@@ -93,12 +93,11 @@ No `recovery_command` field: the release command is derived safely from
 a future heartbeat is a separate observation file, not a state-field
 placeholder.
 
-Creation marker: `start` writes `<run_dir>/.run-state.creating` (content:
-run_id + PID, mode 600) before creating the worktree or manifest and
-removes it only after the state file is committed. Marker present + state
-absent = an interrupted v0.4 start (T1r), never a legacy run; marker
-present + state present = a crashed marker removal, delete the marker. A
-marker in a legacy directory (no manifest fields, no state) fails closed.
+Creation intent (parent-level, covers the mkdir window): `start` writes
+`<runs_root>/<repo_id>/.creating-<run_id>` (mode 600; content = the full
+start parameters as TSV) before creating the run directory, and removes
+it only after the state file is committed. Marker-present recovery
+follows the T1r stage table below.
 
 Legal field-combination invariants, layered by `run_status` (a state
 violating any of them is corrupted and fails closed):
@@ -111,16 +110,19 @@ active:
                CS non-empty, CR non-zero-or-unknown, WS non-empty
   validated → RP=reviewer, RC=decision_pending, V empty, VR non-empty,
                VD non-empty, CS non-empty, WS non-empty
-  decided   → CS non-empty, WS non-empty, and one of:
+  decided   → CS non-empty, VD non-empty, WS non-empty, and one of:
                 RP=human  RC=approval_pending        → V=APPROVE ∧ VR=PASS
                 RP=writer RC=changes_requested       → V=CHANGES_REQUESTED
                 RP=writer RC=human_changes_requested → V in {APPROVE, BLOCKED}
 blocked:  RP=human, WS non-empty, and one of:
             PH in {submitted, validated} ∧ RC=reviewer_unreachable
               (inherits the source-phase V/VR/VD/CS constraints)
-            PH=decided ∧ RC=block_resolution_required ∧ V=BLOCKED ∧ CS non-empty
-completed: PH=decided, RP=none, RC=none, V=APPROVE, VR=PASS, WS empty
+            PH=decided ∧ RC=block_resolution_required ∧ V=BLOCKED
+              ∧ CS non-empty ∧ VD non-empty
+completed: PH=decided, RP=none, RC=none, V=APPROVE, VR=PASS, VD non-empty,
+           WS empty
 canceled:  RP=none, RC=none, WS empty, PH in {submitted, validated, decided}
+           (V/VR/VD/CS inherited from the pre-cancel state)
 
 WS, when non-empty and not `unknown` → WS <= last_transition_at
 ```
@@ -140,15 +142,33 @@ carry its own `--reason`.
 
 | # | Command | From | Guard | To | Retry |
 | --- | --- | --- | --- | --- | --- |
-| T1 | `start` (new run) | no state file, no creation marker; run dir absent | clean integration root; probes pass; write creation marker BEFORE any worktree/manifest/state | RS=active, PH=intake, RP=writer, RC=none, V/VR/VD/CS empty, CR=0, WS=now; marker removed last | marker present but state missing = interrupted start (T1r, below) |
-| T1r | `start` (interrupted retry) | creation marker present; state missing | manifest and writer worktree exist and validate | write the T1 state (round=0) exactly once, keep the existing worktree/manifest, remove the marker, continue normal resume | a crashed T1 is never mistaken for a legacy run: the marker makes v0.4 runs distinguishable |
-| T2 | `submit` (new SHA) | `(RS=active, PH=intake, RP=writer, RC=none)` or `(RS=active, PH=decided, RP=writer, RC=changes_requested)` or `(RS=active, PH=decided, RP=writer, RC=human_changes_requested)` | clean writer tree; HEAD descends from base; HEAD != current CS | RS=active, PH=submitted, RP=reviewer, RC=review_pending, V/VR empty, CS=new SHA, CR: 0→1, N→N+1, `unknown` stays `unknown`, WS=now | evidence written (review.tsv with new SHA) but state not committed → retry recognizes same SHA and commits |
+| T1 | `start` (new run) | no state file, no creation intent; run dir absent | clean integration root; probes pass; write the parent-level creation intent BEFORE `mkdir run_dir` | RS=active, PH=intake, RP=writer, RC=none, V/VR/VD/CS empty, CR=0, WS=now; intent removed last | intent present but state missing = interrupted start (T1r stages, below) |
+| T1r | `start` (interrupted retry) | creation intent present; state missing | stage table below | write the T1 state (round=0) exactly once, keep valid existing artifacts, remove the intent, continue normal resume | a crashed T1 is never mistaken for a legacy run |
+
+Creation intent (parent-level, covers the mkdir window): `start` writes
+`<runs_root>/<repo_id>/.creating-<run_id>` (mode 600; content = the full
+start parameters as TSV: run_id, repository, state_root, worktree_root,
+profile, gate_adapter, session_name) before creating the run directory,
+and removes it only after the state file is committed. Interrupted-start
+stages and their recovery (checked in this order):
+
+```text
+S1 intent-only (run_dir absent)            → re-run start (clean re-entry)
+S2 empty run_dir, no manifest/worktree     → re-run start (recreates; the
+                                              empty private dir is Arena's own
+                                              and may be replaced)
+S3 run_dir non-empty but manifest missing  → fail closed (unexpected partial
+                                              state; human inspects, then
+                                              repair-state or manual cleanup)
+S4 manifest present, worktree missing      → fail closed (same as S3)
+S5 manifest + worktree present, no state   → commit the T1 state (round=0),
+                                              remove intent, continue resume
+S6 state present, intent remains           → delete the intent (crashed removal)
+```
+| T2 | `submit` (new SHA) | `(RS=active, PH=intake, RP=writer, RC=none)` or `(RS=active, PH=decided, RP=writer, RC=changes_requested)` or `(RS=active, PH=decided, RP=writer, RC=human_changes_requested)` | clean writer tree; HEAD descends from base; HEAD != current CS | RS=active, PH=submitted, RP=reviewer, RC=review_pending, V/VR/VD empty, CS=new SHA, CR: 0→1, N→N+1, `unknown` stays `unknown`, WS=now | evidence written (review.tsv with new SHA) but state not committed → retry recognizes same SHA and commits |
 | T3 | `submit` (same SHA) | PH=submitted, RP=reviewer, CS=same SHA | snapshot recreated/intact as needed | zero-write (no round bump, no WS reset) | — |
 | T4 | `submit` (same SHA, rejected) | RP=writer, RC in {changes_requested, human_changes_requested}, CS unchanged | — | rejected: "writer must submit a new SHA" | — |
-| T5 | `validate` (first) | PH=submitted, RP=reviewer, RC=review_pending | snapshot intact; review.tsv head == CS; project script runs (exit non-zero is a legitimate FAIL) | RS=active, PH=validated, RP=reviewer, RC=decision_pending, VR=result, VD=report digest, WS=now (reason changed) | CAS-publish (below); snapshot-integrity or infrastructure failure = no transition, diagnostic-only report (`.diagnostic.md`, never the canonical path or pointer) |
-| T5a | `validate` (fresh revalidate) | PH=validated, RP=reviewer, RC=decision_pending | same guards; project script runs again | RS=active, PH=validated (unchanged), RP=reviewer, RC=decision_pending (unchanged), VR=new result, VD=new report digest, state_revision+1, last_transition_at/action updated, **WS preserved** (party and reason unchanged) | CAS-publish; integrity/infrastructure failure = no transition |
-| T5b | `validate` (commit-only residue recovery) | PH=submitted or validated; canonical report exists; state `validation_digest` empty or differing from the report digest | — | **writes the state** (VR=report RESULT, VD=report digest, revision+1, transition fields per T5/T5a target) — not a zero-write; it is the completion of a crashed publish | — |
-| T5c | `validate` (committed replay) | state `validation_digest` equals the canonical report digest and the state matches the report | — | zero-write no-op | — |
+| T5 | `validate` | `(PH=submitted, RP=reviewer, RC=review_pending)` or `(PH=validated, RP=reviewer, RC=decision_pending)` — validate ALWAYS executes the project script fresh; no zero-write replay path exists | snapshot intact; review.tsv head == CS; project script runs (exit non-zero is a legitimate FAIL) | from `submitted`: RS=active, PH=validated, RP=reviewer, RC=decision_pending, WS=now (reason changed); from `validated`: PH/RP/RC unchanged, **WS preserved**, state_revision+1, transition fields updated; both: VR=result, VD=new report digest | CAS-publish (below); snapshot-integrity or infrastructure failure = no transition, diagnostic-only report (`.diagnostic.md`, never the canonical path or pointer); crash recovery for validate is simply re-running validate (idempotent: residues are cleaned, the old canonical report is rotated per the v0.3 rotation rule, and the CAS publishes a fresh report+pointer+state) |
 | T6 | `decision APPROVE` | PH=validated, RP=reviewer, RC=decision_pending | VR=PASS; writer HEAD == review HEAD == CS; no existing decision for CS | RS=active, PH=decided, RP=human, RC=approval_pending, V=APPROVE, WS=now | decision archive written but state not committed → retry recognizes same archive and commits |
 | T7 | `decision CHANGES_REQUESTED` | same as T6 | no PASS requirement | RS=active, PH=decided, RP=writer, RC=changes_requested, V=CHANGES_REQUESTED, WS=now | same as T6 |
 | T8 | `decision BLOCKED` | same as T6 | — | RS=blocked, PH=decided, RP=human, RC=block_resolution_required, V=BLOCKED, WS=now | same as T6 |
@@ -190,20 +210,26 @@ validate → (checkpoint_sha, sha256 of the canonical report file content)
 decision → (checkpoint_sha, sha256 of the decision archive file content)
 ```
 
-Crash-window recovery per command, boundary by boundary: `submit` —
-review.tsv already carries the new SHA → commit the state. `validate` —
-boundary 1 (only a stale temporary `.validation.*` file exists) → delete
-it and re-run; boundary 2 (canonical report and `validation.md` pointer
-are installed but the state lacks the matching `validation_digest`) →
-T5b commit-only residue recovery (writes the state once); boundary 3
-(state already carries the matching digest) → T5c zero-write replay. The
-report and pointer install and the state commit share one critical
-section on CAS success, so no further windows exist. `decision` — archive
-exists with a matching digest → commit the state; an archive with a
-differing digest (e.g. a different verdict for the same SHA) is a
-conflict, rejected without transition. A run whose evidence is newer than
-its state file (evidence-first crash residue) is reported by `status` as
-`incomplete transition` with the exact retry command and exit code 5.
+Crash-window recovery per command, boundary by boundary. The CAS
+critical section performs three file writes in fixed order — canonical
+report (via rotation of the old one), `validation.md` pointer, state file
+— and a crash can land between any two; the lock does NOT make them a
+single atomic write, so each residue is handled explicitly:
+
+- `submit` — review.tsv already carries the new SHA → retry commits the state.
+- `validate` — all three residue shapes (report-only; report+pointer;
+  state-aligned) recover the same way: re-running `validate` cleans stale
+  `.validation.*` temporaries, rotates the old canonical report, and
+  CAS-publishes a fresh report+pointer+state. A `validate` crash never
+  needs a commit-only path because the command is idempotent by
+  re-execution.
+- `decision` — archive exists with a matching digest → commit the state; an
+  archive with a differing digest (e.g. a different verdict for the same
+  SHA) is a conflict, rejected without transition.
+
+A run whose evidence is newer than its state file (evidence-first crash
+residue) is reported by `status` as `incomplete transition` with the exact
+retry command and exit code 5.
 
 ## Walkthrough round 2: command surface
 
@@ -259,10 +285,14 @@ occur.
 for each transition command:
 
 - `submit`: parse → find run → acquire lock → **re-project legacy state inside the lock** (legacy run) → writer-tree checks → write review snapshot + review.tsv (evidence) → commit state (T2/T3/T4) → release lock → best-effort pane respawn and notes → exit 0/2/4/5.
-- `validate`: parse → find run → acquire lock → **re-project legacy state inside the lock** → capture revision+SHA (legacy baseline: state-absent + evidence digest + checkpoint_sha) → release lock → run gate → temporary report → re-acquire → CAS → promote report + commit state (T5/T5a/T5b) → release → print report → exit 0/10/2/3/4/5.
+- `validate`: parse → find run → acquire lock → **re-project legacy state inside the lock** → capture revision+SHA (legacy baseline: state-absent + evidence digest + checkpoint_sha) → release lock → clean stale temporaries → run gate → temporary report → re-acquire → CAS → promote report + pointer + commit state (T5) → release → print report → exit 0/10/2/3/4/5.
 - `decision`: parse → find run → acquire lock → **re-project legacy state inside the lock** → integrity + writer-head checks → write decision archive (evidence) → commit state (T6–T8) → release → best-effort relay → exit 0/2/4/5.
 - `escalate`: parse (both reason fields) → find run → acquire lock → **legacy run: project inside the lock, migrate to v1, and apply T9 in the same commit when the projection satisfies the T9 guard (legacy SUBMITTED/VALIDATED with a dead reviewer is therefore a legal first migration via escalate)** → guard T9 → commit state → release → exit 0/2/4.
 - `resolve`: parse (action + reason policy) → find run → acquire lock → **legacy run: project inside the lock, migrate to v1, and apply the action in the same commit; legacy disposition maps into the guards: `legacy_human_disposition_unknown` + V=APPROVE admits approve/reject/cancel; a projected legacy BLOCKED admits reject/cancel** → guard T10–T13 (recover: pane reachability check inside the lock) → commit state → release → exit 0/2/4.
+- `start`: parse → probes → parent creation lock → write parent creation intent → mkdir run_dir → worktree/manifest → commit state (T1) → remove intent → release → tmuxp load → exit 0/2/4; interrupted-start stages S1–S6 per T1r.
+- `resume`: parse → find run → acquire lock → project/migrate legacy if needed → verify manifest/worktree → session exists: respawn a dead reviewer pane from the manifest gate adapter; session absent: recreate it → release → attach → exit 0/2/4. The gate trust prompt after a respawn is a HUMAN prompt — Arena cannot verify its confirmation, so recover's reachability check remains the pane-liveness test.
+- `repair-state`: parse → find run → acquire lock → re-compute the evidence digest → parse the candidate payload → verify the legal-combination invariants → write v1 state (state_revision=1 for a first file, otherwise +1; last_transition_at=now; actor=system; action=repair-state; reason_detail=--reason; dynamic fields materialized) → release → exit 0/2/4.
+- Legacy first real migrations always write `state_revision=1`.
 
 ## Walkthrough round 3: atomicity, compatibility, and the lock
 
@@ -292,12 +322,12 @@ matching row wins.
 
 | # | Condition | Semantic projected state (guards match this) | Display label |
 | --- | --- | --- | --- |
-| L1 | `Dec` exists, bound to `review_head`, verdict APPROVE | `decided / human / approval_pending / APPROVE` | `legacy_human_disposition_unknown` (human acceptance unprovable in v0.3 evidence) |
-| L2 | `Dec` exists, bound, verdict CHANGES_REQUESTED | `decided / writer / changes_requested / CHANGES_REQUESTED` | `legacy` |
-| L3 | `Dec` exists, bound, verdict BLOCKED | `blocked / human / block_resolution_required / BLOCKED` | `legacy` |
-| L4 | no `Dec`; `Val` exists and is bound to `review_head` | `validated / reviewer / decision_pending / VR=report RESULT` | `legacy` |
+| L1 | `Dec` exists, bound to `review_head`, verdict APPROVE; canonical report must exist and bind to `review_head` (v0.3 required it) — VR=report RESULT, VD=sha256(report) | `decided / human / approval_pending / APPROVE / VR=PASS` | `legacy_human_disposition_unknown` (human acceptance unprovable in v0.3 evidence) |
+| L2 | `Dec` exists, bound, verdict CHANGES_REQUESTED; VR/VD computed from the canonical report when present, empty otherwise | `decided / writer / changes_requested / CHANGES_REQUESTED` | `legacy` |
+| L3 | `Dec` exists, bound, verdict BLOCKED; VR/VD computed from the canonical report when present, empty otherwise | `blocked / human / block_resolution_required / BLOCKED` | `legacy` |
+| L4 | no `Dec`; `Val` exists and is bound to `review_head` | `validated / reviewer / decision_pending / VR=report RESULT, VD=sha256(report)` | `legacy` |
 | L5 | no `Dec`, no `Val`; `R` exists | `submitted / reviewer / review_pending / CS=review_head` | `legacy` |
-| L6 | no `R` | `intake / writer / none / round=unknown` | `legacy` |
+| L6 | no `R` AND no orphan evidence (no Val/Dec pointers, reports, or decision files of any kind) | `intake / writer / none / round=unknown` | `legacy` |
 
 Conflict conditions (any one → the projection is refused; `status` lists
 each conflict and points to `repair-state`; transition commands refuse):
@@ -309,12 +339,14 @@ each conflict and points to `repair-state`; transition commands refuse):
 - `Val` report exists but `RESULT` is neither PASS nor FAIL
 - evidence sets disagree on `review_head` (e.g. pointer files bound to
   different SHAs than `review.tsv`)
+- L1 with a missing or unparseable canonical report
+- orphan evidence (any Val/Dec file) with no `R` (L6 does not apply)
 
 `Dec` takes precedence over `Val` (a checkpoint with a decision is
 `decided`/`blocked`, never re-projected to `validated`). Legacy-derived
 `waiting_since`/`last_transition_at` are `unknown`; legacy
-`checkpoint_round` is sticky `unknown`; `validation_digest` is empty in
-projections.
+`checkpoint_round` is sticky `unknown`. Legacy first migrations write
+`state_revision=1`.
 
 Legacy first-migration actions: any transition command on a legacy run
 projects inside the lock, migrates the projection to v1, and applies the
@@ -361,11 +393,11 @@ paths:
 
 - first round, legacy sticky-`unknown` round, same-SHA retry, same-SHA
   after reject rejection
-- validation PASS/FAIL, fresh revalidate (writes, preserves
-  `waiting_since`), residue recovery T5b (writes the state, digest-driven)
-  vs committed replay T5c (zero-write), integrity failure no-transition +
-  diagnostic-only report path, CAS stale result, exit 0 vs 10 vs 3
-  precedence
+- validation PASS/FAIL from both legal sources (submitted and validated),
+  `waiting_since` preserved on revalidate, validate-always-fresh semantics
+  (all three residue shapes recover by re-running), integrity failure
+  no-transition + diagnostic-only report path, CAS stale result, exit 0 vs
+  10 vs 3 precedence
 - decision matrix incl. APPROVE-without-PASS rejection
 - escalate idempotence, illegal escalate from other human states, legacy
   first-migration escalate
@@ -376,10 +408,13 @@ paths:
 - fault injection at "evidence written, state not committed" for
   submit/validate/decision + retry recognition via sameness tuples +
   `incomplete transition` status reporting
-- legacy projection rows L1–L6 incl. decision precedence and each conflict
-  condition, sticky round, lock-internal projection (no TOCTOU), repair
-  candidate generation (fresh accepted, stale rejected, foreign rejected)
-- interrupted-start marker (T1r) vs legacy discrimination
+- legacy projection rows L1–L6 incl. decision precedence, VR/VD computed
+  from canonical reports, each conflict condition, sticky round,
+  lock-internal projection (no TOCTOU), conflict→candidate table rows
+  (candidate accepted when fresh, stale rejected, foreign rejected,
+  refusal-only conflicts), corrupted-state policy (repair never rewrites
+  corrupted files; manual-removal recovery path)
+- interrupted-start intent stages S1–S6 vs legacy discrimination
 - corrupted v1 file, future schema, duplicate/missing/unknown keys,
   invalid enums, illegal field combinations (per the layered invariants),
   symlinked state file
