@@ -232,21 +232,18 @@ is EXEMPT from the generic "differing digest = conflict" rule:
 2. Release the lock; run the gate; write ONLY this op-token's temporary
    file (the gate never writes a canonical path).
 3. Re-acquire the lock; compare the FULL baseline against the current
-   values, with three outcomes: (a) an archive appeared AND
-   `state_revision` is unchanged — the decision wrote evidence only, a
-   pending residue → exit 5; (b) `state_revision` changed — the decision
-   completed, stale → exit 3; (c) the triple baseline matches — CAS
-   success: promote the temporary report to
-   canonical — archive-COPY first (cp the old canonical to a
+   values, with exactly three ordered outcomes: (a) an archive appeared
+   AND `state_revision` is unchanged — the decision wrote evidence only,
+   a pending residue → exit 5 (complete the decision retry first); (b)
+   `state_revision` changed — the decision completed, stale → exit 3;
+   (c) the triple baseline matches — CAS success: promote the temporary
+   report to canonical — archive-COPY first (cp the old canonical to a
    `validation-<sha>.rN` temporary then mv that into place, so a crash
    never leaves a truncated `.rN`), then atomically replace the
    canonical report (mktemp+mv), then the pointer, then commit the state
-   — and remove this op-token's temporary. On mismatch: if a decision
-   archive appeared after the baseline (pending decision residue),
-   refuse with exit 5 (foreign residue — complete the decision retry
-   first) and remove only this op-token's temporary; any other mismatch
-   removes only this op-token's temporary, updates neither pointer nor
-   state, and exits 3.
+   — and remove this op-token's temporary. Outcomes (a) and (b) also
+   remove only this op-token's temporary and update neither pointer nor
+   state.
 4. Temporary cleanup: a lock holder may delete a `.validation.*.tmp`
    only when the owner PID in the token is confirmed dead (kill -0
    fails); its own temporary is always removed.
@@ -369,14 +366,16 @@ for each transition command:
 - `escalate`: parse (both reason fields) → find run → acquire lock → **legacy run: project inside the lock, migrate to v1, and apply T9 in the same commit when the projection satisfies the T9 guard (legacy SUBMITTED/VALIDATED with a dead reviewer is therefore a legal first migration via escalate)** → guard T9 → commit state → release → exit 0/2/4.
 - `resolve`: parse (action + reason policy) → find run → acquire lock → **legacy run: project inside the lock, migrate to v1, and apply the action in the same commit; legacy disposition maps into the guards: `legacy_human_disposition_unknown` + V=APPROVE admits approve/reject/cancel; a projected legacy BLOCKED admits reject/cancel** → guard T10–T13 (recover: pane reachability check inside the lock) → commit state → release → exit 0/2/4.
 - `start`: parse → probes → parent creation lock → write parent creation intent → mkdir run_dir → worktree/manifest → **acquire the run lock BEFORE the state commit** → commit state (T1) → remove intent (inside the run lock) → release the parent lock → **re-check under the run lock whether the tmux session already exists (skip load if it does)** → tmuxp load (session creation under the run lock) → release the run lock → exit 0/2/4; interrupted-start stages S1–S6 per T1r use the same lock ordering (S5's state commit is under the run lock). EVERY non-start command refuses while a creation intent exists (exit 5, retry: start) — no transition may enter a half-created run. `resume` refuses while a creation intent exists and creates or respawns the session under the SAME run lock, so a concurrent start and resume can never create the tmux session twice; a tmuxp-load failure releases the run lock and the next retry re-enters through the resume path.
-- `resume`: parse → find run → **refuse while a creation intent exists** (exit 2: an interrupted start must finish first) → acquire lock → **legacy run: in-memory projection only (read-only, no state write — resume is not a transition; there is no T-row and no `last_transition_action` for it)** → verify manifest/worktree → **respawn a dead reviewer pane INSIDE the lock** (session exists) or recreate the session (session absent) → release lock → attach → exit 0/2/4. Respawn-inside-the-lock closes the checkpoint race: a concurrent submit cannot change the reviewer target between the check and the respawn. The gate trust prompt after a respawn is a HUMAN prompt — Arena cannot verify its confirmation, so recover's reachability check remains the pane-liveness test.
+- `resume`: parse → find run → **refuse while a creation intent exists** (exit 5, retry: start — same as every non-start command) → acquire lock → **legacy run: in-memory projection only (read-only, no state write — resume is not a transition; there is no T-row and no `last_transition_action` for it)** → verify manifest/worktree → **respawn a dead reviewer pane INSIDE the lock** (session exists) or recreate the session (session absent) → release lock → attach → exit 0/2/4. Respawn-inside-the-lock closes the checkpoint race: a concurrent submit cannot change the reviewer target between the check and the respawn. The gate trust prompt after a respawn is a HUMAN prompt — Arena cannot verify its confirmation, so recover's reachability check remains the pane-liveness test.
 - `repair-state`: parse → find run → acquire lock → if an intent exists, THE OWNER recovers per the three-state rule (a: continue, b: zero-write finish, c: fail closed) instead of exiting 5 → re-compute the evidence digest → parse the candidate payload → verify the legal-combination invariants → write the repair intent (original state baseline + evidence baseline + candidate + tombstone move map) → audit-copy a corrupt file if any → tombstone orphan evidence per the move map → write v1 state (revision rules per T14) → remove the intent → release → exit 0/2/4; a crash anywhere after the intent re-executes from the intent.
 - Legacy first real migrations always write `state_revision=1`.
-- `status`: parse → find run → check in priority order: (1) parent
-  creation intent — interrupted-start stages S1–S6, recovery owned by
-  `start`; (2) LIVE LOCK — `transition in progress`, exit 4 (a repair
-  running under the lock reports 4, not 5); (3) repair intent with no
-  live lock — `incomplete transition; retry: repair-state`, exit 5,
+- `status`: parse → find run → check in priority order: (1) LIVE LOCK
+  (run or parent creation lock with a live owner) — `transition in
+  progress`, exit 4, always wins; (2) parent creation intent with no
+  live owner — stages S1/S2/S5/S6 report `incomplete transition; retry:
+  start` (exit 5, recovery owned by `start`), stages S3/S4 report the
+  manual abort protocol (exit 2, human conflict); (3) repair intent with
+  no live lock — `incomplete transition; retry: repair-state`, exit 5,
   before any ordinary state parse; (4) ordinary parse: read state file or
   (legacy: project read-only, lock-free; no state write) → check tmux
   session and pane liveness (observation only) → print the diagnosis
@@ -427,10 +426,14 @@ Evidence keys: `R` = review.tsv with `review_head`; `Val` = canonical
 validation report + pointer bound to `review_head`; `Dec` = decision
 archive bound to `review_head`. Matching is by the binding SHA inside the
 evidence, never by filename alone. A PRECHECK runs BEFORE the row
-matching: residue shapes (report-without-pointer → validate-owned, exit
-5; pending decision archive with no state → decision-owned) and the
-conflict conditions below are diagnosed first, and only a run passing
-the precheck reaches the rows. Rows are mutually exclusive; the first
+matching and diagnoses, in order: (a) report-without-pointer — classified
+as a validate-owned residue (exit 5, retry: validate) ONLY when `R`
+exists, the report parses, and it binds to the current `review_head`;
+otherwise it is a conflict; (b) pending decision archive with no state —
+decision-owned residue ONLY when the archive carries v0.4 metadata with
+`State revision: 0`; a plain v0.3 decision continues into rows L1–L3;
+(c) the conflict conditions below. Only a run passing the precheck
+reaches the rows. Rows are mutually exclusive; the first
 matching row wins.
 
 | # | Condition | Semantic projected state (guards match this) | Display label |
@@ -503,7 +506,8 @@ table:
 | Conflict | Candidate (target state) |
 | --- | --- |
 | Dec bound to a SHA differing from `review_head` | L-row projection ignoring the orphan Dec (discarded evidence listed in `status`) |
-| Val pointer/report bound to a differing SHA | L-row projection ignoring the orphan Val |
+| Val pointer/report bound to a differing SHA | L-row projection ignoring the orphan Val (safe tombstone) |
+| Val pointer exists but the canonical report is missing | no safe candidate — refusal only (the pointer names evidence that cannot be inspected) |
 | evidence sets disagree on `review_head` | projection keyed on `review.tsv`'s `review_head`, discarded evidence listed |
 | L1/L2/L3 with missing or unparseable canonical validation report | no safe candidate — refusal only |
 | verdict unparseable / RESULT illegal / `review.tsv` itself unreadable | no safe candidate — refusal only |
@@ -512,11 +516,15 @@ table:
 `repair-state` (T14) is intent-first; the full protocol lives in the T14
 matrix row below.
 
-| T14 | `repair-state` | legacy conflict (status-printed candidate), corrupted state file (candidate bound to the corrupted-file digest), or valid-v1 state with conflicting evidence | token re-computed and matched under the lock; candidate satisfies the invariants | repair intent first — atomic write of `<run_dir>/.repair.intent` carrying: the ORIGINAL STATE baseline (digest+revision, or `absent`), the original evidence baseline digest, the token, the `--reason`, the materialized target values (concrete `waiting_since`/`last_transition_at`/target state digest), the audit-copy target (if a corrupt file), and the complete tombstone move map → audit-copy the corrupt file if any → tombstone orphan evidence per the move map → write v1 state (state_revision=1 for a first file or after a corrupt-file replacement, otherwise current+1; checkpoint_round=0 when recovering to `intake` with no evidence — NEVER legacy `unknown`); dynamic fields from placeholders → remove the intent last | retry-from-intent semantics, three states: (a) state equals the ORIGINAL baseline → a crash landed before the commit; continue the tombstone/commit sequence; (b) state equals the target digest → remove the intent and finish (zero-write completion); (c) anything else → FAIL CLOSED (never re-derive or bump `current+1`). A crash at ANY point after the intent (including every tombstone boundary and the state-committed/intent-left shape) re-executes from the intent, never from the stale token |
+| T14 | `repair-state` | legacy conflict (status-printed candidate), corrupted state file (candidate bound to the corrupted-file digest), or valid-v1 state with conflicting evidence | token re-computed and matched under the lock; candidate satisfies the invariants | repair intent first — atomic write of `<run_dir>/.repair.intent` carrying: the ORIGINAL STATE baseline encoded as `absent` | `valid:<digest>:<revision>` | `corrupt:<raw-digest>` (a corrupted file whose revision cannot be trusted is identified by its raw digest), the original evidence baseline digest, the token, the `--reason`, the materialized target values (concrete `waiting_since`/`last_transition_at`/target state digest), the audit-copy target (if a corrupt file), and the complete tombstone move map → audit-copy the corrupt file if any → tombstone orphan evidence per the move map → write v1 state (state_revision=1 for a first file or after a corrupt-file replacement, otherwise current+1; checkpoint_round=0 when recovering to `intake` with no evidence — NEVER legacy `unknown`); dynamic fields from placeholders → remove the intent last | retry-from-intent semantics, three states: (a) state equals the ORIGINAL baseline → a crash landed before the commit; continue the tombstone/commit sequence; (b) state equals the target digest → remove the intent and finish (zero-write completion); (c) anything else → FAIL CLOSED (never re-derive or bump `current+1`). A crash at ANY point after the intent (including every tombstone boundary and the state-committed/intent-left shape) re-executes from the intent, never from the stale token |
 
 The valid-v1 evidence-conflict source covers a state file that parses
 but contradicts the evidence, restricted to cases where the evidence
-clearly leads or directly contradicts non-terminal flow fields: verdict
+clearly leads or directly contradicts non-terminal flow fields AND the
+residue precheck has already run: owning-command sameness recovery
+(submit retry, T6r, L-T3/L-T6, validate re-execution) always takes
+precedence, and T14 accepts only the genuine conflicts no owning
+command can recover — verdict
 empty while a decision archive exists, `validation_result`/`digest`
 disagreeing with the canonical report, or `checkpoint_sha` disagreeing
 with `review.tsv`. Its candidate is the status-printed projection
@@ -598,9 +606,10 @@ paths:
   when fresh, stale rejected, foreign rejected, refusal-only conflicts),
   repair intent protocol (intent written before any tombstone; crash at
   EVERY multi-file tombstone boundary and the state-committed/intent-left
-  shape re-executes from the intent, not the stale token; state == intent
-  target → zero-write completion; state mismatch → fail closed; all
-  commands check the intent before ordinary parsing with exit 5),
+  shape re-executes from the intent, not the stale token; three-state
+  recovery: original baseline → continue, target → zero-write cleanup,
+  other → fail closed; only FOREIGN commands exit 5, the owner recovers;
+  baseline encodings absent/valid:<digest>:<revision>/corrupt:<raw-digest>),
   valid-v1 evidence-conflict as a T14 source, corrupted-state controlled
   replacement (audit copy inside T14, atomic replace, token bound to
   corrupted-file digest, no authority gap), future-schema refusal, resume
