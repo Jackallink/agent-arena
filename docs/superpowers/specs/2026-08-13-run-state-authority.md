@@ -365,16 +365,18 @@ for each transition command:
 - `decision`: parse → find run → acquire lock → **re-project legacy state inside the lock** → integrity + writer-head checks → write decision archive (evidence) → commit state (T6–T8) → release → best-effort relay → exit 0/2/4/5.
 - `escalate`: parse (both reason fields) → find run → acquire lock → **legacy run: project inside the lock, migrate to v1, and apply T9 in the same commit when the projection satisfies the T9 guard (legacy SUBMITTED/VALIDATED with a dead reviewer is therefore a legal first migration via escalate)** → guard T9 → commit state → release → exit 0/2/4.
 - `resolve`: parse (action + reason policy) → find run → acquire lock → **legacy run: project inside the lock, migrate to v1, and apply the action in the same commit; legacy disposition maps into the guards: `legacy_human_disposition_unknown` + V=APPROVE admits approve/reject/cancel; a projected legacy BLOCKED admits reject/cancel** → guard T10–T13 (recover: pane reachability check inside the lock) → commit state → release → exit 0/2/4.
-- `start`: parse → probes → parent creation lock → write parent creation intent → mkdir run_dir → worktree/manifest → **acquire the run lock BEFORE the state commit** → commit state (T1) → remove intent (inside the run lock) → release the parent lock → **re-check under the run lock whether the tmux session already exists (skip load if it does)** → tmuxp load (session creation under the run lock) → release the run lock → exit 0/2/4; interrupted-start stages S1–S6 per T1r use the same lock ordering (S5's state commit is under the run lock). EVERY non-start command refuses while a creation intent exists (exit 5, retry: start) — no transition may enter a half-created run. `resume` refuses while a creation intent exists and creates or respawns the session under the SAME run lock, so a concurrent start and resume can never create the tmux session twice; a tmuxp-load failure releases the run lock and the next retry re-enters through the resume path.
-- `resume`: parse → find run → **refuse while a creation intent exists** (exit 5, retry: start — same as every non-start command) → acquire lock → **legacy run: in-memory projection only (read-only, no state write — resume is not a transition; there is no T-row and no `last_transition_action` for it)** → verify manifest/worktree → **respawn a dead reviewer pane INSIDE the lock** (session exists) or recreate the session (session absent) → release lock → attach → exit 0/2/4. Respawn-inside-the-lock closes the checkpoint race: a concurrent submit cannot change the reviewer target between the check and the respawn. The gate trust prompt after a respawn is a HUMAN prompt — Arena cannot verify its confirmation, so recover's reachability check remains the pane-liveness test.
+- `start`: parse → probes → parent creation lock → write parent creation intent → mkdir run_dir → worktree/manifest → **acquire the run lock BEFORE the state commit** → commit state (T1) → remove intent (inside the run lock) → release the parent lock → **re-check under the run lock whether the tmux session already exists (skip load if it does)** → tmuxp load (session creation under the run lock) → release the run lock → exit 0/2/4; interrupted-start stages S1–S6 per T1r use the same lock ordering (S5's state commit is under the run lock). Every command except `start` (including `resume`) refuses while a creation intent exists without a live owner (exit 5, retry: start); only `status` and `list` additionally distinguish S3/S4 with exit 2 and the abort protocol — no transition may enter a half-created run. `resume` refuses while a creation intent exists and creates or respawns the session under the SAME run lock, so a concurrent start and resume can never create the tmux session twice; a tmuxp-load failure releases the run lock and the next retry re-enters through the resume path.
+- `resume`: parse → find run → **refuse while a creation intent exists without a live owner** (exit 5, retry: start — same as every command except `start`) → acquire lock → **legacy run: in-memory projection only (read-only, no state write — resume is not a transition; there is no T-row and no `last_transition_action` for it)** → verify manifest/worktree → **respawn a dead reviewer pane INSIDE the lock** (session exists) or recreate the session (session absent) → release lock → attach → exit 0/2/4. Respawn-inside-the-lock closes the checkpoint race: a concurrent submit cannot change the reviewer target between the check and the respawn. The gate trust prompt after a respawn is a HUMAN prompt — Arena cannot verify its confirmation, so recover's reachability check remains the pane-liveness test.
 - `repair-state`: parse → find run → acquire lock → if an intent exists, THE OWNER recovers per the three-state rule (a: continue, b: zero-write finish, c: fail closed) instead of exiting 5 → re-compute the evidence digest → parse the candidate payload → verify the legal-combination invariants → write the repair intent (original state baseline + evidence baseline + candidate + tombstone move map) → audit-copy a corrupt file if any → tombstone orphan evidence per the move map → write v1 state (revision rules per T14) → remove the intent → release → exit 0/2/4; a crash anywhere after the intent re-executes from the intent.
 - Legacy first real migrations always write `state_revision=1`.
 - `status`: parse → find run → check in priority order: (1) LIVE LOCK
   (run or parent creation lock with a live owner) — `transition in
   progress`, exit 4, always wins; (2) parent creation intent with no
   live owner — stages S1/S2/S5/S6 report `incomplete transition; retry:
-  start` (exit 5, recovery owned by `start`), stages S3/S4 report the
-  manual abort protocol (exit 2, human conflict); (3) repair intent with
+  start` (exit 5, recovery owned by `start`); stages S3/S4 report the
+  manual abort protocol (exit 2), and ONLY `status`, `list`, and `start`
+  take the exit-2 path — every OTHER command (including `resume`) treats
+  any creation intent without a live owner as exit 5 + retry `start`; (3) repair intent with
   no live lock — `incomplete transition; retry: repair-state`, exit 5,
   before any ordinary state parse; (4) ordinary parse: read state file or
   (legacy: project read-only, lock-free; no state write) → check tmux
@@ -458,10 +460,10 @@ each conflict and points to `repair-state`; transition commands refuse):
 - L1–L3 with a missing, unparseable, or unbound canonical validation
   report (for L1 additionally: RESULT is not PASS)
 
-A canonical validation report WITHOUT its pointer is NOT a repair
-conflict: it is a validate-owned residue — `status` reports `incomplete
-transition; retry: validate` with exit 5, no repair candidate is printed,
-and re-running validate converges.
+A canonical validation report WITHOUT its pointer is a validate-owned
+residue (exit 5, retry: validate, no repair candidate) ONLY under the
+precheck's exact conditions: `R` exists, the report parses, and it binds
+to the current `review_head`; otherwise it is a repair conflict (exit 2).
 - orphan evidence (any Val/Dec file) with no `R` (L6 does not apply)
 
 `Dec` takes precedence over `Val` (a checkpoint with a decision is
