@@ -360,7 +360,7 @@ for each transition command:
 - `decision`: parse → find run → acquire lock → **re-project legacy state inside the lock** → integrity + writer-head checks → write decision archive (evidence) → commit state (T6–T8) → release → best-effort relay → exit 0/2/4/5.
 - `escalate`: parse (both reason fields) → find run → acquire lock → **legacy run: project inside the lock, migrate to v1, and apply T9 in the same commit when the projection satisfies the T9 guard (legacy SUBMITTED/VALIDATED with a dead reviewer is therefore a legal first migration via escalate)** → guard T9 → commit state → release → exit 0/2/4.
 - `resolve`: parse (action + reason policy) → find run → acquire lock → **legacy run: project inside the lock, migrate to v1, and apply the action in the same commit; legacy disposition maps into the guards: `legacy_human_disposition_unknown` + V=APPROVE admits approve/reject/cancel; a projected legacy BLOCKED admits reject/cancel** → guard T10–T13 (recover: pane reachability check inside the lock) → commit state → release → exit 0/2/4.
-- `start`: parse → probes → parent creation lock → write parent creation intent → mkdir run_dir → worktree/manifest → commit state (T1) → remove intent → release → tmuxp load → exit 0/2/4; interrupted-start stages S1–S6 per T1r.
+- `start`: parse → probes → parent creation lock → write parent creation intent → mkdir run_dir → worktree/manifest → commit state (T1) → **acquire the run lock while still holding the parent lock** → remove intent → release the parent lock → tmuxp load (session creation under the run lock) → release the run lock → exit 0/2/4; interrupted-start stages S1–S6 per T1r. `resume` creates or respawns the session under the SAME run lock, so a concurrent start and resume can never create the tmux session twice; a tmuxp-load failure releases the run lock and the next retry re-enters through the resume path.
 - `resume`: parse → find run → acquire lock → **legacy run: in-memory projection only (read-only, no state write — resume is not a transition; there is no T-row and no `last_transition_action` for it)** → verify manifest/worktree → **respawn a dead reviewer pane INSIDE the lock** (session exists) or recreate the session (session absent) → release lock → attach → exit 0/2/4. Respawn-inside-the-lock closes the checkpoint race: a concurrent submit cannot change the reviewer target between the check and the respawn. The gate trust prompt after a respawn is a HUMAN prompt — Arena cannot verify its confirmation, so recover's reachability check remains the pane-liveness test.
 - `repair-state`: parse → find run → acquire lock → re-compute the evidence digest → parse the candidate payload → verify the legal-combination invariants → write the repair intent (original baseline + candidate + tombstone move map) → audit-copy a corrupt file if any → tombstone orphan evidence per the move map → write v1 state (revision rules per T14) → remove the intent → release → exit 0/2/4; a crash anywhere after the intent re-executes from the intent.
 - Legacy first real migrations always write `state_revision=1`.
@@ -530,13 +530,14 @@ paths:
 - first round, legacy sticky-`unknown` round, same-SHA retry, same-SHA
   after reject rejection
 - validation PASS/FAIL from both legal sources (submitted and validated),
-  `waiting_since` preserved on revalidate, op-token protocol (lock-captured
-  baseline, token-named temporaries written outside the lock, CAS publish,
-  dead-owner-only cleanup), validate exempt from digest-conflict,
-  safe/convergent re-execution recovery, archive-COPY + atomic canonical
-  replace (no truncated .rN), integrity failure no-transition +
-  diagnostic-only report path, CAS stale result, exit 0 vs 10 vs 3
-  precedence
+  `waiting_since` preserved on revalidate, op-token protocol (FIRST-lock
+  pending-archive refusal exit 5 — gate never runs; triple baseline
+  revision+SHA+archive-absence; token-named temporaries written outside
+  the lock; CAS publish; dead-owner-only cleanup), validate exempt from
+  digest-conflict, safe/convergent re-execution recovery, archive-COPY +
+  atomic canonical replace (no truncated .rN), integrity failure
+  no-transition + diagnostic-only report path, CAS stale result, exit 0
+  vs 10 vs 3 vs 5 precedence
 - decision matrix incl. APPROVE-without-PASS rejection, archive metadata
   (`State revision` + `Validation digest`) re-checked in T6r, the validate
   CAS baseline including the archive digest-or-absence (a pending archive
@@ -546,7 +547,8 @@ paths:
   residue ownership (owning+matching recovers; owning+mismatching exits 2;
   foreign exits 5), legacy first migrations L-T3 (inherited T3 guards) and
   L-T6 (`State revision: 0` baseline encoding, decision.md completed
-  first)
+  first, ALL T6/T7/T8 current-state guards re-checked incl.
+  writer-head-drift rejection)
 - escalate idempotence, illegal escalate from other human states, legacy
   first-migration escalate
 - every resolve action's exact post-state, terminal `party=none` + empty
@@ -558,21 +560,26 @@ paths:
   `incomplete transition` status reporting
 - legacy projection rows L1–L6 incl. decision precedence, L1–L3
   mandatory matching parseable report (L1 additionally RESULT=PASS;
-  missing = conflict), report-without-pointer residue conflict, each
-  conflict condition, sticky round, lock-internal projection (no TOCTOU),
+  missing = conflict), report-without-pointer as validate-owned residue
+  (exit 5, no repair candidate), each conflict condition, sticky round,
+  lock-internal projection (no TOCTOU),
   conflict→candidate table rows (placeholder payload @reason/@revision/
   @now; orphan evidence tombstoned under `orphaned/`; candidate accepted
   when fresh, stale rejected, foreign rejected, refusal-only conflicts),
   repair intent protocol (intent written before any tombstone; crash at
-  EVERY multi-file tombstone boundary re-executes from the intent, not the
-  stale token), corrupted-state controlled replacement (audit copy inside
-  T14, atomic replace, token bound to corrupted-file digest, no authority
-  gap), future-schema refusal, resume never migrates legacy, resume
-  respawn inside the lock
+  EVERY multi-file tombstone boundary and the state-committed/intent-left
+  shape re-executes from the intent, not the stale token; state == intent
+  target → zero-write completion; state mismatch → fail closed; all
+  commands check the intent before ordinary parsing with exit 5),
+  valid-v1 evidence-conflict as a T14 source, corrupted-state controlled
+  replacement (audit copy inside T14, atomic replace, token bound to
+  corrupted-file digest, no authority gap), future-schema refusal, resume
+  never migrates legacy, resume respawn inside the lock
 - interrupted-start intent stages S1–S6 (S1/S2/S5/S6 auto-recovery;
   S3/S4 manual abort protocol output incl. worktree-registry/branch
   cleanup steps), intent derived-input binding (mismatched retry fails
-  closed) vs legacy discrimination
+  closed) vs legacy discrimination, start/resume double-session-creation
+  race (both under the shared run lock)
 - corrupted v1 file, future schema, duplicate/missing/unknown keys,
   invalid enums, illegal field combinations (per the layered invariants),
   symlinked state file
