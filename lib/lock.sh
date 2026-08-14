@@ -45,7 +45,8 @@ arena_lock_acquire() {
                 rm -rf "$lock_path"
                 mkdir "$lock_path" 2>/dev/null || arena_die "cannot acquire lock: $lock_path"
             else
-                arena_die "transition in progress (lock without metadata): $lock_path"
+                printf 'transition in progress (lock without metadata): %s\n' "$lock_path" >&2
+                exit 4
             fi
         fi
     fi

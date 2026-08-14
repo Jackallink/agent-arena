@@ -1530,15 +1530,17 @@ ARENA_SOURCE_ROOT="$source_root" bash -c '
     source "$1/lib/lock.sh"
     arena_lock_acquire "$2" token-c
 ' _ "$source_root" "$lock_root/three" || fail 'stale metadata-less lock was not recoverable'
-# metadata-less fresh lock (< 60s) is live
+# metadata-less fresh lock (< 60s) is live: contenders exit 4, never 1
 mkdir -p "$lock_root/four"
 lock_exit=0
 ARENA_SOURCE_ROOT="$source_root" bash -c '
     set -euo pipefail
     source "$1/lib/lock.sh"
     arena_lock_acquire "$2" token-d
-' _ "$source_root" "$lock_root/four" || lock_exit=$?
-[[ "$lock_exit" != 0 ]] || fail 'fresh metadata-less lock was treated as stale'
+' _ "$source_root" "$lock_root/four" 2>"${lock_root}/four.err" || lock_exit=$?
+[[ "$lock_exit" == 4 ]] || \
+    fail "fresh metadata-less lock did not exit 4 (exit ${lock_exit})"
+require_match 'transition in progress (lock without metadata)' "${lock_root}/four.err"
 # dead-PID lock is recoverable
 mkdir -p "$lock_root/five"
 printf 'pid=999999999\ntoken=dead\ncreated_at=1\n' >"$lock_root/five/owner"
