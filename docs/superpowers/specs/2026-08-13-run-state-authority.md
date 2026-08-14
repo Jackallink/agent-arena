@@ -123,16 +123,16 @@ blocked:  RP=human, WS non-empty, and one of:
             PH in {submitted, validated} ∧ RC=reviewer_unreachable
               (inherits the source-phase V/VR/VD/CS constraints)
             PH=decided ∧ RC=block_resolution_required ∧ V=BLOCKED
-              ∧ CS non-empty ∧ VD non-empty
+              ∧ VR non-empty ∧ CS non-empty ∧ VD non-empty
 completed: PH=decided, RP=none, RC=none, V=APPROVE, VR=PASS, VD non-empty,
            CS non-empty, WS empty
 canceled:  RP=none, RC=none, WS empty, one of (fully enumerated, no
            inheritance):
              PH=submitted → CS non-empty, V/VR/VD empty
              PH=validated → CS/VR/VD non-empty, V empty
-             PH=decided   → CS/VD non-empty, V in {APPROVE, BLOCKED}
-                            (VR=PASS iff V=APPROVE; VR non-empty iff
-                            V=BLOCKED)
+             PH=decided   → CS/VD non-empty, and one of:
+                              V=APPROVE ∧ VR=PASS
+                              V=BLOCKED ∧ VR non-empty
 
 All non-intake states require a non-empty `checkpoint_sha` and
 `checkpoint_round` positive-or-unknown.
@@ -199,7 +199,9 @@ S6 state present, intent remains           → delete the intent (crashed remova
 | T4 | `submit` (same SHA, rejected) | RP=writer, RC in {changes_requested, human_changes_requested}, CS unchanged | — | rejected: "writer must submit a new SHA" | — |
 | T5 | `validate` | `(PH=submitted, RP=reviewer, RC=review_pending)` or `(PH=validated, RP=reviewer, RC=decision_pending)` — validate ALWAYS executes the project script fresh; no zero-write replay path exists | snapshot intact; review.tsv head == CS; project script runs (exit non-zero is a legitimate FAIL) | from `submitted`: RS=active, PH=validated, RP=reviewer, RC=decision_pending, WS=now (reason changed); from `validated`: PH/RP/RC unchanged, **WS preserved**, state_revision+1, transition fields updated; both: VR=result, VD=new report digest | CAS-publish via the validation op-token protocol (below); snapshot-integrity or infrastructure failure = no transition, diagnostic-only report (`.diagnostic.md`, never the canonical path or pointer); crash recovery for validate is safe/convergent re-execution (below) |
 | T6 | `decision APPROVE` | PH=validated, RP=reviewer, RC=decision_pending | VR=PASS; writer HEAD == review HEAD == CS; **no existing decision archive for CS** | RS=active, PH=decided, RP=human, RC=approval_pending, V=APPROVE, WS=now | see T6r |
-| T6r | `decision` (commit-only retry) | PH=validated, RP=reviewer, RC=decision_pending; decision archive exists for CS | archive digest and verdict match the intended decision; archive metadata `validation_digest` equals the current state `validation_digest`; bound SHA == CS; state verdict field empty or differing; ALL normal guards re-checked (APPROVE requires current VR=PASS; writer HEAD == review HEAD == CS) | commit the state per the matched verdict (T6/T7/T8 target) | archive with differing verdict/digest → conflict (exit 2); state already aligned → duplicate decision rejected; archive metadata VD differs from state VD (a fresh validate superseded the evidence) → rejected, re-run decision |
+| T6r | `decision` (commit-only retry) | PH=validated, RP=reviewer, RC=decision_pending, state V empty; decision archive exists for CS | archive `State revision` == current `state_revision` AND archive `Validation digest` == current state `validation_digest`; verdict matches the intended decision; bound SHA == CS; ALL normal guards re-checked (APPROVE requires current VR=PASS; writer HEAD == review HEAD == CS) | first complete any missing `decision.md` (atomic replace), then commit the state per the matched verdict (T6/T7/T8 target) | archive with differing verdict/digest/metadata → owning mismatch: conflict, exit 2; state already aligned → duplicate decision rejected; a fresh validate superseding the archive is prevented at the source: validate refuses (exit 5) while a pending unaligned decision archive exists |
+| L-T3 | `submit` (legacy first migration, same SHA) | legacy run; projection row L5 (submitted, same SHA); no state file | review.tsv exists and matches the submitted SHA | materialize v1 with the L5 projection (revision 1, round `unknown`, WS=now) — the state file is written, no evidence changes, no zero-write T3 applies | the v0.4 creation of state is the commit point |
+| L-T6 | `decision` (legacy first migration, v0.4 archive residue) | legacy run; no state file; decision archive carries v0.4 metadata (`State revision` + `Validation digest`) | projection row L1–L3 satisfied; archive metadata consistent with the projected validation report | materialize v1 with the projected semantic state plus the archive verdict (revision 1, WS=now) | an archive WITHOUT v0.4 metadata is plain v0.3 evidence — read-only projection only, never auto-migrated |
 | T7 | `decision CHANGES_REQUESTED` | same as T6 | no PASS requirement | RS=active, PH=decided, RP=writer, RC=changes_requested, V=CHANGES_REQUESTED, WS=now | same as T6 |
 | T8 | `decision BLOCKED` | same as T6 | — | RS=blocked, PH=decided, RP=human, RC=block_resolution_required, V=BLOCKED, WS=now | same as T6 |
 | T9 | `escalate` | RP=reviewer, PH in {submitted, validated} | `--reason-code reviewer_unreachable` (v1 only) and `--reason` present | RS=blocked, PH unchanged, RP=human, RC=reviewer_unreachable, WS=now, RD=reason | already `blocked/human/reviewer_unreachable` → "already escalated", zero-write; human responsible for any other reason → illegal transition |
@@ -274,12 +276,13 @@ multi-file write atomic, so each residue is handled explicitly:
   transition; state already aligned with the archive is a duplicate
   decision, rejected.
 
-Evidence-first residue rule: a transition command that owns the residue
-(submit for review.tsv; decision for decision archives; repair-state per
-its candidate contract) AND matches the sameness tuple executes the
-recovery; any other command — or an owning command with a MISMATCHING
-tuple — refuses with exit 5 and prints the exact retry command. It never
-walks through foreign residue.
+Evidence-first residue rule with precise exit codes: an OWNING command
+whose sameness tuple MATCHES executes the recovery (submit for
+review.tsv; decision for decision archives via T6r; repair-state per its
+candidate contract; legacy first migrations via L-T3/L-T6); an OWNING
+command with a MISMATCHING tuple has a genuine evidence conflict and
+exits 2; any FOREIGN command hitting the residue exits 5 with the exact
+retry command. It never walks through foreign residue.
 
 A run whose evidence is newer than its state file (evidence-first crash
 residue) is reported by `status` as `incomplete transition` with the exact
@@ -346,7 +349,7 @@ and 10 on FAIL; 3/4/5/2 take precedence over 10 when they occur.
 for each transition command:
 
 - `submit`: parse → find run → acquire lock → **re-project legacy state inside the lock** (legacy run) → writer-tree checks → write review snapshot + review.tsv (evidence) → commit state (T2/T3/T4) → release lock → best-effort pane respawn and notes → exit 0/2/4/5.
-- `validate`: parse → find run → acquire lock → **re-project legacy state inside the lock** → capture revision+SHA (legacy baseline: state-absent + evidence digest + checkpoint_sha) → release lock → clean stale temporaries → run gate → temporary report → re-acquire → CAS → promote report + pointer + commit state (T5) → release → print report → exit 0/10/2/3/4/5.
+- `validate`: parse → find run → acquire lock → **re-project legacy state inside the lock** → clean dead-owner temporaries (lock holder only, owner PID dead) → capture revision+SHA (legacy baseline: state-absent + evidence digest + checkpoint_sha) → allocate the op-token temporary → release lock → run gate (writes ONLY the token temporary) → re-acquire → CAS → promote report + pointer + commit state (T5) → remove own temporary → release → print report → exit 0/10/2/3/4/5.
 - `decision`: parse → find run → acquire lock → **re-project legacy state inside the lock** → integrity + writer-head checks → write decision archive (evidence) → commit state (T6–T8) → release → best-effort relay → exit 0/2/4/5.
 - `escalate`: parse (both reason fields) → find run → acquire lock → **legacy run: project inside the lock, migrate to v1, and apply T9 in the same commit when the projection satisfies the T9 guard (legacy SUBMITTED/VALIDATED with a dead reviewer is therefore a legal first migration via escalate)** → guard T9 → commit state → release → exit 0/2/4.
 - `resolve`: parse (action + reason policy) → find run → acquire lock → **legacy run: project inside the lock, migrate to v1, and apply the action in the same commit; legacy disposition maps into the guards: `legacy_human_disposition_unknown` + V=APPROVE admits approve/reject/cancel; a projected legacy BLOCKED admits reject/cancel** → guard T10–T13 (recover: pane reachability check inside the lock) → commit state → release → exit 0/2/4.
@@ -435,8 +438,12 @@ evidence digest + checkpoint_sha.
 repair-candidate <TOKEN> -> <one-line target state description>
 ```
 
-`TOKEN` = first 12 hex of sha256(evidence digest of the run + the exact
-canonical candidate payload). The canonical payload serializes the
+`TOKEN` = first 12 hex of sha256(evidence digest of the run + the current
+state baseline + the exact canonical candidate payload). The state
+baseline binds the token to what repair will build on: state absent →
+the literal `absent`; valid v1 state → its digest + revision; corrupted
+state file → the corrupted-file digest (revision is untrusted and
+goes through the reset rule). The canonical payload serializes the
 candidate's STATIC fields as key=value in the wire-table order joined by
 `;`, with dynamic metadata written as placeholders so the hash never
 depends on values repair-state fills in later:
@@ -455,16 +462,16 @@ table:
 | verdict unparseable / RESULT illegal / `review.tsv` itself unreadable | no safe candidate — refusal only |
 | orphan evidence with no `R` | no safe candidate — refusal only |
 
-`repair-state RUN_ID --candidate TOKEN --reason "..."` (trace T14): parse
-→ find run → acquire lock → re-compute the evidence digest → parse the
-candidate payload → verify it satisfies the legal-combination invariants
-→ write v1 state (state_revision=1 for a first file, otherwise +1;
-last_transition_at=now; actor=system; action=repair-state;
-reason_detail=--reason; dynamic fields materialized from the placeholders)
-→ ISOLATE discarded orphan evidence (rename it under
-`<run_dir>/orphaned/` with a timestamp suffix — a tombstone, so the next
-`status` does not re-report the same conflict) → release → exit 0/2/4. A
-stale digest or a foreign token is rejected with exit 2.
+`repair-state` (T14): parse → find run → acquire lock → re-compute the
+evidence digest → parse the candidate payload → verify the
+legal-combination invariants → **ISOLATE discarded orphan evidence first
+(rename under `<run_dir>/orphaned/` with a timestamp suffix — a
+tombstone, evidence-first)** → write v1 state (the commit point) →
+release → exit 0/2/4. A crash between tombstone and state commit is
+retried safely: the orphan is already isolated, the projection is stable,
+and the repair re-executes the same candidate.
+
+| T14 | `repair-state` | legacy conflict (status-printed candidate) or corrupted state file (candidate bound to the corrupted-file digest) | token re-computed and matched under the lock; candidate satisfies the invariants | tombstone orphan evidence (if any) → write v1 state: state_revision=1 for a first file or after a corrupt-file replacement, otherwise current+1; checkpoint_round=0 when recovering to `intake` with no evidence (NEVER legacy `unknown` — a v0.4 file is a fresh authority); dynamic fields from placeholders (`@reason/@revision/@now`) | tombstone-then-state order keeps evidence-first; re-execution converges |
 
 Corrupted-state policy: a state file with a missing/non-positive
 `state_revision`, a future `schema_version`, duplicate/missing/unknown
