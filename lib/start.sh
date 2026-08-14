@@ -213,6 +213,27 @@ else
         "$writer_worktree" "$branch" "$session_name" "$source_root" "$worktree_root" \
         "$ARENA_PROJECT_CONFIG" "$profile" "$writer_adapter" "$writer_label" \
         "$writer_session_dir" "$gate_adapter"
+    # Task 1: commit the initial v1 state (T1). The creation-intent flow
+    # lands in Task 4 and will rework this into the full intent protocol.
+    ARENA_STATE_ROOT_INHERIT=1 source "${source_root}/lib/state.sh"
+    arena_state_defaults
+    arena_state_write "$run_dir" \
+        "schema_version=${ARENA_STATE_SCHEMA_VERSION}" \
+        "state_revision=${ARENA_STATE_REVISION}" \
+        "run_status=${ARENA_STATE_RUN_STATUS}" \
+        "phase=${ARENA_STATE_PHASE}" \
+        "responsible_party=${ARENA_STATE_RESPONSIBLE_PARTY}" \
+        "reason_code=${ARENA_STATE_REASON_CODE}" \
+        "reason_detail=${ARENA_STATE_REASON_DETAIL}" \
+        "verdict=${ARENA_STATE_VERDICT}" \
+        "validation_result=${ARENA_STATE_VALIDATION_RESULT}" \
+        "checkpoint_round=${ARENA_STATE_CHECKPOINT_ROUND}" \
+        "checkpoint_sha=${ARENA_STATE_CHECKPOINT_SHA}" \
+        "waiting_since=${ARENA_STATE_WAITING_SINCE}" \
+        "last_transition_at=${ARENA_STATE_LAST_TRANSITION_AT}" \
+        "last_transition_actor=${ARENA_STATE_LAST_TRANSITION_ACTOR}" \
+        "last_transition_action=${ARENA_STATE_LAST_TRANSITION_ACTION}" \
+        "validation_digest=${ARENA_STATE_VALIDATION_DIGEST}"
     review_worktree=''
 fi
 

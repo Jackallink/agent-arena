@@ -38,6 +38,11 @@ done
 arena_validate_run_id "$run_id"
 run_dir="$(arena_find_run_dir "$run_id")"
 arena_read_manifest "$run_dir"
+# The state file is the authority for status (Task 1: read+validate only;
+# the one-sentence diagnosis lands in a later task). Corruption fails
+# closed here before any output.
+source "${source_root}/lib/state.sh"
+arena_state_read "$run_dir"
 
 printf 'Run: %s\n' "$ARENA_MANIFEST_RUN_ID"
 printf 'Repository: %s\n' "$ARENA_MANIFEST_REPOSITORY"

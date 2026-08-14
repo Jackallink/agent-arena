@@ -1364,4 +1364,65 @@ printf '%s\n' "$cursor_bindings" | grep -Eq $'^wrapper\t\.agent-arena-gate\t[0-9
 rm -rf "$guard_snapshot"
 git -C "$project" worktree prune
 
+printf '%s\n' '38. state wire contract and field invariants'
+state_fixture_dir="${tmp_root}/state-fixture"
+mkdir -p "$state_fixture_dir"
+run_arena start state-wire --repo "$project" --state-root "$state_fixture_dir" --no-attach >/dev/null
+state_run_dir="$(find "${state_fixture_dir}/runs" -mindepth 3 -maxdepth 3 -type f \
+    -name manifest.tsv -path '*/state-wire/manifest.tsv' -exec dirname {} \;)"
+[[ -n "$state_run_dir" ]] || fail 'start did not create the state-wire run'
+state_file="${state_run_dir}/run-state.tsv"
+[[ -f "$state_file" ]] || fail 'start did not write run-state.tsv'
+[[ "$(ls -l "$state_file" | cut -c1-10)" == '-rw-------' ]] || \
+    fail 'state file is not mode 600'
+state_key_count="$(wc -l <"$state_file" | tr -d ' ')"
+[[ "$state_key_count" == 16 ]] || \
+    fail "state file carries ${state_key_count} keys instead of 16"
+for state_key in schema_version state_revision run_status phase responsible_party \
+    reason_code reason_detail verdict validation_result checkpoint_round checkpoint_sha \
+    waiting_since last_transition_at last_transition_actor last_transition_action \
+    validation_digest; do
+    require_match "${state_key}"$'\t' <(cat "$state_file")
+done
+require_match $'schema_version\t1' <(cat "$state_file")
+require_match $'state_revision\t1' <(cat "$state_file")
+require_match $'run_status\tactive' <(cat "$state_file")
+require_match $'phase\tintake' <(cat "$state_file")
+require_match $'responsible_party\twriter' <(cat "$state_file")
+require_match $'reason_code\tnone' <(cat "$state_file")
+require_match $'checkpoint_round\t0' <(cat "$state_file")
+require_match $'last_transition_actor\tsystem' <(cat "$state_file")
+require_match $'last_transition_action\tstart' <(cat "$state_file")
+[[ -z "$(manifest_value "$state_file" verdict)" ]] || fail 'verdict must start empty'
+[[ -z "$(manifest_value "$state_file" validation_result)" ]] || \
+    fail 'validation_result must start empty'
+[[ -z "$(manifest_value "$state_file" checkpoint_sha)" ]] || \
+    fail 'checkpoint_sha must start empty'
+[[ -z "$(manifest_value "$state_file" validation_digest)" ]] || \
+    fail 'validation_digest must start empty'
+[[ "$(manifest_value "$state_file" waiting_since)" =~ ^[0-9]+$ ]] || \
+    fail 'waiting_since must be epoch seconds'
+run_arena status state-wire --state-root "$state_fixture_dir" >"${tmp_root}/state-wire-status.out"
+state_pristine="${state_run_dir}/state-pristine.tsv"
+cp "$state_file" "$state_pristine"
+# corruption fails closed: completed with the intake phase is illegal; status exits 2
+sed 's/\tactive$/\tcompleted/' "$state_pristine" >"$state_file"
+state_status_exit=0
+run_arena status state-wire --state-root "$state_fixture_dir" \
+    >"${tmp_root}/state-wire-corrupt.out" 2>&1 || state_status_exit=$?
+[[ "$state_status_exit" == 2 ]] || \
+    fail "status accepted an illegal run_status/phase combination (exit ${state_status_exit})"
+require_match 'corrupted state file' "${tmp_root}/state-wire-corrupt.out"
+# duplicate keys are corrupted files and fail closed through the same read path
+cp "$state_pristine" "$state_file"
+state_dup="$(mktemp "${state_run_dir}/.state-dup.XXXXXX")"
+awk -F $'\t' 'BEGIN { OFS = FS } { print } $1 == "phase" { print }' "$state_file" >"$state_dup"
+mv "$state_dup" "$state_file"
+state_status_exit=0
+run_arena status state-wire --state-root "$state_fixture_dir" \
+    >"${tmp_root}/state-wire-dup.out" 2>&1 || state_status_exit=$?
+[[ "$state_status_exit" == 2 ]] || \
+    fail "status accepted a duplicate state key (exit ${state_status_exit})"
+require_match 'duplicate key phase' "${tmp_root}/state-wire-dup.out"
+
 printf '%s\n' 'tests: ok'
