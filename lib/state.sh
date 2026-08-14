@@ -449,12 +449,15 @@ arena_creation_intent_read() {
     intent="$(arena_creation_intent_path "$runs_root" "$repo_id" "$run_id")"
     ARENA_INTENT_FIELDS=''
     [[ -f "$intent" ]] || return 1
+    # Tolerate both line forms: a bare-TSV line (the run_id header written
+    # first by arena_creation_intent_write, or a partially rewritten intent)
+    # splits on TAB; a key=value line splits on '='. A line with neither
+    # separator is corrupted and fails closed.
     while IFS= read -r line || [[ -n "$line" ]]; do
         [[ -z "$line" ]] && continue
-        if [[ "$line" == run_id$'\t'* && "$ARENA_INTENT_FIELDS" != *run_id* ]]; then
-            # run_id TSV header line, written first by arena_creation_intent_write
-            key='run_id'
-            value="${line#run_id$'\t'}"
+        if [[ "$line" == *$'\t'* ]]; then
+            key="${line%%$'\t'*}"
+            value="${line#*$'\t'}"
         else
             key="${line%%=*}"
             value="${line#*=}"

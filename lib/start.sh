@@ -143,29 +143,6 @@ done
 
 umask 077
 
-# T1r: read a creation intent tolerantly. The canonical writer emits
-# key=value lines; a partially rewritten intent may carry bare key<TAB>value
-# lines. Both forms bind fields for the retry comparison; a line with neither
-# separator is corrupted and fails closed.
-arena_start_read_intent() {
-    local line key value
-
-    ARENA_START_INTENT_FIELDS=''
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        [[ -z "$line" ]] && continue
-        if [[ "$line" == *$'\t'* ]]; then
-            key="${line%%$'\t'*}"
-            value="${line#*$'\t'}"
-        else
-            key="${line%%=*}"
-            value="${line#*=}"
-            [[ "$key" != "$line" ]] || arena_die "corrupted creation intent: $intent"
-        fi
-        ARENA_START_INTENT_FIELDS="$ARENA_START_INTENT_FIELDS $key"
-        printf -v "ARENA_START_INTENT_${key}" '%s' "$value"
-    done <"$intent"
-}
-
 # A retry must bind the SAME parameters and derived inputs as the
 # interrupted start. Every field present in the intent is compared verbatim;
 # a difference fails closed with exit 2. Fields the intent does not carry are
@@ -176,8 +153,8 @@ arena_start_verify_intent() {
     for arg in "$@"; do
         key="${arg%%=*}"
         value="${arg#*=}"
-        [[ " $ARENA_START_INTENT_FIELDS " == *" $key "* ]] || continue
-        bound_var="ARENA_START_INTENT_${key}"
+        [[ " $ARENA_INTENT_FIELDS " == *" $key "* ]] || continue
+        bound_var="ARENA_INTENT_${key}"
         bound="${!bound_var:-}"
         [[ "$bound" == "$value" ]] || {
             printf 'agent-arena: start parameters differ from the interrupted run: %s\n' "$key" >&2
@@ -260,9 +237,11 @@ if [[ -e "$run_dir" || -L "$run_dir" ]] && [[ "$intent_stage" != S2 ]]; then
     # T1r recovery: S5 commits the T1 state (round=0) exactly once and keeps
     # the existing artifacts; S6 is a crashed intent removal. Both verify the
     # intent against the manifest's record before touching anything, and the
-    # S5 commit runs under the run lock.
+    # run lock is acquired before the S5 commit and stays held through the
+    # session re-check and the tmuxp load below (spec trace: interrupted
+    # stages S1-S6 use the same lock ordering as a fresh start).
     if [[ "$intent_stage" == S5 || "$intent_stage" == S6 ]]; then
-        arena_start_read_intent
+        arena_creation_intent_read "$runs_root" "$repo_id" "$run_id"
         arena_start_verify_intent \
             "run_id=${run_id}" "repository=${repository}" "state_root=${state_root}" \
             "worktree_root=${worktree_root}" "profile=${profile}" \
@@ -293,8 +272,9 @@ if [[ -e "$run_dir" || -L "$run_dir" ]] && [[ "$intent_stage" != S2 ]]; then
                 "validation_digest=${ARENA_STATE_VALIDATION_DIGEST}"
         fi
         rm -f "$intent"
-        arena_lock_release "${run_dir}/.run-lock" "start-$$"
-        run_lock_held=0
+        # Run lock stays held: the session re-check and the tmuxp load below
+        # run under it; the tail releases it after the load (or the EXIT
+        # trap on failure).
     fi
 else
     if [[ "$writer_explicit" == 1 || "$gate_explicit" == 1 ]]; then
@@ -328,7 +308,7 @@ else
     # T1r (S1/S2): a retry must bind the SAME parameters and derived inputs;
     # any difference fails closed before any lock is taken.
     if [[ "$intent_stage" == S1 || "$intent_stage" == S2 ]]; then
-        arena_start_read_intent
+        arena_creation_intent_read "$runs_root" "$repo_id" "$run_id"
         arena_start_verify_intent \
             "run_id=${run_id}" "repository=${repository}" "state_root=${state_root}" \
             "worktree_root=${worktree_root}" "profile=${profile}" \

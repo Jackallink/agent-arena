@@ -147,6 +147,13 @@ EOF
 cat >"${fake_bin}/tmuxp" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${FAKE_TMUXP_LOG:?}"
+if [[ -n "${FAKE_TMUXP_LOCK_CHECK:-}" ]]; then
+    if [[ -e "${FAKE_TMUXP_LOCK_CHECK}" ]]; then
+        printf 'lock-present=%s\n' "${FAKE_TMUXP_LOCK_CHECK}" >>"${FAKE_TMUXP_LOG:?}"
+    else
+        printf 'lock-absent=%s\n' "${FAKE_TMUXP_LOCK_CHECK}" >>"${FAKE_TMUXP_LOG:?}"
+    fi
+fi
 printf '%s\n' "${FAKE_TMUXP_OUTPUT:-}"
 exit "${FAKE_TMUXP_EXIT:-0}"
 EOF
@@ -2171,7 +2178,8 @@ repo_id="$(basename "$(dirname "$intent_check_dir")")"
 [[ ! -e "${state_root}/runs/${repo_id}/.parent-lock" ]] || fail 'parent lock left behind'
 require_match $'checkpoint_round\t0' <(cat "${intent_check_dir}/run-state.tsv")
 # (b) S5 recovery: manifest+worktree present, state missing, intent present
-# → start commits state round=0
+# → start commits state round=0; the run lock covers the session re-check
+# and the tmuxp load and is released afterwards.
 s5_run='s5-recover'
 run_arena start "$s5_run" --repo "$project" --no-attach >/dev/null
 s5_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f \
@@ -2179,9 +2187,13 @@ s5_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f \
 s5_repo="$(basename "$(dirname "$s5_dir")")"
 printf '%s\n' "run_id=${s5_run}" >"${state_root}/runs/${s5_repo}/.creating-${s5_run}"
 rm -f "${s5_dir}/run-state.tsv"
-run_arena start "$s5_run" --repo "$project" --no-attach >/dev/null
+: >"$fake_tmuxp_log"
+FAKE_TMUXP_LOCK_CHECK="${s5_dir}/.run-lock" \
+    run_arena start "$s5_run" --repo "$project" --no-attach >/dev/null
 require_match $'phase\tintake' <(cat "${s5_dir}/run-state.tsv")
 [[ ! -e "${state_root}/runs/${s5_repo}/.creating-${s5_run}" ]] || fail 'S5 intent not removed'
+require_match 'lock-present=' "$fake_tmuxp_log"
+[[ ! -e "${s5_dir}/.run-lock" ]] || fail 'S5 run lock not released'
 # (c) parameter mismatch on retry fails closed (exit 2)
 s5b_run='s5-mismatch'
 run_arena start "$s5b_run" --repo "$project" --no-attach >/dev/null
@@ -2236,5 +2248,21 @@ s1_exit=0
 run_arena start "$s1_run" --repo "$project" --no-attach >"${tmp_root}/s1-mismatch.out" 2>&1 || s1_exit=$?
 [[ "$s1_exit" == 2 ]] || fail "S1 mismatched retry did not fail closed (exit ${s1_exit})"
 require_match 'differ' "${tmp_root}/s1-mismatch.out"
+# (g) arena_creation_intent_read tolerates both line forms: the run_id TSV
+# header, bare key<TAB>value lines, and key=value lines all bind.
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    runs_root="$2/runs"
+    mkdir -p "${runs_root}/proj-mixed"
+    intent="$(arena_creation_intent_path "$runs_root" proj-mixed mixed-run)"
+    printf "run_id\tmixed-run\n" >"$intent"
+    printf "repository\t/x\n" >>"$intent"
+    printf "profile=pi-cursor\n" >>"$intent"
+    arena_creation_intent_read "$runs_root" proj-mixed mixed-run
+    [[ "${ARENA_INTENT_run_id}" == mixed-run ]] || exit 9
+    [[ "${ARENA_INTENT_repository}" == /x ]] || exit 9
+    [[ "${ARENA_INTENT_profile}" == pi-cursor ]] || exit 9
+' _ "$source_root" "$tmp_root" || fail 'mixed-form creation intent not parsed'
 
 printf '%s\n' 'tests: ok'
