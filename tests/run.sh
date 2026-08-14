@@ -2540,5 +2540,131 @@ run_arena validate "$val_run" >"${tmp_root}/val-fail.out" 2>&1 || val_fail_exit=
 [[ "$val_fail_exit" == 10 ]] || fail "validate FAIL exited $val_fail_exit, expected 10"
 require_match 'RESULT: FAIL' "${tmp_root}/val-fail.out"
 require_match $'validation_result\tFAIL' <(cat "${val_run_dir}/run-state.tsv")
+# CAS-stale: while the gate runs, a legal submit bumps the state revision;
+# the background validate must exit 3 and leave canonical report, pointer,
+# and state exactly as the submit left them (no report for the new round).
+# decision state commits land in a later task, so the decided tuples here
+# are fabricated exactly as above; every submit transition is a real T2.
+stale_fail_sha="$(awk -F $'\t' '$1 == "checkpoint_sha" { print $2 }' "${val_run_dir}/run-state.tsv")"
+stale_fail_short="${stale_fail_sha:0:12}"
+stale_fail_revision="$(awk -F $'\t' '$1 == "state_revision" { print $2 }' "${val_run_dir}/run-state.tsv")"
+stale_fail_round="$(awk -F $'\t' '$1 == "checkpoint_round" { print $2 }' "${val_run_dir}/run-state.tsv")"
+stale_fail_waiting="$(awk -F $'\t' '$1 == "waiting_since" { print $2 }' "${val_run_dir}/run-state.tsv")"
+stale_fail_transition="$(awk -F $'\t' '$1 == "last_transition_at" { print $2 }' "${val_run_dir}/run-state.tsv")"
+stale_fail_digest="$(awk -F $'\t' '$1 == "validation_digest" { print $2 }' "${val_run_dir}/run-state.tsv")"
+printf 'schema_version\t1\nstate_revision\t%s\nrun_status\tactive\nphase\tdecided\nresponsible_party\twriter\nreason_code\tchanges_requested\nreason_detail\t\nverdict\tCHANGES_REQUESTED\nvalidation_result\tFAIL\ncheckpoint_round\t%s\ncheckpoint_sha\t%s\nwaiting_since\t%s\nlast_transition_at\t%s\nlast_transition_actor\treviewer\nlast_transition_action\tdecision\nvalidation_digest\t%s\n' \
+    "$stale_fail_revision" "$stale_fail_round" "$stale_fail_sha" "$stale_fail_waiting" \
+    "$stale_fail_transition" "$stale_fail_digest" \
+    >"${val_run_dir}/.run-state-fabricated"
+mv "${val_run_dir}/.run-state-fabricated" "${val_run_dir}/run-state.tsv"
+# the slow checkpoint: its validation script announces the gate start and
+# then waits for the test to release it, so the submit below is guaranteed
+# to land while the gate is running (no timing races, no long sleeps)
+printf '%s\n' slow >"${val_writer}/slow.txt"
+cat >"${val_writer}/.agent-arena/validate.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+: >"${VAL_SLOW_MARKER:?}"
+slow_gate_wait=0
+while [[ ! -e "${VAL_SLOW_GO:?}" ]]; do
+    slow_gate_wait=$((slow_gate_wait + 1))
+    [[ "$slow_gate_wait" -lt 600 ]] || exit 1
+    sleep 0.1
+done
+exit 0
+EOF
+chmod 755 "${val_writer}/.agent-arena/validate.sh"
+git -C "$val_writer" add slow.txt .agent-arena/validate.sh
+git -C "$val_writer" commit -m 'feat: slow' >/dev/null
+run_arena submit "$val_run" >/dev/null
+slow_sha="$(awk -F $'\t' '$1 == "checkpoint_sha" { print $2 }' "${val_run_dir}/run-state.tsv")"
+slow_short="${slow_sha:0:12}"
+slow_revision="$(awk -F $'\t' '$1 == "state_revision" { print $2 }' "${val_run_dir}/run-state.tsv")"
+[[ ! -e "${val_run_dir}/validation-${slow_short}.md" ]] || \
+    fail 'slow checkpoint already has a validation report'
+stale_prior_report_hash="$(shasum -a 256 "${val_run_dir}/validation-${stale_fail_short}.md" | awk '{print $1}')"
+val_slow_marker="${tmp_root}/val-slow-marker"
+val_slow_go="${tmp_root}/val-slow-go"
+rm -f "$val_slow_marker" "$val_slow_go"
+VAL_SLOW_MARKER="$val_slow_marker" VAL_SLOW_GO="$val_slow_go" \
+    run_arena validate "$val_run" >"${tmp_root}/val-stale.out" 2>&1 &
+stale_validate_pid=$!
+stale_gate_waits=0
+while [[ ! -e "$val_slow_marker" ]]; do
+    if ! kill -0 "$stale_validate_pid" 2>/dev/null; then
+        fail 'background validate exited before the gate ran'
+    fi
+    stale_gate_waits=$((stale_gate_waits + 1))
+    [[ "$stale_gate_waits" -lt 600 ]] || fail 'slow validation gate never started'
+    sleep 0.1
+done
+# while the gate runs, the decision on the slow checkpoint completes
+# (fabricated T8 tuple) and the writer submits a new checkpoint: the state
+# revision legally moves past the background validate's baseline
+stale_decided_waiting="$(awk -F $'\t' '$1 == "waiting_since" { print $2 }' "${val_run_dir}/run-state.tsv")"
+stale_decided_transition="$(awk -F $'\t' '$1 == "last_transition_at" { print $2 }' "${val_run_dir}/run-state.tsv")"
+stale_decided_round="$(awk -F $'\t' '$1 == "checkpoint_round" { print $2 }' "${val_run_dir}/run-state.tsv")"
+printf 'schema_version\t1\nstate_revision\t%s\nrun_status\tactive\nphase\tdecided\nresponsible_party\twriter\nreason_code\tchanges_requested\nreason_detail\t\nverdict\tCHANGES_REQUESTED\nvalidation_result\tPASS\ncheckpoint_round\t%s\ncheckpoint_sha\t%s\nwaiting_since\t%s\nlast_transition_at\t%s\nlast_transition_actor\treviewer\nlast_transition_action\tdecision\nvalidation_digest\t%s\n' \
+    "$((slow_revision + 1))" "$stale_decided_round" "$slow_sha" "$stale_decided_waiting" \
+    "$stale_decided_transition" "$(printf y | shasum -a 256 | awk '{print $1}')" \
+    >"${val_run_dir}/.run-state-fabricated"
+mv "${val_run_dir}/.run-state-fabricated" "${val_run_dir}/run-state.tsv"
+printf '%s\n' stale >"${val_writer}/stale.txt"
+git -C "$val_writer" add stale.txt
+git -C "$val_writer" commit -m 'feat: stale' >/dev/null
+run_arena submit "$val_run" >/dev/null
+stale_new_sha="$(awk -F $'\t' '$1 == "checkpoint_sha" { print $2 }' "${val_run_dir}/run-state.tsv")"
+stale_new_short="${stale_new_sha:0:12}"
+stale_post_state="$(shasum -a 256 "${val_run_dir}/run-state.tsv" | awk '{print $1}')"
+stale_post_revision="$(awk -F $'\t' '$1 == "state_revision" { print $2 }' "${val_run_dir}/run-state.tsv")"
+[[ "$stale_post_revision" -gt "$slow_revision" ]] || \
+    fail 'mid-gate submit did not bump the state revision'
+[[ ! -e "${val_run_dir}/validation.md" ]] || \
+    fail 'submit kept the validation pointer for the new round'
+: >"$val_slow_go"
+stale_validate_status=0
+wait "$stale_validate_pid" || stale_validate_status=$?
+[[ "$stale_validate_status" == 3 ]] || \
+    fail "CAS-stale validate exited $stale_validate_status, expected 3"
+require_match 'state moved during validation; result discarded, re-run validate' \
+    "${tmp_root}/val-stale.out"
+# exit 3 leaves canonical report, pointer, and state exactly as the submit
+# left them: no report for the new round, no stale report, no temp residue
+[[ "$(shasum -a 256 "${val_run_dir}/run-state.tsv" | awk '{print $1}')" == "$stale_post_state" ]] || \
+    fail 'exit-3 validate changed the state file'
+[[ ! -e "${val_run_dir}/validation.md" ]] || \
+    fail 'exit-3 validate rewrote the validation pointer'
+[[ ! -e "${val_run_dir}/validation-${stale_new_short}.md" ]] || \
+    fail 'exit-3 validate published a report for the new round'
+[[ ! -e "${val_run_dir}/validation-${slow_short}.md" ]] || \
+    fail 'exit-3 validate published a stale report for the slow checkpoint'
+[[ -z "$(find "${val_run_dir}" -maxdepth 1 -name '.validation.*.tmp' -print -quit)" ]] || \
+    fail 'exit-3 validate left its temporary report'
+[[ ! -e "${val_run_dir}/.run-lock" ]] || \
+    fail 'exit-3 validate left the run lock held'
+[[ "$(shasum -a 256 "${val_run_dir}/validation-${stale_fail_short}.md" | awk '{print $1}')" == "$stale_prior_report_hash" ]] || \
+    fail 'exit-3 validate rotated or replaced the prior canonical report'
+
+printf '%s\n' '45. validate dead-owner-only temp cleanup'
+val_temp_run='val-temp'
+run_arena start "$val_temp_run" --repo "$project" --no-attach >/dev/null
+val_temp_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path "*/${val_temp_run}/manifest.tsv" -exec dirname {} \;)"
+[[ -n "$val_temp_dir" ]] || fail 'start did not create the val-temp run'
+val_temp_writer="$(manifest_value "${val_temp_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' t >"${val_temp_writer}/t.txt"
+git -C "$val_temp_writer" add t.txt
+git -C "$val_temp_writer" commit -m 'feat: t' >/dev/null
+run_arena submit "$val_temp_run" >/dev/null
+run_arena validate "$val_temp_run" >/dev/null
+# a dead owner's op-token temporary is removed on the next validate
+dead_owner_temp="${val_temp_dir}/.validation.validate.999999999.1.tmp"
+printf '%s\n' dead >"$dead_owner_temp"
+run_arena validate "$val_temp_run" >/dev/null
+[[ ! -e "$dead_owner_temp" ]] || fail 'validate kept a dead owner temporary'
+# a live owner's op-token temporary is left alone
+live_owner_temp="${val_temp_dir}/.validation.validate.$$.1.tmp"
+printf '%s\n' live >"$live_owner_temp"
+run_arena validate "$val_temp_run" >/dev/null
+[[ -f "$live_owner_temp" ]] || fail 'validate removed a live owner temporary'
 
 printf '%s\n' 'tests: ok'
