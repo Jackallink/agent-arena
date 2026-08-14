@@ -3112,4 +3112,303 @@ unset FAKE_TMUX_LOCK_CHECK
 export FAKE_TMUX_PANES=normal
 export FAKE_TMUX_MODE=offline
 
+printf '%s\n' '48. repair-state candidates and intent three-state recovery'
+rp_repo_dir="${state_root}/runs/${leg_repo}"
+rp_manifest_src="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv | head -1)"
+rp_head='2222222222222222222222222222222222222222'
+rp_old_head='3333333333333333333333333333333333333333'
+rp_make_manifest() {
+    local dir="$1" run="$2"
+    awk -F $'\t' -v dir="$dir" -v run="$run" 'BEGIN { OFS = FS }
+        $1 == "run_id" { $2 = run }
+        $1 == "branch" { $2 = "agent-arena/pi/" run }
+        $1 == "session_name" { $2 = "agent-arena-" run }
+        $1 == "writer_session_dir" { $2 = dir "/writer-session" }
+        { print }' "$rp_manifest_src" >"${dir}/manifest.tsv"
+}
+rp_review_tsv() {
+    printf 'review_head\t%s\nreview_worktree\t%s\ncursor_policy_hash\t%s\ngate_wrapper_hash\t%s\ngate_adapter\tcursor\ngate_policy_path\t.cursor/cli.json\n' \
+        "$1" "$project" "$(printf x | shasum -a 256 | awk '{print $1}')" "$(printf y | shasum -a 256 | awk '{print $1}')"
+}
+rp_candidates() {
+    ARENA_SOURCE_ROOT="$source_root" bash -c '
+        set -euo pipefail
+        source "$1/lib/state.sh"
+        arena_state_repair_candidates "$2"
+    ' _ "$source_root" "$1" 2>/dev/null
+}
+rp_first_token() {
+    local out="$1"
+    sed -n 's/^repair-candidate \([0-9a-f]\{12\}\) ->.*/\1/p' "$out" | head -1
+}
+# (1) conflict fixture: a decision archive bound to a differing SHA yields
+# exactly one repair-candidate; refusal-only conflicts print none; a stale
+# token is rejected with 'stale'.
+rp_run='repair-dec-conflict'
+rp_dir="${rp_repo_dir}/${rp_run}"
+mkdir -p "$rp_dir"
+rp_make_manifest "$rp_dir" "$rp_run"
+rp_review_tsv "$rp_head" >"${rp_dir}/review.tsv"
+printf 'Review HEAD: %s\nVERDICT: APPROVE\n' "$rp_old_head" >"${rp_dir}/decision-${rp_old_head}.md"
+rp_candidates "$rp_dir" >"${tmp_root}/rp-cand.out"
+require_match 'repair-candidate' "${tmp_root}/rp-cand.out"
+require_match 'active/submitted/reviewer/review_pending revision 1 checkpoint 222222222222' "${tmp_root}/rp-cand.out"
+[[ "$(grep -c '^repair-candidate ' "${tmp_root}/rp-cand.out")" == 1 ]] || \
+    fail 'conflict fixture did not print exactly one candidate'
+rp_token="$(rp_first_token "${tmp_root}/rp-cand.out")"
+[[ "$rp_token" =~ ^[0-9a-f]{12}$ ]] || fail 'candidate token is not 12 hex digits'
+if run_arena repair-state "$rp_run" --candidate deadbeefdeadbeef --reason 'x' >"${tmp_root}/rp-stale.out" 2>&1; then
+    fail 'repair-state accepted a stale token'
+fi
+require_match 'stale' "${tmp_root}/rp-stale.out"
+[[ ! -e "${rp_dir}/run-state.tsv" ]] || fail 'stale repair wrote a state file'
+[[ ! -e "${rp_dir}/.repair.intent" ]] || fail 'stale repair left an intent'
+[[ ! -e "${rp_dir}/.run-lock" ]] || fail 'stale repair left the run lock held'
+# refusal-only: orphan evidence with no review.tsv prints no candidate
+rp_run='repair-orphan-refusal'
+rp_dir="${rp_repo_dir}/${rp_run}"
+mkdir -p "$rp_dir"
+rp_make_manifest "$rp_dir" "$rp_run"
+printf 'Review HEAD: %s\nVERDICT: APPROVE\n' "4444444444444444444444444444444444444444" >"${rp_dir}/decision-4444444444444444444444444444444444444444.md"
+rp_candidates "$rp_dir" >"${tmp_root}/rp-ref.out"
+require_no_match 'repair-candidate' "${tmp_root}/rp-ref.out"
+# refusal-only: pointer without a canonical report prints no candidate
+rp_run='repair-pointer-refusal'
+rp_dir="${rp_repo_dir}/${rp_run}"
+mkdir -p "$rp_dir"
+rp_make_manifest "$rp_dir" "$rp_run"
+rp_review_tsv "$rp_head" >"${rp_dir}/review.tsv"
+printf '%s\n' 'Latest validation report: validation-aaaaaaaaaaaa.md' >"${rp_dir}/validation.md"
+rp_candidates "$rp_dir" >"${tmp_root}/rp-ref2.out"
+require_no_match 'repair-candidate' "${tmp_root}/rp-ref2.out"
+# (2) a fresh candidate token executes the repair: the orphan decision is
+# tombstoned under orphaned/, v1 state written, intent removed.
+rp_dir="${rp_repo_dir}/repair-dec-conflict"
+run_arena repair-state repair-dec-conflict --candidate "$rp_token" --reason 'tombstone orphan decision' >"${tmp_root}/rp-accept.out" 2>&1 || \
+    fail 'fresh repair candidate token was rejected'
+[[ ! -e "${rp_dir}/decision-${rp_old_head}.md" ]] || fail 'orphan decision archive was not tombstoned'
+rp_orphan="$(find "${rp_dir}/orphaned" -maxdepth 1 -type f 2>/dev/null | head -1)"
+[[ -n "$rp_orphan" ]] || fail 'no tombstoned file under orphaned/'
+[[ "$(basename "$rp_orphan")" == "decision-${rp_old_head}.md."* ]] || fail "unexpected tombstone name $(basename "$rp_orphan")"
+require_match $'state_revision\t1' <(cat "${rp_dir}/run-state.tsv")
+require_match $'run_status\tactive' <(cat "${rp_dir}/run-state.tsv")
+require_match $'phase\tsubmitted' <(cat "${rp_dir}/run-state.tsv")
+require_match $'responsible_party\treviewer' <(cat "${rp_dir}/run-state.tsv")
+require_match $'reason_code\treview_pending' <(cat "${rp_dir}/run-state.tsv")
+require_match $'reason_detail\ttombstone orphan decision' <(cat "${rp_dir}/run-state.tsv")
+require_match $'checkpoint_round\tunknown' <(cat "${rp_dir}/run-state.tsv")
+require_match $'checkpoint_sha\t'"$rp_head" <(cat "${rp_dir}/run-state.tsv")
+require_match $'last_transition_actor\tsystem' <(cat "${rp_dir}/run-state.tsv")
+require_match $'last_transition_action\trepair-state' <(cat "${rp_dir}/run-state.tsv")
+[[ ! -e "${rp_dir}/.repair.intent" ]] || fail 'repair-state left the intent behind'
+[[ ! -e "${rp_dir}/.run-lock" ]] || fail 'repair-state left the run lock held'
+rp_candidates "$rp_dir" >"${tmp_root}/rp-post.out"
+require_no_match 'repair-candidate' "${tmp_root}/rp-post.out"
+# (3a) intent with the state still at the original baseline: the owner
+# continues the tombstone/commit sequence from the intent (the stale token
+# is irrelevant).
+rp_run='repair-intent-continue'
+rp_dir="${rp_repo_dir}/${rp_run}"
+mkdir -p "$rp_dir"
+rp_make_manifest "$rp_dir" "$rp_run"
+rp_review_tsv "$rp_head" >"${rp_dir}/review.tsv"
+printf 'Review HEAD: %s\nVERDICT: APPROVE\n' "$rp_old_head" >"${rp_dir}/decision-${rp_old_head}.md"
+rp_candidates "$rp_dir" >"${tmp_root}/rp-a-cand.out"
+rp_a_token="$(rp_first_token "${tmp_root}/rp-a-cand.out")"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    run_dir="$2"
+    arena_state_repair_candidates "$run_dir" "$3"
+    [[ "$ARENA_REPAIR_MATCH" == 1 ]] || exit 9
+    now="$(date +%s)"
+    arena_state_repair_pairs "$now" "$now" "intent reason" "$ARENA_REPAIR_TARGET_REVISION"
+    arena_state_repair_verify "$run_dir" || exit 9
+    arena_repair_intent_write "$run_dir" "$ARENA_REPAIR_BASELINE_STRING" "$ARENA_REPAIR_EVIDENCE_DIGEST" \
+        "$3" "intent reason" "$ARENA_REPAIR_TARGET_DIGEST" "$ARENA_REPAIR_PAYLOAD_X1F" "" "$ARENA_REPAIR_TOMBSTONES" "1700000000"
+' _ "$source_root" "$rp_dir" "$rp_a_token" || fail 'could not pre-write the repair intent'
+run_arena repair-state "$rp_run" --candidate deadbeefdeadbeef --reason 'x' >"${tmp_root}/rp-a.out" 2>&1 || \
+    fail 'intent recovery (a) rejected the repair'
+[[ ! -e "${rp_dir}/decision-${rp_old_head}.md" ]] || fail 'intent recovery did not tombstone the orphan'
+[[ -e "${rp_dir}/orphaned/decision-${rp_old_head}.md.1700000000" ]] || fail 'intent recovery tombstone landed in the wrong place'
+require_match $'reason_detail\tintent reason' <(cat "${rp_dir}/run-state.tsv")
+require_match $'state_revision\t1' <(cat "${rp_dir}/run-state.tsv")
+[[ ! -e "${rp_dir}/.repair.intent" ]] || fail 'intent recovery left the intent behind'
+[[ ! -e "${rp_dir}/.run-lock" ]] || fail 'intent recovery left the run lock held'
+# (3b) intent with the state already at the target digest: zero-write
+# finish removes the intent and rewrites nothing.
+rp_run='repair-intent-committed'
+rp_dir="${rp_repo_dir}/${rp_run}"
+mkdir -p "$rp_dir"
+rp_make_manifest "$rp_dir" "$rp_run"
+rp_review_tsv "$rp_head" >"${rp_dir}/review.tsv"
+printf 'Review HEAD: %s\nVERDICT: APPROVE\n' "$rp_old_head" >"${rp_dir}/decision-${rp_old_head}.md"
+rp_candidates "$rp_dir" >"${tmp_root}/rp-b-cand.out"
+rp_b_token="$(rp_first_token "${tmp_root}/rp-b-cand.out")"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    run_dir="$2"
+    arena_state_repair_candidates "$run_dir" "$3"
+    [[ "$ARENA_REPAIR_MATCH" == 1 ]] || exit 9
+    now="$(date +%s)"
+    arena_state_repair_pairs "$now" "$now" "intent reason" "$ARENA_REPAIR_TARGET_REVISION"
+    arena_state_repair_verify "$run_dir" || exit 9
+    arena_state_write "$run_dir" "${ARENA_REPAIR_PAIRS[@]}"
+    arena_repair_intent_write "$run_dir" "$ARENA_REPAIR_BASELINE_STRING" "$ARENA_REPAIR_EVIDENCE_DIGEST" \
+        "$3" "intent reason" "$ARENA_REPAIR_TARGET_DIGEST" "$ARENA_REPAIR_PAYLOAD_X1F" "" "$ARENA_REPAIR_TOMBSTONES" "1700000000"
+' _ "$source_root" "$rp_dir" "$rp_b_token" || fail 'could not pre-write the committed repair intent'
+rp_b_before="$(shasum -a 256 "${rp_dir}/run-state.tsv" | awk '{print $1}')"
+run_arena repair-state "$rp_run" --candidate "$rp_b_token" --reason 'x' >"${tmp_root}/rp-b.out" 2>&1 || \
+    fail 'intent recovery (b) rejected the repair'
+require_match 'repair already committed' "${tmp_root}/rp-b.out"
+[[ ! -e "${rp_dir}/.repair.intent" ]] || fail 'zero-write finish left the intent'
+rp_b_after="$(shasum -a 256 "${rp_dir}/run-state.tsv" | awk '{print $1}')"
+[[ "$rp_b_after" == "$rp_b_before" ]] || fail 'zero-write finish rewrote the state file'
+[[ ! -e "${rp_dir}/.run-lock" ]] || fail 'zero-write finish left the run lock held'
+# (3c) hand-altered state under an intent fails closed (exit 2), keeping
+# the intent for inspection.
+rp_run='repair-intent-tampered'
+rp_dir="${rp_repo_dir}/${rp_run}"
+mkdir -p "$rp_dir"
+rp_make_manifest "$rp_dir" "$rp_run"
+rp_review_tsv "$rp_head" >"${rp_dir}/review.tsv"
+printf 'Review HEAD: %s\nVERDICT: APPROVE\n' "$rp_old_head" >"${rp_dir}/decision-${rp_old_head}.md"
+rp_candidates "$rp_dir" >"${tmp_root}/rp-c-cand.out"
+rp_c_token="$(rp_first_token "${tmp_root}/rp-c-cand.out")"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    run_dir="$2"
+    arena_state_repair_candidates "$run_dir" "$3"
+    [[ "$ARENA_REPAIR_MATCH" == 1 ]] || exit 9
+    now="$(date +%s)"
+    arena_state_repair_pairs "$now" "$now" "intent reason" "$ARENA_REPAIR_TARGET_REVISION"
+    arena_state_repair_verify "$run_dir" || exit 9
+    arena_repair_intent_write "$run_dir" "$ARENA_REPAIR_BASELINE_STRING" "$ARENA_REPAIR_EVIDENCE_DIGEST" \
+        "$3" "intent reason" "$ARENA_REPAIR_TARGET_DIGEST" "$ARENA_REPAIR_PAYLOAD_X1F" "" "$ARENA_REPAIR_TOMBSTONES" "1700000000"
+' _ "$source_root" "$rp_dir" "$rp_c_token" || fail 'could not pre-write the tampered repair intent'
+printf 'tampered\n' >"${rp_dir}/run-state.tsv"
+rp_c_exit=0
+run_arena repair-state "$rp_run" --candidate "$rp_c_token" --reason 'x' >"${tmp_root}/rp-c.out" 2>&1 || rp_c_exit=$?
+[[ "$rp_c_exit" == 2 ]] || fail "tampered-state recovery exited ${rp_c_exit}, expected 2"
+require_match 'failing closed' "${tmp_root}/rp-c.out"
+[[ -e "${rp_dir}/.repair.intent" ]] || fail 'fail-closed path removed the intent'
+[[ ! -e "${rp_dir}/.run-lock" ]] || fail 'fail-closed path left the run lock held'
+# (4) corrupted state file: the candidate is bound to the corrupted-file
+# digest; repair-state audit-copies and replaces it with a fresh valid v1
+# projection (revision 1).
+rp_run='repair-corrupt-replace'
+rp_dir="${rp_repo_dir}/${rp_run}"
+mkdir -p "$rp_dir"
+rp_make_manifest "$rp_dir" "$rp_run"
+rp_review_tsv "$rp_head" >"${rp_dir}/review.tsv"
+{
+    printf 'schema_version\t1\n'
+    printf 'state_revision\t1\n'
+    printf 'run_status\tbogus\n'
+    printf 'phase\tintake\n'
+    printf 'responsible_party\twriter\n'
+    printf 'reason_code\tnone\n'
+    printf 'reason_detail\t\n'
+    printf 'verdict\t\n'
+    printf 'validation_result\t\n'
+    printf 'checkpoint_round\t0\n'
+    printf 'checkpoint_sha\t\n'
+    printf 'waiting_since\t1\n'
+    printf 'last_transition_at\t1\n'
+    printf 'last_transition_actor\tsystem\n'
+    printf 'last_transition_action\tstart\n'
+    printf 'validation_digest\t\n'
+} >"${rp_dir}/run-state.tsv"
+rp_k_bad="$(shasum -a 256 "${rp_dir}/run-state.tsv" | awk '{print $1}')"
+rp_candidates "$rp_dir" >"${tmp_root}/rp-k-cand.out"
+rp_k_token="$(rp_first_token "${tmp_root}/rp-k-cand.out")"
+[[ -n "$rp_k_token" ]] || fail 'corrupted-state fixture printed no repair candidate'
+run_arena repair-state "$rp_run" --candidate "$rp_k_token" --reason 'replace corrupted state' >"${tmp_root}/rp-k.out" 2>&1 || \
+    fail 'corrupted-state replacement was rejected'
+rp_k_audit="$(find "$rp_dir" -maxdepth 1 -name 'run-state.tsv.corrupt.*' -type f | head -1)"
+[[ -n "$rp_k_audit" ]] || fail 'corrupted state file was not audit-copied'
+[[ "$(shasum -a 256 "$rp_k_audit" | awk '{print $1}')" == "$rp_k_bad" ]] || fail 'audit copy differs from the corrupted file'
+[[ "$(shasum -a 256 "${rp_dir}/run-state.tsv" | awk '{print $1}')" != "$rp_k_bad" ]] || fail 'corrupted state file was not replaced'
+require_match $'state_revision\t1' <(cat "${rp_dir}/run-state.tsv")
+require_match $'run_status\tactive' <(cat "${rp_dir}/run-state.tsv")
+require_match $'phase\tsubmitted' <(cat "${rp_dir}/run-state.tsv")
+require_match $'checkpoint_sha\t'"$rp_head" <(cat "${rp_dir}/run-state.tsv")
+require_match $'reason_detail\treplace corrupted state' <(cat "${rp_dir}/run-state.tsv")
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_read "$2"
+' _ "$source_root" "$rp_dir" || fail 'replacement state file does not validate'
+[[ ! -e "${rp_dir}/.repair.intent" ]] || fail 'corrupt replacement left the intent behind'
+[[ ! -e "${rp_dir}/.run-lock" ]] || fail 'corrupt replacement left the run lock held'
+# a future schema version has no recovery path: no candidate is printed
+rp_run='repair-future-schema'
+rp_dir="${rp_repo_dir}/${rp_run}"
+mkdir -p "$rp_dir"
+rp_make_manifest "$rp_dir" "$rp_run"
+rp_review_tsv "$rp_head" >"${rp_dir}/review.tsv"
+printf 'schema_version\t99\n' >"${rp_dir}/run-state.tsv"
+rp_candidates "$rp_dir" >"${tmp_root}/rp-future.out"
+require_no_match 'repair-candidate' "${tmp_root}/rp-future.out"
+# .diagnostic.md files are audit-only: the projection's Val scan never
+# picks them up as canonical evidence (Task 6 deferred this exclusion here).
+rp_run='repair-diag-exclusion'
+rp_dir="${rp_repo_dir}/${rp_run}"
+mkdir -p "$rp_dir"
+rp_review_tsv "$rp_head" >"${rp_dir}/review.tsv"
+printf 'Review HEAD: %s\nRESULT: FAIL\n' "$rp_head" >"${rp_dir}/validation-${rp_head:0:12}.diagnostic.md"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_project_legacy "$2"
+    [[ "$ARENA_PROJECTED_PHASE" == submitted && -z "$ARENA_PROJECTED_CONFLICTS" ]] || exit 9
+' _ "$source_root" "$rp_dir" || fail 'diagnostic report leaked into the Val scan'
+rm "${rp_dir}/review.tsv"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_project_legacy "$2"
+    [[ "$ARENA_PROJECTED_PHASE" == intake && -z "$ARENA_PROJECTED_CONFLICTS" ]] || exit 9
+' _ "$source_root" "$rp_dir" || fail 'diagnostic report leaked into the orphan scan'
+# valid-v1 evidence-conflict: checkpoint_sha disagrees with review.tsv (no
+# owning command can recover) -> candidate, then repair bumps the revision
+# and preserves waiting_since (same responsible party and reason).
+rp_run='repair-v1-conflict'
+rp_dir="${rp_repo_dir}/${rp_run}"
+mkdir -p "$rp_dir"
+rp_make_manifest "$rp_dir" "$rp_run"
+rp_review_tsv "$rp_head" >"${rp_dir}/review.tsv"
+{
+    printf 'schema_version\t1\n'
+    printf 'state_revision\t1\n'
+    printf 'run_status\tactive\n'
+    printf 'phase\tsubmitted\n'
+    printf 'responsible_party\treviewer\n'
+    printf 'reason_code\treview_pending\n'
+    printf 'reason_detail\t\n'
+    printf 'verdict\t\n'
+    printf 'validation_result\t\n'
+    printf 'checkpoint_round\tunknown\n'
+    printf 'checkpoint_sha\t1111111111111111111111111111111111111111\n'
+    printf 'waiting_since\t111\n'
+    printf 'last_transition_at\t222\n'
+    printf 'last_transition_actor\twriter\n'
+    printf 'last_transition_action\tsubmit\n'
+    printf 'validation_digest\t\n'
+} >"${rp_dir}/run-state.tsv"
+rp_candidates "$rp_dir" >"${tmp_root}/rp-v-cand.out"
+rp_v_token="$(rp_first_token "${tmp_root}/rp-v-cand.out")"
+[[ -n "$rp_v_token" ]] || fail 'valid-v1 evidence conflict printed no repair candidate'
+run_arena repair-state "$rp_run" --candidate "$rp_v_token" --reason 'checkpoint head drift' >"${tmp_root}/rp-v.out" 2>&1 || \
+    fail 'valid-v1 conflict repair was rejected'
+require_match $'state_revision\t2' <(cat "${rp_dir}/run-state.tsv")
+require_match $'checkpoint_sha\t'"$rp_head" <(cat "${rp_dir}/run-state.tsv")
+require_match $'waiting_since\t111' <(cat "${rp_dir}/run-state.tsv")
+require_match $'reason_detail\tcheckpoint head drift' <(cat "${rp_dir}/run-state.tsv")
+require_match $'phase\tsubmitted' <(cat "${rp_dir}/run-state.tsv")
+[[ ! -e "${rp_dir}/.repair.intent" ]] || fail 'valid-v1 repair left the intent behind'
+[[ ! -e "${rp_dir}/.run-lock" ]] || fail 'valid-v1 repair left the run lock held'
+
 printf '%s\n' 'tests: ok'

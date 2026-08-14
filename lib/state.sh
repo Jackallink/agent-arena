@@ -6,6 +6,8 @@ source "${state_dir}/common.sh"
 source "${state_dir}/lock.sh"
 
 ARENA_STATE_KEYS='schema_version state_revision run_status phase responsible_party reason_code reason_detail verdict validation_result checkpoint_round checkpoint_sha waiting_since last_transition_at last_transition_actor last_transition_action validation_digest'
+# Basenames the legacy projection must ignore (repair candidate re-projection).
+ARENA_PROJECTION_EXCLUDE=''
 
 # Corrupted or illegal state fails closed with the spec's exit code 2.
 arena_state_die() {
@@ -35,9 +37,17 @@ arena_state_defaults() {
 arena_state_read() {
     local run_dir="$1"
     local manifest="${run_dir}/run-state.tsv"
-    local key value seen=''
 
     [[ -f "$manifest" ]] || arena_state_die "missing state file: $manifest"
+    arena_state_read_file "$manifest"
+}
+
+# arena_state_read_file MANIFEST: read and validate one state file at an
+# explicit path (the repair path validates candidate renders this way).
+arena_state_read_file() {
+    local manifest="$1"
+    local key value seen=''
+
     arena_state_defaults
     while IFS=$'\t' read -r key value; do
         [[ -n "$key" ]] || arena_state_die "corrupted state file: empty key in $manifest"
@@ -66,7 +76,7 @@ arena_state_read() {
     for key in $ARENA_STATE_KEYS; do
         case " $seen " in *" $key "*) ;; *) arena_state_die "corrupted state file: missing key $key in $manifest" ;; esac
     done
-    arena_state_validate "$run_dir"
+    arena_state_validate "$manifest"
 }
 
 arena_state_validate() {
@@ -290,6 +300,18 @@ arena_state_projection_clear() {
     ARENA_PROJECTED_CONFLICTS=''
 }
 
+# Repair candidates re-project the evidence ignoring SHA-disagreeing files;
+# the exclusion list (space-separated basenames) makes the projection treat
+# those files as absent. Empty outside candidate computation.
+arena_state_projection_excluded() {
+    local name="$1"
+    local excluded
+    for excluded in $ARENA_PROJECTION_EXCLUDE; do
+        [[ "$name" == "$excluded" ]] && return 0
+    done
+    return 1
+}
+
 # Append one conflict line to ARENA_PROJECTED_CONFLICTS and print it to stderr.
 arena_state_projection_conflict() {
     ARENA_PROJECTED_CONFLICTS="${ARENA_PROJECTED_CONFLICTS}${1};"
@@ -310,6 +332,8 @@ arena_state_project_legacy() {
         for file in "${run_dir}"/validation.md "${run_dir}"/decision.md \
             "${run_dir}"/validation-*.md "${run_dir}"/decision-*.md; do
             [[ -f "$file" ]] || continue
+            # Diagnostic reports are audit-only artifacts, never evidence.
+            case "$file" in *.diagnostic.md) continue ;; esac
             arena_state_projection_conflict "orphan evidence with no review.tsv ($(basename "$file"))"
         done
         if [[ -n "$ARENA_PROJECTED_CONFLICTS" ]]; then
@@ -330,6 +354,9 @@ arena_state_project_legacy() {
     # PRECHECK scan: bind every decision archive by the SHA inside it.
     for file in "${run_dir}"/decision-*.md; do
         [[ -f "$file" ]] || continue
+        if arena_state_projection_excluded "$(basename "$file")"; then
+            continue
+        fi
         line="$(grep '^Review HEAD: [0-9a-f]\{40\}$' "$file" | head -1 || true)"
         dec_sha="$(printf '%s\n' "$line" | sed 's/^Review HEAD: //')"
         if [[ -z "$dec_sha" ]]; then
@@ -348,7 +375,7 @@ arena_state_project_legacy() {
         dec_file="$file"
     done
 
-    if [[ -f "${run_dir}/validation.md" ]]; then
+    if [[ -f "${run_dir}/validation.md" ]] && ! arena_state_projection_excluded 'validation.md'; then
         pointer_name="$(sed -n 's/^Latest validation report: //p' "${run_dir}/validation.md" | head -1)"
         if [[ -z "$pointer_name" ]]; then
             arena_state_projection_conflict 'validation pointer unparseable'
@@ -356,10 +383,14 @@ arena_state_project_legacy() {
     fi
 
     # PRECHECK scan: bind every validation report by the SHA inside it.
-    # Rotated .rN copies are audit artifacts, not canonical evidence.
+    # Rotated .rN copies and .diagnostic.md reports are audit artifacts,
+    # not canonical evidence.
     for file in "${run_dir}"/validation-*.md; do
         [[ -f "$file" ]] || continue
-        case "$file" in *.r[0-9]*.md) continue ;; esac
+        case "$file" in *.r[0-9]*.md|*.diagnostic.md) continue ;; esac
+        if arena_state_projection_excluded "$(basename "$file")"; then
+            continue
+        fi
         [[ "$file" == "${run_dir}/${pointer_name}" ]] && continue
         line="$(grep '^Review HEAD: [0-9a-f]\{40\}$' "$file" | head -1 || true)"
         sha="$(printf '%s\n' "$line" | sed 's/^Review HEAD: //')"
@@ -479,9 +510,21 @@ arena_state_project_legacy() {
 
 arena_state_write() {
     local run_dir="$1"
-    local tmp_file key value var_name
+    local tmp_file
     shift
     tmp_file="$(mktemp "${run_dir}/.run-state.XXXXXX")"
+    arena_state_render_tsv "$@" >"$tmp_file"
+    chmod 600 "$tmp_file"
+    mv "$tmp_file" "${run_dir}/run-state.tsv"
+}
+
+# arena_state_render_tsv [KEY=VAL ...]: print the canonical state wire
+# format (ARENA_STATE_KEYS order). With no arguments the in-memory
+# ARENA_STATE_* variables are used (the defaults/mutation entry point);
+# explicit KEY=VAL arguments override them. This is the one serialization
+# every writer and digest computation shares.
+arena_state_render_tsv() {
+    local key value var_name
     for key in $ARENA_STATE_KEYS; do
         value=''
         if [[ $# -eq 0 ]]; then
@@ -501,9 +544,7 @@ arena_state_write() {
             done
         fi
         printf '%s\t%s\n' "$key" "$value"
-    done >"$tmp_file"
-    chmod 600 "$tmp_file"
-    mv "$tmp_file" "${run_dir}/run-state.tsv"
+    done
 }
 
 arena_creation_intent_path() {
@@ -629,4 +670,389 @@ arena_state_precheck_intents() {
             ;;
         *) return 0 ;;
     esac
+}
+
+# ---------------------------------------------------------------------------
+# Repair-state candidate contract (T14): candidates, the token payload, the
+# tombstone move map, and the repair intent protocol. All functions here are
+# deterministic and zero-write except arena_repair_intent_write.
+# ---------------------------------------------------------------------------
+
+# The evidence digest of a run: sha256 over the sorted (basename, digest)
+# pairs of every canonical evidence file. Rotated .rN copies and
+# .diagnostic.md reports are audit-only and excluded. The digest is
+# identical at status time and under the repair lock, before any tombstone.
+arena_state_evidence_digest() {
+    local run_dir="$1"
+    local input='' file hash
+    while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
+        [[ -f "$file" ]] || continue
+        case "$file" in
+            *.r[0-9]*.md|*.diagnostic.md) continue ;;
+        esac
+        hash="$(arena_file_hash "$file")" || continue
+        printf -v input '%s%s\t%s\n' "$input" "$(basename -- "$file")" "$hash"
+    done < <(printf '%s\n' \
+        "${run_dir}/review.tsv" \
+        "${run_dir}/validation.md" \
+        "${run_dir}/decision.md" \
+        "${run_dir}"/validation-*.md \
+        "${run_dir}"/decision-*.md | sort -u)
+    arena_sha256_text "$input"
+}
+
+# A decision archive bound to the given SHA by its internal Review HEAD line.
+arena_state_decision_archive_for_head() {
+    local run_dir="$1" head="$2"
+    local file line sha
+    for file in "${run_dir}"/decision-*.md; do
+        [[ -f "$file" ]] || continue
+        line="$(grep '^Review HEAD: [0-9a-f]\{40\}$' "$file" | head -1 || true)"
+        sha="$(printf '%s\n' "$line" | sed 's/^Review HEAD: //')"
+        [[ -n "$sha" && "$sha" == "$head" ]] && return 0
+    done
+    return 1
+}
+
+# A candidate is only safe when every recorded conflict is a SHA
+# disagreement the exclusion re-projection resolves. Any other conflict
+# (unparseable verdicts/RESULTs, pointer without a report, missing reports
+# for L1-L3, orphan evidence without review.tsv, ...) is refusal-only.
+arena_state_repair_conflicts_admit() {
+    local -a conflicts
+    local conflict admitted=0
+    IFS=';' read -r -a conflicts <<<"$ARENA_PROJECTED_CONFLICTS"
+    for conflict in "${conflicts[@]}"; do
+        [[ -n "$conflict" ]] || continue
+        case "$conflict" in
+            'decision archive bound to differing SHA ('*')') admitted=1 ;;
+            'validation report bound to differing SHA ('*')') admitted=1 ;;
+            'validation pointer bound to differing SHA') admitted=1 ;;
+            *) return 1 ;;
+        esac
+    done
+    [[ "$admitted" == 1 ]]
+}
+
+# The tombstone move map: every Val/Dec evidence file bound to a SHA that
+# differs from review.tsv's review_head, plus the validation pointer when
+# its canonical report is bound elsewhere. Basenames, joined by ';'.
+# Unparseable bindings refuse (return 1) - they are never silently moved.
+arena_state_repair_tombstones() {
+    local run_dir="$1"
+    local review_head file line sha pointer_name
+    ARENA_REPAIR_TOMBSTONES=''
+    review_head="$(awk -F $'\t' '$1 == "review_head" { print $2; exit }' "${run_dir}/review.tsv" 2>/dev/null || true)"
+    [[ "$review_head" =~ ^[0-9a-f]{40}$ ]] || return 1
+    for file in "${run_dir}"/decision-*.md; do
+        [[ -f "$file" ]] || continue
+        line="$(grep '^Review HEAD: [0-9a-f]\{40\}$' "$file" | head -1 || true)"
+        sha="$(printf '%s\n' "$line" | sed 's/^Review HEAD: //')"
+        [[ -n "$sha" ]] || return 1
+        if [[ "$sha" != "$review_head" ]]; then
+            ARENA_REPAIR_TOMBSTONES="${ARENA_REPAIR_TOMBSTONES}${ARENA_REPAIR_TOMBSTONES:+;}$(basename -- "$file")"
+        fi
+    done
+    for file in "${run_dir}"/validation-*.md; do
+        [[ -f "$file" ]] || continue
+        case "$file" in *.r[0-9]*.md|*.diagnostic.md) continue ;; esac
+        line="$(grep '^Review HEAD: [0-9a-f]\{40\}$' "$file" | head -1 || true)"
+        sha="$(printf '%s\n' "$line" | sed 's/^Review HEAD: //')"
+        [[ -n "$sha" ]] || return 1
+        if [[ "$sha" != "$review_head" ]]; then
+            ARENA_REPAIR_TOMBSTONES="${ARENA_REPAIR_TOMBSTONES}${ARENA_REPAIR_TOMBSTONES:+;}$(basename -- "$file")"
+        fi
+    done
+    if [[ -f "${run_dir}/validation.md" ]]; then
+        pointer_name="$(sed -n 's/^Latest validation report: //p' "${run_dir}/validation.md" | head -1)"
+        if [[ -n "$pointer_name" && -f "${run_dir}/${pointer_name}" && ! -L "${run_dir}/${pointer_name}" ]] && \
+            ! grep -Fqx "Review HEAD: ${review_head}" "${run_dir}/${pointer_name}"; then
+            ARENA_REPAIR_TOMBSTONES="${ARENA_REPAIR_TOMBSTONES}${ARENA_REPAIR_TOMBSTONES:+;}validation.md"
+            ARENA_REPAIR_TOMBSTONES="${ARENA_REPAIR_TOMBSTONES};${pointer_name}"
+        fi
+    fi
+    return 0
+}
+
+# Emit one candidate from the current (clean) projection: record the
+# target-field values, build the placeholder payload, and either print the
+# candidate line or match the expected token (ARENA_REPAIR_MATCH=1).
+arena_state_repair_emit() {
+    local baseline="$1" evidence="$2" revision="$3" ws_rule="$4" expect="$5"
+    local run_status phase round ws_mode='now' token payload checkpoint_suffix=''
+
+    case "$ARENA_PROJECTED_PHASE" in
+        intake) run_status='active'; phase='intake'; round='0' ;;
+        submitted) run_status='active'; phase='submitted'; round='unknown' ;;
+        validated) run_status='active'; phase='validated'; round='unknown' ;;
+        decided) run_status='active'; phase='decided'; round='unknown' ;;
+        blocked) run_status='blocked'; phase='decided'; round='unknown' ;;
+        *) return 0 ;;
+    esac
+    # Valid-v1 sources preserve waiting_since when the candidate's party
+    # and reason equal the current state's; legacy/corrupt materialize @now.
+    if [[ "$ws_rule" == preserve ]]; then
+        if [[ "$ARENA_PROJECTED_PARTY" == "$ARENA_STATE_RESPONSIBLE_PARTY" && \
+            "$ARENA_PROJECTED_REASON" == "$ARENA_STATE_REASON_CODE" ]]; then
+            ws_mode='preserve'
+            ARENA_REPAIR_TARGET_WS_VALUE="$ARENA_STATE_WAITING_SINCE"
+        fi
+    fi
+    ARENA_REPAIR_TARGET_RUN_STATUS="$run_status"
+    ARENA_REPAIR_TARGET_PHASE="$phase"
+    ARENA_REPAIR_TARGET_PARTY="$ARENA_PROJECTED_PARTY"
+    ARENA_REPAIR_TARGET_REASON="$ARENA_PROJECTED_REASON"
+    ARENA_REPAIR_TARGET_VERDICT="$ARENA_PROJECTED_VERDICT"
+    ARENA_REPAIR_TARGET_VR="$ARENA_PROJECTED_VR"
+    ARENA_REPAIR_TARGET_VD="$ARENA_PROJECTED_VD"
+    ARENA_REPAIR_TARGET_CS="$ARENA_PROJECTED_CS"
+    ARENA_REPAIR_TARGET_ROUND="$round"
+    ARENA_REPAIR_TARGET_REVISION="$revision"
+    ARENA_REPAIR_TARGET_WS_MODE="$ws_mode"
+    ARENA_REPAIR_BASELINE_STRING="$baseline"
+    ARENA_REPAIR_EVIDENCE_DIGEST="$evidence"
+    arena_state_repair_pairs '@now' '@now' '@reason' '@revision'
+    payload="$ARENA_REPAIR_PAYLOAD"
+    token="$(arena_sha256_text "${evidence}${baseline}${payload}")"
+    token="${token:0:12}"
+    if [[ -n "$expect" ]]; then
+        [[ "$token" == "$expect" ]] && ARENA_REPAIR_MATCH=1
+        return 0
+    fi
+    if [[ -n "$ARENA_PROJECTED_CS" ]]; then
+        checkpoint_suffix=" checkpoint $(arena_short_sha "$ARENA_PROJECTED_CS")"
+    fi
+    printf 'repair-candidate %s -> %s/%s/%s/%s revision %s%s\n' \
+        "$token" "$run_status" "$phase" "$ARENA_PROJECTED_PARTY" "$ARENA_PROJECTED_REASON" \
+        "$revision" "$checkpoint_suffix"
+}
+
+# Conflict candidate: only pure SHA disagreements, re-projected with every
+# disagreeing file excluded, and only when that projection is clean.
+arena_state_repair_candidate_conflicts() {
+    local run_dir="$1" baseline="$2" evidence="$3" revision="$4" ws_rule="$5" expect="$6"
+    local projection_status=0
+    arena_state_repair_conflicts_admit || return 0
+    arena_state_repair_tombstones "$run_dir" || return 0
+    [[ -n "$ARENA_REPAIR_TOMBSTONES" ]] || return 0
+    ARENA_PROJECTION_EXCLUDE="${ARENA_REPAIR_TOMBSTONES//;/ }"
+    arena_state_project_legacy "$run_dir" 2>/dev/null || projection_status=$?
+    ARENA_PROJECTION_EXCLUDE=''
+    [[ "$projection_status" == 0 ]] || return 0
+    arena_state_repair_emit "$baseline" "$evidence" "$revision" "$ws_rule" "$expect"
+}
+
+# Build the canonical candidate key=value pairs (wire-table order) and the
+# two serializations: ARENA_REPAIR_PAYLOAD joins with ';' for the token
+# (placeholders passed in), ARENA_REPAIR_PAYLOAD_X1F joins with \x1f for
+# the intent (materialized values). ARENA_REPAIR_TARGET_DIGEST is the
+# sha256 of the exact state-file bytes the pairs render to.
+arena_state_repair_pairs() {
+    local ws_value="$1" lta_value="$2" reason_value="$3" revision_value="$4"
+    ARENA_REPAIR_PAIRS=(
+        "schema_version=1"
+        "state_revision=${revision_value}"
+        "run_status=${ARENA_REPAIR_TARGET_RUN_STATUS}"
+        "phase=${ARENA_REPAIR_TARGET_PHASE}"
+        "responsible_party=${ARENA_REPAIR_TARGET_PARTY}"
+        "reason_code=${ARENA_REPAIR_TARGET_REASON}"
+        "reason_detail=${reason_value}"
+        "verdict=${ARENA_REPAIR_TARGET_VERDICT}"
+        "validation_result=${ARENA_REPAIR_TARGET_VR}"
+        "checkpoint_round=${ARENA_REPAIR_TARGET_ROUND}"
+        "checkpoint_sha=${ARENA_REPAIR_TARGET_CS}"
+        "waiting_since=${ws_value}"
+        "last_transition_at=${lta_value}"
+        "last_transition_actor=system"
+        "last_transition_action=repair-state"
+        "validation_digest=${ARENA_REPAIR_TARGET_VD}"
+    )
+    ARENA_REPAIR_PAYLOAD="$(IFS=';'; printf '%s' "${ARENA_REPAIR_PAIRS[*]}")"
+    ARENA_REPAIR_PAYLOAD_X1F="$(IFS=$'\x1f'; printf '%s' "${ARENA_REPAIR_PAIRS[*]}")"
+    # The target digest binds the exact bytes arena_state_write will put on
+    # disk (including the final newline); command substitution alone would
+    # strip it and every commit would fail the digest check.
+    ARENA_REPAIR_TARGET_DIGEST="$(arena_sha256_text "$(arena_state_render_tsv "${ARENA_REPAIR_PAIRS[@]}")"$'\n')"
+}
+
+# Rebuild ARENA_REPAIR_PAIRS from an intent's materialized payload.
+arena_state_repair_pairs_from_payload() {
+    local payload="$1"
+    IFS=$'\x1f' read -r -a ARENA_REPAIR_PAIRS <<<"$payload"
+    [[ "${#ARENA_REPAIR_PAIRS[@]}" == 16 ]] || return 1
+    return 0
+}
+
+# Verify the pairs satisfy every state invariant by rendering them to a
+# temporary file and reading it through the full validation path.
+arena_state_repair_verify() {
+    local run_dir="$1"
+    local tmp_check
+    tmp_check="$(mktemp "${run_dir}/.repair-check.XXXXXX")"
+    arena_state_render_tsv "${ARENA_REPAIR_PAIRS[@]}" >"$tmp_check"
+    if ( arena_state_read_file "$tmp_check" >/dev/null 2>&1 ); then
+        rm -f "$tmp_check"
+        return 0
+    fi
+    rm -f "$tmp_check"
+    return 1
+}
+
+# arena_state_repair_candidates RUN_DIR [EXPECT_TOKEN]: compute the repair
+# candidates for a run. Without EXPECT_TOKEN each candidate prints one
+# 'repair-candidate TOKEN -> ...' line; with it, the matching candidate
+# sets ARENA_REPAIR_MATCH=1 and leaves the target fields in ARENA_REPAIR_*.
+# Sources: legacy conflicts, corrupted state files, and the spec-restricted
+# valid-v1 evidence conflicts. Refusal-only conflicts print nothing.
+arena_state_repair_candidates() {
+    local run_dir="$1"
+    local expect="${2:-}"
+    local baseline evidence projection_status raw_schema conflict
+    local review_head report vr
+
+    [[ -d "$run_dir" ]] || return 0
+    ARENA_REPAIR_MATCH=0
+    ARENA_REPAIR_TARGET_REVISION=''
+    ARENA_REPAIR_TARGET_WS_MODE=''
+    ARENA_REPAIR_TARGET_WS_VALUE=''
+    ARENA_REPAIR_TOMBSTONES=''
+    ARENA_REPAIR_BASELINE_STRING=''
+    ARENA_REPAIR_EVIDENCE_DIGEST=''
+
+    evidence="$(arena_state_evidence_digest "$run_dir")"
+    ARENA_REPAIR_EVIDENCE_DIGEST="$evidence"
+
+    if [[ ! -f "${run_dir}/run-state.tsv" ]]; then
+        # Legacy source: only a conflicted projection offers candidates.
+        baseline='absent'
+        projection_status=0
+        arena_state_project_legacy "$run_dir" 2>/dev/null || projection_status=$?
+        [[ "$projection_status" == 2 ]] || return 0
+        arena_state_repair_candidate_conflicts "$run_dir" "$baseline" "$evidence" '1' 'now' "$expect"
+        return 0
+    fi
+
+    if ( arena_state_read "$run_dir" >/dev/null 2>&1 ); then
+        :
+    else
+        # Corrupted state source - but a future schema version has no
+        # recovery path (upgrade Arena instead).
+        raw_schema="$(awk -F $'\t' '$1 == "schema_version" { print $2; exit }' "${run_dir}/run-state.tsv" 2>/dev/null || true)"
+        if [[ "$raw_schema" =~ ^[0-9]+$ && "$raw_schema" != 1 ]]; then
+            return 0
+        fi
+        baseline="$(arena_file_hash "${run_dir}/run-state.tsv")" || return 0
+        [[ "$baseline" =~ ^[0-9a-f]{64}$ ]] || return 0
+        baseline="corrupt:${baseline}"
+        projection_status=0
+        arena_state_project_legacy "$run_dir" 2>/dev/null || projection_status=$?
+        if [[ "$projection_status" == 0 ]]; then
+            arena_state_repair_emit "$baseline" "$evidence" '1' 'now' "$expect"
+        elif [[ "$projection_status" == 2 ]]; then
+            arena_state_repair_candidate_conflicts "$run_dir" "$baseline" "$evidence" '1' 'now' "$expect"
+        fi
+        return 0
+    fi
+
+    # Valid-v1 source: only the genuine conflicts no owning command can
+    # recover - checkpoint_sha disagreeing with review.tsv, verdict empty
+    # while a decision archive exists, or validation_result/digest
+    # disagreeing with the canonical report. Terminal states are never
+    # candidates.
+    arena_state_read "$run_dir" 2>/dev/null
+    [[ "$ARENA_STATE_RUN_STATUS" == completed || "$ARENA_STATE_RUN_STATUS" == canceled ]] && return 0
+    conflict=0
+    review_head=''
+    [[ -f "${run_dir}/review.tsv" ]] && \
+        review_head="$(awk -F $'\t' '$1 == "review_head" { print $2; exit }' "${run_dir}/review.tsv" 2>/dev/null || true)"
+    if [[ -n "$ARENA_STATE_CHECKPOINT_SHA" && "$review_head" =~ ^[0-9a-f]{40}$ && \
+        "$ARENA_STATE_CHECKPOINT_SHA" != "$review_head" ]]; then
+        conflict=1
+    elif [[ -z "$ARENA_STATE_VERDICT" && "$review_head" =~ ^[0-9a-f]{40}$ ]] && \
+        arena_state_decision_archive_for_head "$run_dir" "$review_head"; then
+        conflict=1
+    elif [[ -n "$ARENA_STATE_VALIDATION_RESULT" && "$review_head" =~ ^[0-9a-f]{40}$ ]]; then
+        report="${run_dir}/validation-$(arena_short_sha "$review_head").md"
+        if [[ -f "$report" ]]; then
+            vr="$(grep '^RESULT: ' "$report" | tail -1 | sed 's/^RESULT: //' || true)"
+            [[ "$vr" != "$ARENA_STATE_VALIDATION_RESULT" ]] && conflict=1
+            [[ "$(arena_file_hash "$report")" != "$ARENA_STATE_VALIDATION_DIGEST" ]] && conflict=1
+        fi
+    fi
+    [[ "$conflict" == 1 ]] || return 0
+    raw_state_digest="$(arena_file_hash "${run_dir}/run-state.tsv")" || return 0
+    baseline="valid:${raw_state_digest}:${ARENA_STATE_REVISION}"
+    projection_status=0
+    arena_state_project_legacy "$run_dir" 2>/dev/null || projection_status=$?
+    if [[ "$projection_status" == 0 ]]; then
+        ARENA_REPAIR_TOMBSTONES=''
+        arena_state_repair_emit "$baseline" "$evidence" "$((ARENA_STATE_REVISION + 1))" 'preserve' "$expect"
+    elif [[ "$projection_status" == 2 ]]; then
+        arena_state_repair_candidate_conflicts "$run_dir" "$baseline" "$evidence" "$((ARENA_STATE_REVISION + 1))" 'preserve' "$expect"
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Repair intent: the atomic, intent-first record for T14. It carries the
+# original state baseline, the evidence baseline digest, the token, the
+# reason, the materialized target values (pairs + target digest), the
+# audit-copy target, and the complete tombstone move map.
+# ---------------------------------------------------------------------------
+
+arena_repair_intent_write() {
+    local run_dir="$1" baseline="$2" evidence="$3" token="$4" reason="$5" \
+        target_digest="$6" target_payload="$7" audit_copy="$8" move_map="$9" stamp="${10}"
+    local tmp_file
+    tmp_file="$(mktemp "${run_dir}/.repair.intent.XXXXXX")"
+    {
+        printf 'baseline\t%s\n' "$baseline"
+        printf 'evidence\t%s\n' "$evidence"
+        printf 'token\t%s\n' "$token"
+        printf 'reason\t%s\n' "$reason"
+        printf 'target_digest\t%s\n' "$target_digest"
+        printf 'target_payload\t%s\n' "$target_payload"
+        printf 'audit_copy\t%s\n' "$audit_copy"
+        printf 'move_map\t%s\n' "$move_map"
+        printf 'stamp\t%s\n' "$stamp"
+    } >"$tmp_file"
+    chmod 600 "$tmp_file"
+    mv "$tmp_file" "${run_dir}/.repair.intent"
+}
+
+arena_repair_intent_read() {
+    local run_dir="$1"
+    local key value seen=''
+    ARENA_REPAIR_BASELINE=''; ARENA_REPAIR_EVIDENCE=''; ARENA_REPAIR_TOKEN=''
+    ARENA_REPAIR_REASON=''; ARENA_REPAIR_TARGET_DIGEST=''; ARENA_REPAIR_TARGET_PAYLOAD=''
+    ARENA_REPAIR_AUDIT_COPY=''; ARENA_REPAIR_MOVE_MAP=''; ARENA_REPAIR_STAMP=''
+    while IFS=$'\t' read -r key value; do
+        case "$key" in
+            baseline) ARENA_REPAIR_BASELINE="$value" ;;
+            evidence) ARENA_REPAIR_EVIDENCE="$value" ;;
+            token) ARENA_REPAIR_TOKEN="$value" ;;
+            reason) ARENA_REPAIR_REASON="$value" ;;
+            target_digest) ARENA_REPAIR_TARGET_DIGEST="$value" ;;
+            target_payload) ARENA_REPAIR_TARGET_PAYLOAD="$value" ;;
+            audit_copy) ARENA_REPAIR_AUDIT_COPY="$value" ;;
+            move_map) ARENA_REPAIR_MOVE_MAP="$value" ;;
+            stamp) ARENA_REPAIR_STAMP="$value" ;;
+            *) arena_state_die "corrupted repair intent: unknown key $key" ;;
+        esac
+        seen="$seen $key"
+    done <"${run_dir}/.repair.intent"
+    for key in baseline evidence token reason target_digest target_payload stamp; do
+        case " $seen " in *" $key "*) ;; *) arena_state_die "corrupted repair intent: missing key $key" ;; esac
+    done
+    [[ "$ARENA_REPAIR_BASELINE" =~ ^(absent|valid:[0-9a-f]{64}:[0-9]+|corrupt:[0-9a-f]{64})$ ]] || \
+        arena_state_die 'corrupted repair intent: unreadable baseline'
+    [[ "$ARENA_REPAIR_EVIDENCE" =~ ^[0-9a-f]{64}$ ]] || \
+        arena_state_die 'corrupted repair intent: unreadable evidence digest'
+    [[ "$ARENA_REPAIR_TOKEN" =~ ^[0-9a-f]{12}$ ]] || \
+        arena_state_die 'corrupted repair intent: unreadable token'
+    [[ "$ARENA_REPAIR_TARGET_DIGEST" =~ ^[0-9a-f]{64}$ ]] || \
+        arena_state_die 'corrupted repair intent: unreadable target digest'
+    [[ "$ARENA_REPAIR_STAMP" =~ ^[0-9][0-9-]*$ ]] || \
+        arena_state_die 'corrupted repair intent: unreadable stamp'
 }

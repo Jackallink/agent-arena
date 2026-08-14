@@ -19,6 +19,7 @@ Commands:
   escalate RUN_ID                Raise a stuck reviewer-bound run to human
   resolve RUN_ID                 Human disposition: approve, reject, recover, cancel
   relay RUN_ID [options]         Send a direct, literal agent-pane message
+  repair-state RUN_ID [options]  Accept a status-printed repair candidate
   status RUN_ID                  Show manifest, validation, and decision state
   list                           List all recorded runs with their state
   version                        Print the Agent Arena version
@@ -34,7 +35,7 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "$command_name" in
-    doctor|init|start|submit|validate|decision|escalate|resolve|relay|status|list)
+    doctor|init|start|submit|validate|decision|escalate|resolve|relay|repair-state|status|list)
         exec "${source_root}/lib/${command_name}.sh" "$@"
         ;;
     resume)
