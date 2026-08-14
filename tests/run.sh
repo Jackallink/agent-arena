@@ -1903,16 +1903,21 @@ sha40='0000000000000000000000000000000000000000'
 ARENA_SOURCE_ROOT="$source_root" bash -c '
     set -euo pipefail
     source "$1/lib/state.sh"
-    arena_creation_intent_write "$2/runs" proj-id s1-run run_id=s1-run repository=/x state_root=/y worktree_root=/z profile=pi-cursor gate_adapter=cursor session_name=agent-arena-x base_sha='"$sha40"' branch=agent-arena/pi/s1-run writer_worktree=/w writer_adapter_path=/a gate_adapter_path=/g
+    arena_creation_intent_write "$2/runs" proj-id s1-run repository=/x state_root=/y worktree_root=/z profile=pi-cursor gate_adapter=cursor session_name=agent-arena-x base_sha='"$sha40"' branch=agent-arena/pi/s1-run writer_worktree=/w writer_adapter_path=/a gate_adapter_path=/g
+    intent="$(arena_creation_intent_path "$2/runs" proj-id s1-run)"
+    [[ "$(head -1 "$intent")" == "$(printf "run_id\t%s" s1-run)" ]] || exit 9
+    [[ "$(grep -c run_id "$intent")" == 1 ]] || exit 9
+    arena_creation_intent_read "$2/runs" proj-id s1-run
+    [[ "${ARENA_INTENT_run_id}" == s1-run ]] || exit 9
     stage="$(arena_creation_intent_stage "$2/runs" proj-id s1-run)"
     [[ "$stage" == S1 ]] || exit 9
-' _ "$source_root" "$intent_root" || fail 'S1 not detected'
+' _ "$source_root" "$intent_root" || fail 'S1 not detected or run_id header missing'
 # S2: empty run dir
 mkdir -p "${intent_root}/runs/proj-id/s2-run"
 ARENA_SOURCE_ROOT="$source_root" bash -c '
     set -euo pipefail
     source "$1/lib/state.sh"
-    arena_creation_intent_write "$2/runs" proj-id s2-run run_id=s2-run
+    arena_creation_intent_write "$2/runs" proj-id s2-run
     stage="$(arena_creation_intent_stage "$2/runs" proj-id s2-run)"
     [[ "$stage" == S2 ]] || exit 9
 ' _ "$source_root" "$intent_root" || fail 'S2 not detected'
@@ -1922,7 +1927,7 @@ printf x >"${intent_root}/runs/proj-id/s3-run/junk"
 ARENA_SOURCE_ROOT="$source_root" bash -c '
     set -euo pipefail
     source "$1/lib/state.sh"
-    arena_creation_intent_write "$2/runs" proj-id s3-run run_id=s3-run
+    arena_creation_intent_write "$2/runs" proj-id s3-run
     stage="$(arena_creation_intent_stage "$2/runs" proj-id s3-run)"
     [[ "$stage" == S3 ]] || exit 9
 ' _ "$source_root" "$intent_root" || fail 'S3 not detected'
@@ -1933,7 +1938,7 @@ printf 'schema_version\t1\nstate_revision\t1\nrun_status\tactive\nphase\tintake\
 ARENA_SOURCE_ROOT="$source_root" bash -c '
     set -euo pipefail
     source "$1/lib/state.sh"
-    arena_creation_intent_write "$2/runs" proj-id s6-run run_id=s6-run
+    arena_creation_intent_write "$2/runs" proj-id s6-run
     stage="$(arena_creation_intent_stage "$2/runs" proj-id s6-run)"
     [[ "$stage" == S6 ]] || exit 9
 ' _ "$source_root" "$intent_root" || fail 'S6 not detected'
@@ -1955,5 +1960,128 @@ if ARENA_SOURCE_ROOT="$source_root" bash -c '
     fail 'precheck passed status through S3'
 fi
 require_match 'interrupted start stage S3' "${tmp_root}/precheck-s3.out"
+
+# precheck: run lock held by a live owner → exit 4
+mkdir -p "${intent_root}/runs/proj-id/lock-live/.run-lock"
+printf 'pid=%s\ntoken=live\ncreated_at=1\n' "$$" >"${intent_root}/runs/proj-id/lock-live/.run-lock/owner"
+precheck_rc=''
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_precheck_intents "$2/runs" proj-id lock-live submit
+' _ "$source_root" "$intent_root" >"${tmp_root}/precheck-run-live.out" 2>&1; then
+    precheck_rc=0
+else
+    precheck_rc=$?
+fi
+[[ "$precheck_rc" == 4 ]] || fail "live run lock did not exit 4 (rc=$precheck_rc)"
+require_match 'transition in progress' "${tmp_root}/precheck-run-live.out"
+# precheck: metadata-less fresh run-dir lock (grace window) → exit 4
+mkdir -p "${intent_root}/runs/proj-id/lock-fresh/.run-lock"
+precheck_rc=''
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_precheck_intents "$2/runs" proj-id lock-fresh submit
+' _ "$source_root" "$intent_root" >"${tmp_root}/precheck-run-fresh.out" 2>&1; then
+    precheck_rc=0
+else
+    precheck_rc=$?
+fi
+[[ "$precheck_rc" == 4 ]] || fail "metadata-less fresh run-dir lock did not exit 4 (rc=$precheck_rc)"
+require_match 'transition in progress' "${tmp_root}/precheck-run-fresh.out"
+# precheck: metadata-less stale run-dir lock is ignored → intent path runs (exit 5)
+mkdir -p "${intent_root}/runs/proj-id/lock-stale/.run-lock"
+touch -t 200001010000 "${intent_root}/runs/proj-id/lock-stale/.run-lock"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_creation_intent_write "$2/runs" proj-id lock-stale
+' _ "$source_root" "$intent_root" || fail 'stale lock intent write failed'
+precheck_rc=''
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_precheck_intents "$2/runs" proj-id lock-stale submit
+' _ "$source_root" "$intent_root" >"${tmp_root}/precheck-run-stale.out" 2>&1; then
+    precheck_rc=0
+else
+    precheck_rc=$?
+fi
+[[ "$precheck_rc" == 5 ]] || fail "stale metadata-less run lock blocked precheck (rc=$precheck_rc)"
+require_match 'retry: agent-arena start lock-stale' "${tmp_root}/precheck-run-stale.out"
+# precheck: parent creation lock held by a live owner → exit 4
+mkdir -p "${intent_root}/runs/proj-id/.parent-lock"
+printf 'pid=%s\ntoken=live\ncreated_at=1\n' "$$" >"${intent_root}/runs/proj-id/.parent-lock/owner"
+precheck_rc=''
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_precheck_intents "$2/runs" proj-id plock-live submit
+' _ "$source_root" "$intent_root" >"${tmp_root}/precheck-parent-live.out" 2>&1; then
+    precheck_rc=0
+else
+    precheck_rc=$?
+fi
+[[ "$precheck_rc" == 4 ]] || fail "live parent lock did not exit 4 (rc=$precheck_rc)"
+require_match 'transition in progress' "${tmp_root}/precheck-parent-live.out"
+rm -rf "${intent_root}/runs/proj-id/.parent-lock"
+# precheck: metadata-less fresh parent lock (grace window) → exit 4
+mkdir -p "${intent_root}/runs/proj-id/.parent-lock"
+precheck_rc=''
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_precheck_intents "$2/runs" proj-id plock-fresh submit
+' _ "$source_root" "$intent_root" >"${tmp_root}/precheck-parent-fresh.out" 2>&1; then
+    precheck_rc=0
+else
+    precheck_rc=$?
+fi
+[[ "$precheck_rc" == 4 ]] || fail "metadata-less fresh parent lock did not exit 4 (rc=$precheck_rc)"
+require_match 'transition in progress' "${tmp_root}/precheck-parent-fresh.out"
+rm -rf "${intent_root}/runs/proj-id/.parent-lock"
+# precheck: metadata-less stale parent lock is ignored → intent path runs (exit 5)
+mkdir -p "${intent_root}/runs/proj-id/.parent-lock"
+touch -t 200001010000 "${intent_root}/runs/proj-id/.parent-lock"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_creation_intent_write "$2/runs" proj-id plock-stale
+' _ "$source_root" "$intent_root" || fail 'stale parent intent write failed'
+precheck_rc=''
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_precheck_intents "$2/runs" proj-id plock-stale submit
+' _ "$source_root" "$intent_root" >"${tmp_root}/precheck-parent-stale.out" 2>&1; then
+    precheck_rc=0
+else
+    precheck_rc=$?
+fi
+[[ "$precheck_rc" == 5 ]] || fail "stale metadata-less parent lock blocked precheck (rc=$precheck_rc)"
+require_match 'retry: agent-arena start plock-stale' "${tmp_root}/precheck-parent-stale.out"
+rm -rf "${intent_root}/runs/proj-id/.parent-lock"
+# precheck: parent lock with a dead owner is ignored → intent path runs (exit 5)
+mkdir -p "${intent_root}/runs/proj-id/.parent-lock"
+printf 'pid=999999999\ntoken=dead\ncreated_at=1\n' >"${intent_root}/runs/proj-id/.parent-lock/owner"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_creation_intent_write "$2/runs" proj-id plock-dead
+' _ "$source_root" "$intent_root" || fail 'plock-dead intent write failed'
+precheck_rc=''
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_state_precheck_intents "$2/runs" proj-id plock-dead submit
+' _ "$source_root" "$intent_root" >"${tmp_root}/precheck-parent-dead.out" 2>&1; then
+    precheck_rc=0
+else
+    precheck_rc=$?
+fi
+[[ "$precheck_rc" == 5 ]] || fail "dead-owner parent lock blocked precheck (rc=$precheck_rc)"
+require_match 'retry: agent-arena start plock-dead' "${tmp_root}/precheck-parent-dead.out"
+rm -rf "${intent_root}/runs/proj-id/.parent-lock"
 
 printf '%s\n' 'tests: ok'

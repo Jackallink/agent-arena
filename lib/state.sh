@@ -433,24 +433,33 @@ arena_creation_intent_write() {
     local intent tmp_file arg
     intent="$(arena_creation_intent_path "$runs_root" "$repo_id" "$run_id")"
     tmp_file="$(mktemp "${runs_root}/${repo_id}/.creating-intent.XXXXXX")"
-    for arg in "$@"; do
-        printf '%s\n' "$arg"
-    done >"$tmp_file"
+    {
+        printf 'run_id\t%s\n' "$run_id"
+        for arg in "$@"; do
+            printf '%s\n' "$arg"
+        done
+    } >"$tmp_file"
     chmod 600 "$tmp_file"
     mv "$tmp_file" "$intent"
 }
 
 arena_creation_intent_read() {
     local runs_root="$1" repo_id="$2" run_id="$3"
-    local intent key value
+    local intent line key value
     intent="$(arena_creation_intent_path "$runs_root" "$repo_id" "$run_id")"
     ARENA_INTENT_FIELDS=''
     [[ -f "$intent" ]] || return 1
     while IFS= read -r line || [[ -n "$line" ]]; do
         [[ -z "$line" ]] && continue
-        key="${line%%=*}"
-        value="${line#*=}"
-        [[ "$key" != "$line" ]] || arena_die "corrupted creation intent: $intent"
+        if [[ "$line" == run_id$'\t'* && "$ARENA_INTENT_FIELDS" != *run_id* ]]; then
+            # run_id TSV header line, written first by arena_creation_intent_write
+            key='run_id'
+            value="${line#run_id$'\t'}"
+        else
+            key="${line%%=*}"
+            value="${line#*=}"
+            [[ "$key" != "$line" ]] || arena_die "corrupted creation intent: $intent"
+        fi
         ARENA_INTENT_FIELDS="$ARENA_INTENT_FIELDS $key"
         printf -v "ARENA_INTENT_${key}" '%s' "$value"
     done <"$intent"
@@ -482,13 +491,33 @@ arena_creation_intent_stage() {
     return 0
 }
 
+arena_state_precheck_lock_live() {
+    local lock_path="$1"
+    [[ -e "$lock_path" ]] || return 1
+    if arena_lock_is_held "$lock_path"; then
+        if arena_lock_owner_alive "$lock_path"; then
+            return 0
+        fi
+        return 1
+    fi
+    if arena_lock_metadata_less_fresh "$lock_path"; then
+        return 0
+    fi
+    return 1
+}
+
 arena_state_precheck_intents() {
     local runs_root="$1" repo_id="$2" run_id="$3" caller="$4"
-    local stage intent lock_path run_dir
+    local stage intent lock_path parent_lock run_dir
 
     run_dir="${runs_root}/${repo_id}/${run_id}"
     lock_path="${run_dir}/.run-lock"
-    if [[ -d "$run_dir" ]] && arena_lock_is_held "$lock_path" && arena_lock_owner_alive "$lock_path"; then
+    parent_lock="${runs_root}/${repo_id}/.parent-lock"
+    if arena_state_precheck_lock_live "$lock_path"; then
+        printf 'transition in progress\n' >&2
+        exit 4
+    fi
+    if arena_state_precheck_lock_live "$parent_lock"; then
         printf 'transition in progress\n' >&2
         exit 4
     fi

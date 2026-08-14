@@ -25,6 +25,25 @@ arena_lock_owner_alive() {
     kill -0 "$pid" 2>/dev/null
 }
 
+arena_lock_mtime() {
+    stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null || true
+}
+
+# Metadata-less grace rule (mkdir→owner window): a lock directory without an
+# owner file and with mtime within 60 seconds is considered live (contenders
+# exit 4); older than 60 seconds it is stale. An unreadable mtime fails
+# closed as live, mirroring arena_lock_acquire.
+arena_lock_metadata_less_fresh() {
+    local lock_path="$1"
+    local grace_cutoff mtime
+    [[ -d "$lock_path" ]] || return 1
+    arena_lock_is_held "$lock_path" && return 1
+    mtime="$(arena_lock_mtime "$lock_path")"
+    [[ -n "$mtime" && "$mtime" =~ ^[0-9]+$ ]] || return 0
+    grace_cutoff="$(($(date +%s) - 60))"
+    [[ "$mtime" -ge "$grace_cutoff" ]]
+}
+
 arena_lock_acquire() {
     local lock_path="$1"
     local token="$2"
