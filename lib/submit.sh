@@ -96,6 +96,34 @@ git -C "$ARENA_MANIFEST_WRITER_WORKTREE" merge-base --is-ancestor \
     "$ARENA_MANIFEST_BASE_SHA" "$writer_head" || \
     arena_die 'writer checkpoint does not descend from the recorded base'
 
+# Classify the transition BEFORE the evidence phase: an illegal submit must
+# fail closed (exit 2) without rewriting review.tsv or deleting the
+# validation/decision pointers. run-state.tsv remains the atomic commit
+# point; it is only written after the evidence is on disk.
+submit_case=''
+if [[ -f "${run_dir}/run-state.tsv" ]]; then
+    arena_state_read "$run_dir"
+    if arena_source_submitted_reviewer && [[ "$ARENA_STATE_CHECKPOINT_SHA" == "$writer_head" ]]; then
+        submit_case='retry' # T3: same-SHA idempotent retry — zero-write
+    elif arena_source_intake_or_decided_writer && [[ -z "$ARENA_STATE_CHECKPOINT_SHA" || "$ARENA_STATE_CHECKPOINT_SHA" != "$writer_head" ]]; then
+        submit_case='new-sha' # T2: intake or decided writer submits a new SHA
+    elif [[ "$ARENA_STATE_RESPONSIBLE_PARTY" == writer ]] && \
+        { [[ "$ARENA_STATE_REASON_CODE" == changes_requested || "$ARENA_STATE_REASON_CODE" == human_changes_requested ]]; } && \
+        [[ "$ARENA_STATE_CHECKPOINT_SHA" == "$writer_head" ]]; then
+        arena_state_die 'writer must submit a new SHA'
+    else
+        arena_state_die "illegal submit from ${ARENA_STATE_RUN_STATUS}/${ARENA_STATE_PHASE}/${ARENA_STATE_RESPONSIBLE_PARTY}/${ARENA_STATE_REASON_CODE}"
+    fi
+elif [[ "$legacy_projected" == 1 ]]; then
+    if [[ "$ARENA_PROJECTED_PHASE" == submitted && "$ARENA_PROJECTED_CS" == "$writer_head" ]]; then
+        submit_case='legacy-resubmit' # L-T3: resubmit of the already-submitted SHA
+    elif [[ "$ARENA_PROJECTED_PHASE" == intake ]]; then
+        submit_case='legacy-first' # L6: a legacy run with no evidence
+    else
+        arena_state_die "legacy projection ${ARENA_PROJECTED_PHASE}/${ARENA_PROJECTED_PARTY}/${ARENA_PROJECTED_REASON} does not admit this submit"
+    fi
+fi
+
 short_sha="$(arena_short_sha "$writer_head")"
 review_worktree="${ARENA_MANIFEST_WORKTREE_ROOT}/$(arena_repo_id "$ARENA_MANIFEST_REPOSITORY")/${run_id}/review-${short_sha}"
 if [[ -e "$review_worktree" || -L "$review_worktree" ]]; then
@@ -144,23 +172,19 @@ else
 fi
 
 # Commit the transition: evidence is on disk first; run-state.tsv is the
-# atomic commit point.
-if [[ -f "${run_dir}/run-state.tsv" ]]; then
-    arena_state_read "$run_dir"
-    if arena_source_submitted_reviewer && [[ "$ARENA_STATE_CHECKPOINT_SHA" == "$writer_head" ]]; then
+# atomic commit point. The submit case was classified above, before the
+# evidence phase could mutate anything.
+case "$submit_case" in
+    retry)
         : # T3: same-SHA idempotent retry — zero-write, evidence verified above
-    elif arena_source_intake_or_decided_writer && [[ -z "$ARENA_STATE_CHECKPOINT_SHA" || "$ARENA_STATE_CHECKPOINT_SHA" != "$writer_head" ]]; then
+        ;;
+    new-sha)
         arena_state_transition "$run_dir" arena_source_intake_or_decided_writer \
             true \
             arena_state_delta_submit_new_sha \
             submit
-    elif [[ "$ARENA_STATE_RESPONSIBLE_PARTY" == writer ]] && \
-        { [[ "$ARENA_STATE_REASON_CODE" == changes_requested || "$ARENA_STATE_REASON_CODE" == human_changes_requested ]]; } && \
-        [[ "$ARENA_STATE_CHECKPOINT_SHA" == "$writer_head" ]]; then
-        arena_state_die 'writer must submit a new SHA'
-    fi
-elif [[ "$legacy_projected" == 1 ]]; then
-    if [[ "$ARENA_PROJECTED_PHASE" == submitted && "$ARENA_PROJECTED_CS" == "$writer_head" ]]; then
+        ;;
+    legacy-resubmit)
         # L-T3: legacy first migration for the already-submitted SHA.
         # Materialize v1 with the L5 projection; evidence stays as verified.
         arena_state_defaults
@@ -174,7 +198,8 @@ elif [[ "$legacy_projected" == 1 ]]; then
         ARENA_STATE_LAST_TRANSITION_ACTOR='writer'
         ARENA_STATE_LAST_TRANSITION_ACTION='submit'
         arena_state_write "$run_dir"
-    elif [[ "$ARENA_PROJECTED_PHASE" == intake ]]; then
+        ;;
+    legacy-first)
         # L6: a legacy run with no evidence admits a first submission.
         arena_state_defaults
         ARENA_STATE_PHASE='submitted'
@@ -187,10 +212,11 @@ elif [[ "$legacy_projected" == 1 ]]; then
         ARENA_STATE_LAST_TRANSITION_ACTOR='writer'
         ARENA_STATE_LAST_TRANSITION_ACTION='submit'
         arena_state_write "$run_dir"
-    else
-        arena_state_die 'legacy projection does not admit this submit'
-    fi
-fi
+        ;;
+    *)
+        arena_state_die 'internal error: submit transition case not classified'
+        ;;
+esac
 
 arena_lock_release "${run_dir}/.run-lock" "submit-$$"
 submit_lock_held=0

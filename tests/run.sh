@@ -717,6 +717,18 @@ chmod 600 "${run_dir}/manifest.tsv"
 printf '%s\n' 'legacy direct submit checkpoint' >"${writer_worktree}/legacy-submit.txt"
 git -C "$writer_worktree" add legacy-submit.txt
 git -C "$writer_worktree" commit -m 'feat: add legacy direct submit fixture' >/dev/null
+# validate/decision state commits land in later tasks; fabricate the
+# decided/writer/changes_requested tuple a CHANGES_REQUESTED re-review would
+# produce so the new-SHA submit below is a legal T2 (the submit's evidence
+# phase invalidates the stale APPROVE pointers it replaces).
+run_one_revision="$(awk -F $'\t' '$1 == "state_revision" { print $2 }' "${run_dir}/run-state.tsv")"
+run_one_waiting="$(awk -F $'\t' '$1 == "waiting_since" { print $2 }' "${run_dir}/run-state.tsv")"
+run_one_transition_at="$(awk -F $'\t' '$1 == "last_transition_at" { print $2 }' "${run_dir}/run-state.tsv")"
+printf 'schema_version\t1\nstate_revision\t%s\nrun_status\tactive\nphase\tdecided\nresponsible_party\twriter\nreason_code\tchanges_requested\nreason_detail\t\nverdict\tCHANGES_REQUESTED\nvalidation_result\tPASS\ncheckpoint_round\t1\ncheckpoint_sha\t%s\nwaiting_since\t%s\nlast_transition_at\t%s\nlast_transition_actor\treviewer\nlast_transition_action\tdecision\nvalidation_digest\t%s\n' \
+    "$run_one_revision" "$writer_head" "$run_one_waiting" "$run_one_transition_at" \
+    "$(shasum -a 256 "${run_dir}/validation-${run_one_short}.md" | awk '{print $1}')" \
+    >"${run_dir}/.run-state-fabricated"
+mv "${run_dir}/.run-state-fabricated" "${run_dir}/run-state.tsv"
 : >"$fake_tmux_log"
 export FAKE_TMUX_MODE=live
 ARENA_RUN_DIR="$run_dir" run_arena submit run-one >"${tmp_root}/legacy-live-submit.out"
@@ -953,12 +965,23 @@ fi
 
 printf '%s\n' '26. submitting a new checkpoint invalidates stale validation and decision pointers'
 run_arena validate run-pane-dead >"${tmp_root}/pane-dead-validate.out" 2>/dev/null
-run_arena decision run-pane-dead --verdict APPROVE --summary 'approved' \
-    --next 'continue' --no-relay >/dev/null
+run_arena decision run-pane-dead --verdict CHANGES_REQUESTED --summary 'requested changes' \
+    --next 'create a new checkpoint' --no-relay >/dev/null
 [[ -f "${pane_dead_run_dir}/validation.md" ]] || fail 'validation pointer missing before resubmit'
 [[ -f "${pane_dead_run_dir}/decision.md" ]] || fail 'decision pointer missing before resubmit'
 pane_dead_head="$(manifest_value "${pane_dead_run_dir}/review.tsv" review_head)"
 pane_dead_short="${pane_dead_head:0:12}"
+# validate/decision state commits land in later tasks; fabricate the
+# decided/writer/changes_requested tuple the decision above would produce so
+# the new-SHA submit below is a legal T2.
+pane_dead_revision="$(awk -F $'\t' '$1 == "state_revision" { print $2 }' "${pane_dead_run_dir}/run-state.tsv")"
+pane_dead_waiting="$(awk -F $'\t' '$1 == "waiting_since" { print $2 }' "${pane_dead_run_dir}/run-state.tsv")"
+pane_dead_transition_at="$(awk -F $'\t' '$1 == "last_transition_at" { print $2 }' "${pane_dead_run_dir}/run-state.tsv")"
+printf 'schema_version\t1\nstate_revision\t%s\nrun_status\tactive\nphase\tdecided\nresponsible_party\twriter\nreason_code\tchanges_requested\nreason_detail\t\nverdict\tCHANGES_REQUESTED\nvalidation_result\tPASS\ncheckpoint_round\t1\ncheckpoint_sha\t%s\nwaiting_since\t%s\nlast_transition_at\t%s\nlast_transition_actor\treviewer\nlast_transition_action\tdecision\nvalidation_digest\t%s\n' \
+    "$pane_dead_revision" "$pane_dead_head" "$pane_dead_waiting" "$pane_dead_transition_at" \
+    "$(shasum -a 256 "${pane_dead_run_dir}/validation-${pane_dead_short}.md" | awk '{print $1}')" \
+    >"${pane_dead_run_dir}/.run-state-fabricated"
+mv "${pane_dead_run_dir}/.run-state-fabricated" "${pane_dead_run_dir}/run-state.tsv"
 printf '%s\n' 'second checkpoint' >"${pane_dead_writer}/second.txt"
 git -C "$pane_dead_writer" add second.txt
 git -C "$pane_dead_writer" commit -m 'feat: add second checkpoint fixture' >/dev/null
@@ -2372,5 +2395,70 @@ lt3_waiting="$(awk -F $'\t' '$1 == "waiting_since" { print $2 }' "${lt3_dir}/run
 lt3_transition_at="$(awk -F $'\t' '$1 == "last_transition_at" { print $2 }' "${lt3_dir}/run-state.tsv")"
 [[ -n "$lt3_waiting" && "$lt3_waiting" == "$lt3_transition_at" ]] || \
     fail 'L-T3 did not set waiting_since to last_transition_at'
+# Illegal persisted-v1 states fail closed (exit 2) BEFORE the evidence phase
+# can rewrite review.tsv or delete the validation/decision pointers.
+# (1) completed run with a NEW SHA: exit 2; evidence and state byte-identical.
+[[ -f "${trans_run_dir}/validation.md" ]] || fail 'completed-submit fixture lacks validation.md'
+[[ -f "${trans_run_dir}/decision.md" ]] || fail 'completed-submit fixture lacks decision.md'
+cp "${trans_run_dir}/review.tsv" "${tmp_root}/completed-review.tsv"
+cp "${trans_run_dir}/validation.md" "${tmp_root}/completed-validation.md"
+cp "${trans_run_dir}/decision.md" "${tmp_root}/completed-decision.md"
+printf '%s\n' comp2 >"${trans_writer}/comp2.txt"
+git -C "$trans_writer" add comp2.txt
+git -C "$trans_writer" commit -m 'feat: comp2' >/dev/null
+comp_head="$(git -C "$trans_writer" rev-parse HEAD)"
+printf 'schema_version\t1\nstate_revision\t%s\nrun_status\tcompleted\nphase\tdecided\nresponsible_party\tnone\nreason_code\tnone\nreason_detail\t\nverdict\tAPPROVE\nvalidation_result\tPASS\ncheckpoint_round\t1\ncheckpoint_sha\t%s\nwaiting_since\t\nlast_transition_at\t%s\nlast_transition_actor\thuman\nlast_transition_action\tdecision\nvalidation_digest\t%s\n' \
+    "$first_revision" "$trans_head" "$first_waiting" \
+    "$(printf y | shasum -a 256 | awk '{print $1}')" >"${trans_state}.completed"
+mv "${trans_state}.completed" "$trans_state"
+completed_state_hash="$(shasum -a 256 "$trans_state" | awk '{print $1}')"
+completed_exit=0
+run_arena submit "$trans_run" >"${tmp_root}/completed-submit.out" 2>&1 || completed_exit=$?
+[[ "$completed_exit" == 2 ]] || fail "completed-run submit did not exit 2 (exit ${completed_exit})"
+require_match 'illegal submit from completed/decided/none/none' "${tmp_root}/completed-submit.out"
+cmp -s "${tmp_root}/completed-review.tsv" "${trans_run_dir}/review.tsv" || \
+    fail 'completed-run submit rewrote review.tsv'
+cmp -s "${tmp_root}/completed-validation.md" "${trans_run_dir}/validation.md" || \
+    fail 'completed-run submit changed validation.md'
+cmp -s "${tmp_root}/completed-decision.md" "${trans_run_dir}/decision.md" || \
+    fail 'completed-run submit changed decision.md'
+[[ "$(shasum -a 256 "$trans_state" | awk '{print $1}')" == "$completed_state_hash" ]] || \
+    fail 'completed-run submit changed the state file'
+[[ ! -e "${trans_run_dir}/.run-lock" ]] || fail 'completed-run rejection left the run lock held'
+# (2) submitted/reviewer/review_pending with a NEW SHA: exit 2, no rewrite of review.tsv.
+printf '%s\n' comp3 >"${trans_writer}/comp3.txt"
+git -C "$trans_writer" add comp3.txt
+git -C "$trans_writer" commit -m 'feat: comp3' >/dev/null
+comp3_head="$(git -C "$trans_writer" rev-parse HEAD)"
+printf 'schema_version\t1\nstate_revision\t%s\nrun_status\tactive\nphase\tsubmitted\nresponsible_party\treviewer\nreason_code\treview_pending\nreason_detail\t\nverdict\t\nvalidation_result\t\ncheckpoint_round\t1\ncheckpoint_sha\t%s\nwaiting_since\t%s\nlast_transition_at\t%s\nlast_transition_actor\twriter\nlast_transition_action\tsubmit\nvalidation_digest\t\n' \
+    "$first_revision" "$trans_head" "$first_waiting" "$first_waiting" >"${trans_state}.submitted-new"
+mv "${trans_state}.submitted-new" "$trans_state"
+submitted_new_exit=0
+run_arena submit "$trans_run" >"${tmp_root}/submitted-new.out" 2>&1 || submitted_new_exit=$?
+[[ "$submitted_new_exit" == 2 ]] || fail "new-SHA submit from submitted/reviewer did not exit 2 (exit ${submitted_new_exit})"
+require_match 'illegal submit from active/submitted/reviewer/review_pending' "${tmp_root}/submitted-new.out"
+cmp -s "${tmp_root}/completed-review.tsv" "${trans_run_dir}/review.tsv" || \
+    fail 'new-SHA submit from submitted/reviewer rewrote review.tsv'
+[[ ! -e "${trans_run_dir}/.run-lock" ]] || fail 'submitted-new rejection left the run lock held'
+# (3) a legacy projection that does not admit this submit exits 2 before the
+# evidence phase materializes anything.
+illegit_run='legacy-illegal'
+illegit_dir="${state_root}/runs/${trans_repo}/${illegit_run}"
+mkdir -p "$illegit_dir"
+awk -F $'\t' -v dir="$illegit_dir" 'BEGIN { OFS = FS }
+    $1 == "run_id" { $2 = "legacy-illegal" }
+    $1 == "branch" { $2 = "agent-arena/pi/legacy-illegal" }
+    $1 == "session_name" { $2 = "agent-arena-legacy-illegal" }
+    $1 == "writer_session_dir" { $2 = dir "/writer-session" }
+    { print }' "${trans_run_dir}/manifest.tsv" >"${illegit_dir}/manifest.tsv"
+printf 'review_head\t%s\n' "$sha40" >"${illegit_dir}/review.tsv"
+illegit_review_hash="$(shasum -a 256 "${illegit_dir}/review.tsv" | awk '{print $1}')"
+illegit_exit=0
+run_arena submit "$illegit_run" >"${tmp_root}/legacy-illegal.out" 2>&1 || illegit_exit=$?
+[[ "$illegit_exit" == 2 ]] || fail "illegal legacy submit did not exit 2 (exit ${illegit_exit})"
+require_match 'legacy projection submitted/reviewer/review_pending does not admit this submit' "${tmp_root}/legacy-illegal.out"
+[[ ! -e "${illegit_dir}/run-state.tsv" ]] || fail 'illegal legacy submit materialized state'
+[[ "$(shasum -a 256 "${illegit_dir}/review.tsv" | awk '{print $1}')" == "$illegit_review_hash" ]] || \
+    fail 'illegal legacy submit rewrote review.tsv'
 
 printf '%s\n' 'tests: ok'
