@@ -40,6 +40,43 @@ arena_require_command git
 run_dir="$(arena_find_run_dir "$run_id")"
 arena_read_manifest "$run_dir"
 [[ "$ARENA_MANIFEST_RUN_ID" == "$run_id" ]] || arena_die 'run id differs from manifest'
+
+# The state file is authoritative for the transition commit below. Source
+# state.sh here: the priority precheck needs its lock and intent helpers.
+ARENA_CALLER=submit source "${source_root}/lib/state.sh"
+
+# Priority check BEFORE the lock: a live run or parent lock wins (exit 4);
+# an interrupted creation intent is owned by start (exit 5).
+arena_state_precheck_intents "$(arena_state_root)/runs" \
+    "$(basename "$(dirname "$run_dir")")" "$run_id" submit
+
+# Serialize the evidence + state commit; released before the best-effort
+# pane respawn and notes. Every exit path (arena_die, state conflict,
+# guard refusal) releases the lock; exit "$status" preserves the real
+# exit code (a plain EXIT trap body would mask it under Bash 3.2).
+submit_lock_held=0
+arena_submit_cleanup() {
+    local status=$?
+
+    if [[ "$submit_lock_held" == 1 ]] && arena_lock_is_held "${run_dir}/.run-lock" && \
+        [[ "$(arena_lock_owner_token "${run_dir}/.run-lock")" == "submit-$$" ]]; then
+        arena_lock_release "${run_dir}/.run-lock" "submit-$$"
+    fi
+    exit "$status"
+}
+trap arena_submit_cleanup EXIT
+arena_lock_acquire "${run_dir}/.run-lock" "submit-$$"
+submit_lock_held=1
+
+# Legacy run: project inside the lock BEFORE the evidence phase can change
+# review.tsv (an L6 intake projection requires no evidence). Residue (5)
+# and conflict (2) abort here under errexit.
+legacy_projected=0
+if [[ ! -f "${run_dir}/run-state.tsv" ]]; then
+    arena_state_project_legacy "$run_dir"
+    legacy_projected=1
+fi
+
 arena_assert_clean_worktree "$ARENA_MANIFEST_WRITER_WORKTREE"
 
 # A project-owned gate policy cannot be safely merged with the generated gate
@@ -105,6 +142,58 @@ else
     # this submission; the per-SHA archives remain for the audit trail.
     rm -f "${run_dir}/validation.md" "${run_dir}/decision.md"
 fi
+
+# Commit the transition: evidence is on disk first; run-state.tsv is the
+# atomic commit point.
+if [[ -f "${run_dir}/run-state.tsv" ]]; then
+    arena_state_read "$run_dir"
+    if arena_source_submitted_reviewer && [[ "$ARENA_STATE_CHECKPOINT_SHA" == "$writer_head" ]]; then
+        : # T3: same-SHA idempotent retry — zero-write, evidence verified above
+    elif arena_source_intake_or_decided_writer && [[ -z "$ARENA_STATE_CHECKPOINT_SHA" || "$ARENA_STATE_CHECKPOINT_SHA" != "$writer_head" ]]; then
+        arena_state_transition "$run_dir" arena_source_intake_or_decided_writer \
+            true \
+            arena_state_delta_submit_new_sha \
+            submit
+    elif [[ "$ARENA_STATE_RESPONSIBLE_PARTY" == writer ]] && \
+        { [[ "$ARENA_STATE_REASON_CODE" == changes_requested || "$ARENA_STATE_REASON_CODE" == human_changes_requested ]]; } && \
+        [[ "$ARENA_STATE_CHECKPOINT_SHA" == "$writer_head" ]]; then
+        arena_state_die 'writer must submit a new SHA'
+    fi
+elif [[ "$legacy_projected" == 1 ]]; then
+    if [[ "$ARENA_PROJECTED_PHASE" == submitted && "$ARENA_PROJECTED_CS" == "$writer_head" ]]; then
+        # L-T3: legacy first migration for the already-submitted SHA.
+        # Materialize v1 with the L5 projection; evidence stays as verified.
+        arena_state_defaults
+        ARENA_STATE_PHASE='submitted'
+        ARENA_STATE_RESPONSIBLE_PARTY='reviewer'
+        ARENA_STATE_REASON_CODE='review_pending'
+        ARENA_STATE_CHECKPOINT_SHA="$writer_head"
+        ARENA_STATE_CHECKPOINT_ROUND='unknown'
+        ARENA_STATE_WAITING_SINCE="$(date +%s)"
+        ARENA_STATE_LAST_TRANSITION_AT="${ARENA_STATE_WAITING_SINCE}"
+        ARENA_STATE_LAST_TRANSITION_ACTOR='writer'
+        ARENA_STATE_LAST_TRANSITION_ACTION='submit'
+        arena_state_write "$run_dir"
+    elif [[ "$ARENA_PROJECTED_PHASE" == intake ]]; then
+        # L6: a legacy run with no evidence admits a first submission.
+        arena_state_defaults
+        ARENA_STATE_PHASE='submitted'
+        ARENA_STATE_RESPONSIBLE_PARTY='reviewer'
+        ARENA_STATE_REASON_CODE='review_pending'
+        ARENA_STATE_CHECKPOINT_SHA="$writer_head"
+        ARENA_STATE_CHECKPOINT_ROUND='1'
+        ARENA_STATE_WAITING_SINCE="$(date +%s)"
+        ARENA_STATE_LAST_TRANSITION_AT="${ARENA_STATE_WAITING_SINCE}"
+        ARENA_STATE_LAST_TRANSITION_ACTOR='writer'
+        ARENA_STATE_LAST_TRANSITION_ACTION='submit'
+        arena_state_write "$run_dir"
+    else
+        arena_state_die 'legacy projection does not admit this submit'
+    fi
+fi
+
+arena_lock_release "${run_dir}/.run-lock" "submit-$$"
+submit_lock_held=0
 
 refresh_live_session_environment() {
     local environment_name

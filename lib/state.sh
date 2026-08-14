@@ -199,6 +199,80 @@ arena_state_validate() {
 }
 
 # ---------------------------------------------------------------------------
+# Transition engine: shared dispatcher for T-rows that mutate state.
+# arena_state_transition RUN_DIR SOURCE_CHECK GUARD_FN DELTA_FN ACTION_NAME
+# reads and validates the current state, refuses illegal sources, runs the
+# guard (return 2 on failure), applies the delta, increments the revision,
+# stamps the transition fields, and commits atomically. Delta functions may
+# rely on caller-scope variables (e.g. writer_head).
+# ---------------------------------------------------------------------------
+
+arena_state_transition() {
+    local run_dir="$1" source_check="$2" guard_fn="$3" delta_fn="$4" action_name="$5"
+    local new_revision
+
+    arena_state_read "$run_dir"
+    "$source_check" || arena_state_die \
+        "illegal transition from ${ARENA_STATE_RUN_STATUS}/${ARENA_STATE_PHASE}/${ARENA_STATE_RESPONSIBLE_PARTY}/${ARENA_STATE_REASON_CODE}"
+    "$guard_fn" || return 2
+    new_revision=$((ARENA_STATE_REVISION + 1))
+    "$delta_fn"
+    ARENA_STATE_REVISION="$new_revision"
+    ARENA_STATE_LAST_TRANSITION_AT="$(date +%s)"
+    ARENA_STATE_LAST_TRANSITION_ACTION="$action_name"
+    arena_state_write "$run_dir" \
+        "schema_version=${ARENA_STATE_SCHEMA_VERSION}" "state_revision=${ARENA_STATE_REVISION}" \
+        "run_status=${ARENA_STATE_RUN_STATUS}" "phase=${ARENA_STATE_PHASE}" \
+        "responsible_party=${ARENA_STATE_RESPONSIBLE_PARTY}" "reason_code=${ARENA_STATE_REASON_CODE}" \
+        "reason_detail=${ARENA_STATE_REASON_DETAIL}" "verdict=${ARENA_STATE_VERDICT}" \
+        "validation_result=${ARENA_STATE_VALIDATION_RESULT}" \
+        "checkpoint_round=${ARENA_STATE_CHECKPOINT_ROUND}" "checkpoint_sha=${ARENA_STATE_CHECKPOINT_SHA}" \
+        "waiting_since=${ARENA_STATE_WAITING_SINCE}" "last_transition_at=${ARENA_STATE_LAST_TRANSITION_AT}" \
+        "last_transition_actor=${ARENA_STATE_LAST_TRANSITION_ACTOR}" "last_transition_action=${ARENA_STATE_LAST_TRANSITION_ACTION}" \
+        "validation_digest=${ARENA_STATE_VALIDATION_DIGEST}"
+}
+
+arena_source_intake_or_decided_writer() {
+    [[ "$ARENA_STATE_RUN_STATUS" == active ]] || return 1
+    if [[ "$ARENA_STATE_PHASE" == intake ]]; then
+        [[ "$ARENA_STATE_RESPONSIBLE_PARTY" == writer && "$ARENA_STATE_REASON_CODE" == none ]] || return 1
+        return 0
+    fi
+    if [[ "$ARENA_STATE_PHASE" == decided ]]; then
+        [[ "$ARENA_STATE_RESPONSIBLE_PARTY" == writer ]] || return 1
+        case "$ARENA_STATE_REASON_CODE" in
+            changes_requested|human_changes_requested) return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+    return 1
+}
+
+arena_source_submitted_reviewer() {
+    [[ "$ARENA_STATE_RUN_STATUS" == active && "$ARENA_STATE_PHASE" == submitted && \
+        "$ARENA_STATE_RESPONSIBLE_PARTY" == reviewer && "$ARENA_STATE_REASON_CODE" == review_pending ]]
+}
+
+arena_state_delta_submit_new_sha() {
+    ARENA_STATE_RUN_STATUS='active'
+    ARENA_STATE_PHASE='submitted'
+    ARENA_STATE_RESPONSIBLE_PARTY='reviewer'
+    ARENA_STATE_REASON_CODE='review_pending'
+    ARENA_STATE_REASON_DETAIL=''
+    ARENA_STATE_VERDICT=''
+    ARENA_STATE_VALIDATION_RESULT=''
+    ARENA_STATE_VALIDATION_DIGEST=''
+    ARENA_STATE_CHECKPOINT_SHA="$writer_head"
+    if [[ "$ARENA_STATE_CHECKPOINT_ROUND" == unknown ]]; then
+        : # sticky unknown
+    elif [[ "$ARENA_STATE_CHECKPOINT_ROUND" =~ ^[0-9]+$ ]]; then
+        ARENA_STATE_CHECKPOINT_ROUND=$((ARENA_STATE_CHECKPOINT_ROUND + 1))
+    fi
+    ARENA_STATE_WAITING_SINCE="$(date +%s)"
+    ARENA_STATE_LAST_TRANSITION_ACTOR='writer'
+}
+
+# ---------------------------------------------------------------------------
 # Legacy projection (read-only; zero writes): derive a semantic state from
 # v0.3 evidence files when no run-state.tsv exists. Matching is by the binding
 # SHA inside the evidence, never by filename alone. A PRECHECK runs before the
@@ -405,17 +479,27 @@ arena_state_project_legacy() {
 
 arena_state_write() {
     local run_dir="$1"
-    local tmp_file value
+    local tmp_file key value var_name
     shift
     tmp_file="$(mktemp "${run_dir}/.run-state.XXXXXX")"
     for key in $ARENA_STATE_KEYS; do
         value=''
-        for arg in "$@"; do
-            if [[ "$arg" == "${key}="* ]]; then
-                value="${arg#*=}"
-                break
-            fi
-        done
+        if [[ $# -eq 0 ]]; then
+            # No explicit key=value arguments: write the in-memory
+            # ARENA_STATE_* variables (the defaults/mutation entry point).
+            case "$key" in
+                state_revision) var_name='ARENA_STATE_REVISION' ;;
+                *) var_name="ARENA_STATE_$(printf '%s' "$key" | tr 'a-z' 'A-Z')" ;;
+            esac
+            value="${!var_name}"
+        else
+            for arg in "$@"; do
+                if [[ "$arg" == "${key}="* ]]; then
+                    value="${arg#*=}"
+                    break
+                fi
+            done
+        fi
         printf '%s\t%s\n' "$key" "$value"
     done >"$tmp_file"
     chmod 600 "$tmp_file"

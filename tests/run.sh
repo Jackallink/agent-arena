@@ -2265,4 +2265,112 @@ ARENA_SOURCE_ROOT="$source_root" bash -c '
     [[ "${ARENA_INTENT_profile}" == pi-cursor ]] || exit 9
 ' _ "$source_root" "$tmp_root" || fail 'mixed-form creation intent not parsed'
 
+printf '%s\n' '43. submit transitions T2/T3/T4 and legacy L-T3'
+trans_run='trans-submit'
+run_arena start "$trans_run" --repo "$project" --no-attach >/dev/null
+trans_run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f \
+    -name manifest.tsv -path "*/${trans_run}/manifest.tsv" -exec dirname {} \;)"
+[[ -n "$trans_run_dir" ]] || fail 'start did not create the trans-submit run'
+trans_repo="$(basename "$(dirname "$trans_run_dir")")"
+trans_writer="$(manifest_value "${trans_run_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' t2 >"${trans_writer}/t2.txt"
+git -C "$trans_writer" add t2.txt
+git -C "$trans_writer" commit -m 'feat: t2' >/dev/null
+trans_head="$(git -C "$trans_writer" rev-parse HEAD)"
+# T2: new-SHA submit from intake commits the submitted state
+run_arena submit "$trans_run" >/dev/null
+trans_state="${trans_run_dir}/run-state.tsv"
+require_match $'phase\tsubmitted' <(cat "$trans_state")
+require_match $'responsible_party\treviewer' <(cat "$trans_state")
+require_match $'reason_code\treview_pending' <(cat "$trans_state")
+require_match $'run_status\tactive' <(cat "$trans_state")
+require_match $'checkpoint_round\t1' <(cat "$trans_state")
+require_match $'state_revision\t2' <(cat "$trans_state")
+require_match $'checkpoint_sha\t'"$trans_head" <(cat "$trans_state")
+require_match $'last_transition_actor\twriter' <(cat "$trans_state")
+require_match $'last_transition_action\tsubmit' <(cat "$trans_state")
+[[ -z "$(awk -F $'\t' '$1 == "verdict" { print $2 }' "$trans_state")" ]] || \
+    fail 'T2 kept a verdict'
+[[ -z "$(awk -F $'\t' '$1 == "validation_result" { print $2 }' "$trans_state")" ]] || \
+    fail 'T2 kept a validation_result'
+[[ -z "$(awk -F $'\t' '$1 == "validation_digest" { print $2 }' "$trans_state")" ]] || \
+    fail 'T2 kept a validation_digest'
+first_revision="$(awk -F $'\t' '$1 == "state_revision" { print $2 }' "$trans_state")"
+first_waiting="$(awk -F $'\t' '$1 == "waiting_since" { print $2 }' "$trans_state")"
+[[ -n "$first_waiting" && "$first_waiting" != unknown ]] || fail 'T2 did not reset waiting_since'
+first_state_hash="$(shasum -a 256 "$trans_state" | awk '{print $1}')"
+# T3: same-SHA submit is a zero-write retry
+run_arena submit "$trans_run" >/dev/null
+second_revision="$(awk -F $'\t' '$1 == "state_revision" { print $2 }' "$trans_state")"
+second_waiting="$(awk -F $'\t' '$1 == "waiting_since" { print $2 }' "$trans_state")"
+second_state_hash="$(shasum -a 256 "$trans_state" | awk '{print $1}')"
+[[ "$first_revision" == "$second_revision" ]] || fail 'T3 same-SHA submit wrote state'
+[[ "$first_waiting" == "$second_waiting" ]] || fail 'T3 same-SHA submit reset waiting_since'
+[[ "$first_state_hash" == "$second_state_hash" ]] || fail 'T3 same-SHA submit changed the state file'
+# T4: same SHA after CHANGES_REQUESTED is rejected. validate/decision state
+# commits land in later tasks, so fabricate the decided tuple they would
+# produce (evidence comes from the real validate + decision run above).
+run_arena validate "$trans_run" >/dev/null 2>&1
+run_arena decision "$trans_run" --verdict CHANGES_REQUESTED --summary s --next n --no-relay >/dev/null
+printf 'schema_version\t1\nstate_revision\t%s\nrun_status\tactive\nphase\tdecided\nresponsible_party\twriter\nreason_code\tchanges_requested\nreason_detail\t\nverdict\tCHANGES_REQUESTED\nvalidation_result\tFAIL\ncheckpoint_round\t1\ncheckpoint_sha\t%s\nwaiting_since\t%s\nlast_transition_at\t%s\nlast_transition_actor\twriter\nlast_transition_action\tsubmit\nvalidation_digest\t%s\n' \
+    "$first_revision" "$trans_head" "$first_waiting" "$first_waiting" \
+    "$(printf y | shasum -a 256 | awk '{print $1}')" >"${trans_state}.t4"
+mv "${trans_state}.t4" "$trans_state"
+t4_exit=0
+run_arena submit "$trans_run" >"${tmp_root}/t4.out" 2>&1 || t4_exit=$?
+[[ "$t4_exit" == 2 ]] || fail "T4 same-SHA submit did not exit 2 (exit ${t4_exit})"
+require_match 'must submit a new SHA' "${tmp_root}/t4.out"
+[[ ! -e "${trans_run_dir}/.run-lock" ]] || fail 'T4 rejection left the run lock held'
+# submit wires the precheck: a live run lock wins with exit 4
+mkdir -p "${trans_run_dir}/.run-lock"
+printf 'pid=%s\ntoken=foreign\ncreated_at=1\n' "$$" >"${trans_run_dir}/.run-lock/owner"
+lock_exit=0
+run_arena submit "$trans_run" >"${tmp_root}/t4-lock.out" 2>&1 || lock_exit=$?
+[[ "$lock_exit" == 4 ]] || fail "submit did not exit 4 on a live run lock (exit ${lock_exit})"
+require_match 'transition in progress' "${tmp_root}/t4-lock.out"
+rm -rf "${trans_run_dir}/.run-lock"
+# an interrupted creation intent is owned by start: foreign submit exits 5
+printf 'run_id\t%s\n' "$trans_run" >"${state_root}/runs/${trans_repo}/.creating-${trans_run}"
+intent_exit=0
+run_arena submit "$trans_run" >"${tmp_root}/t4-intent.out" 2>&1 || intent_exit=$?
+[[ "$intent_exit" == 5 ]] || fail "submit did not exit 5 on an interrupted creation intent (exit ${intent_exit})"
+require_match 'retry: agent-arena start trans-submit' "${tmp_root}/t4-intent.out"
+rm -f "${state_root}/runs/${trans_repo}/.creating-${trans_run}"
+# L6: a legacy run with no evidence materializes v1 submitted (round 1)
+lt3_run='legacy-lt3'
+lt3_dir="${state_root}/runs/${trans_repo}/${lt3_run}"
+mkdir -p "$lt3_dir"
+awk -F $'\t' -v dir="$lt3_dir" 'BEGIN { OFS = FS }
+    $1 == "run_id" { $2 = "legacy-lt3" }
+    $1 == "branch" { $2 = "agent-arena/pi/legacy-lt3" }
+    $1 == "session_name" { $2 = "agent-arena-legacy-lt3" }
+    $1 == "writer_session_dir" { $2 = dir "/writer-session" }
+    { print }' "${trans_run_dir}/manifest.tsv" >"${lt3_dir}/manifest.tsv"
+run_arena submit "$lt3_run" >/dev/null
+require_match $'phase\tsubmitted' <(cat "${lt3_dir}/run-state.tsv")
+require_match $'state_revision\t1' <(cat "${lt3_dir}/run-state.tsv")
+require_match $'checkpoint_round\t1' <(cat "${lt3_dir}/run-state.tsv")
+require_match $'checkpoint_sha\t'"$trans_head" <(cat "${lt3_dir}/run-state.tsv")
+require_match $'last_transition_actor\twriter' <(cat "${lt3_dir}/run-state.tsv")
+require_match $'last_transition_action\tsubmit' <(cat "${lt3_dir}/run-state.tsv")
+[[ -n "$(awk -F $'\t' '$1 == "waiting_since" { print $2 }' "${lt3_dir}/run-state.tsv")" ]] || \
+    fail 'L6 materialization did not set waiting_since'
+lt3_review_hash="$(shasum -a 256 "${lt3_dir}/review.tsv" | awk '{print $1}')"
+# L-T3: drop the state file and resubmit the same SHA → materialize v1 with
+# the L5 projection (round unknown), no evidence changes
+rm -f "${lt3_dir}/run-state.tsv"
+run_arena submit "$lt3_run" >/dev/null
+require_match $'phase\tsubmitted' <(cat "${lt3_dir}/run-state.tsv")
+require_match $'state_revision\t1' <(cat "${lt3_dir}/run-state.tsv")
+require_match $'checkpoint_round\tunknown' <(cat "${lt3_dir}/run-state.tsv")
+require_match $'checkpoint_sha\t'"$trans_head" <(cat "${lt3_dir}/run-state.tsv")
+require_match $'last_transition_actor\twriter' <(cat "${lt3_dir}/run-state.tsv")
+require_match $'last_transition_action\tsubmit' <(cat "${lt3_dir}/run-state.tsv")
+[[ "$(shasum -a 256 "${lt3_dir}/review.tsv" | awk '{print $1}')" == "$lt3_review_hash" ]] || \
+    fail 'L-T3 changed the review evidence'
+lt3_waiting="$(awk -F $'\t' '$1 == "waiting_since" { print $2 }' "${lt3_dir}/run-state.tsv")"
+lt3_transition_at="$(awk -F $'\t' '$1 == "last_transition_at" { print $2 }' "${lt3_dir}/run-state.tsv")"
+[[ -n "$lt3_waiting" && "$lt3_waiting" == "$lt3_transition_at" ]] || \
+    fail 'L-T3 did not set waiting_since to last_transition_at'
+
 printf '%s\n' 'tests: ok'
