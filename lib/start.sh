@@ -188,7 +188,13 @@ trap arena_start_cleanup EXIT
 
 # Priority check: a live run or parent lock wins (exit 4); S3/S4 refuse with
 # the manual abort protocol (exit 2); S1/S2/S5/S6 belong to start alone.
-arena_state_precheck_intents "$runs_root" "$repo_id" "$run_id" start
+# resume (dispatched through --run-id with ARENA_RESUME=1) refuses every
+# creation-intent stage without a live owner (exit 5, retry: start).
+start_caller='start'
+if [[ "${ARENA_RESUME:-0}" == 1 ]]; then
+    start_caller='resume'
+fi
+arena_state_precheck_intents "$runs_root" "$repo_id" "$run_id" "$start_caller"
 
 intent_stage='NONE'
 if [[ -e "$intent" ]]; then
@@ -409,10 +415,36 @@ arena_update_live_session_environment() {
     done
 }
 
+# The session re-check, the dead-reviewer-pane respawn, and the tmuxp load
+# all run under the run lock: a concurrent start and resume can never
+# create the session twice, and the respawn cannot race a submit's
+# reviewer-target swap (the checkpoint race is closed).
+if [[ "$run_lock_held" == 0 ]]; then
+    arena_lock_acquire "${run_dir}/.run-lock" "start-$$"
+    run_lock_held=1
+fi
 if tmux has-session -t "=${session_name}" 2>/dev/null; then
     # A v0.1 session may still have panes based on the old template. Update its
     # session environment before any submit-triggered pane respawn uses v0.2.
     arena_update_live_session_environment
+    # Respawn a dead reviewer pane INSIDE the run lock: the gate trust
+    # prompt after a respawn is a human confirmation, so the pane is
+    # relaunched from the run's manifest gate adapter. The liveness probe
+    # runs in a command substitution so its failure is contained (the
+    # helper exits on an unavailable pane) and never kills resume.
+    if ! reviewer_pane="$(arena_find_live_pane "$session_name" reviewer reviewer-agent 2>/dev/null)"; then
+        reviewer_panes="$(tmux list-panes -s -t "=${session_name}" -F "$(arena_pane_format)" 2>/dev/null | \
+            awk -F $'\t' -v session="$session_name" \
+                '$1 == session && $3 == "reviewer" && $4 == "reviewer-agent" { print $2 }' || true)"
+        reviewer_pane_count="$(printf '%s\n' "$reviewer_panes" | awk 'NF { count += 1 } END { print count + 0 }')"
+        if [[ "$reviewer_pane_count" == 1 ]]; then
+            printf -v respawn_command 'exec %q reviewer' "${source_root}/lib/pane.sh"
+            tmux respawn-pane -k -t "$reviewer_panes" "$respawn_command"
+            arena_note 'reviewer pane respawned; confirm the trust prompt in the pane'
+        else
+            arena_note 'reviewer pane is unavailable; no single pane to respawn'
+        fi
+    fi
     arena_note "session already exists: $session_name"
     if [[ "$run_lock_held" == 1 ]]; then
         arena_lock_release "${run_dir}/.run-lock" "start-$$"

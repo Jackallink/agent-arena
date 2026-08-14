@@ -196,6 +196,10 @@ case "$command_name" in
             dead)
                 printf '%s\t%%12\twriter\twriter-agent\t1\t0\t0\t0\n' "$session"
                 ;;
+            reviewer-dead)
+                printf '%s\t%%12\twriter\twriter-agent\t0\t0\t0\t0\n' "$session"
+                printf '%s\t%%13\treviewer\treviewer-agent\t1\t0\t0\t0\n' "$session"
+                ;;
             input-off)
                 printf '%s\t%%12\twriter\twriter-agent\t0\t1\t0\t0\n' "$session"
                 ;;
@@ -215,6 +219,13 @@ case "$command_name" in
         printf 'set-environment %s\n' "$*" >>"${FAKE_TMUX_LOG:?}"
         ;;
     respawn-pane)
+        if [[ -n "${FAKE_TMUX_LOCK_CHECK:-}" ]]; then
+            if [[ -e "${FAKE_TMUX_LOCK_CHECK}" ]]; then
+                printf 'respawn-lock-present=%s\n' "${FAKE_TMUX_LOCK_CHECK}" >>"${FAKE_TMUX_LOG:?}"
+            else
+                printf 'respawn-lock-absent=%s\n' "${FAKE_TMUX_LOCK_CHECK}" >>"${FAKE_TMUX_LOG:?}"
+            fi
+        fi
         printf 'respawn-pane %s\n' "$*" >>"${FAKE_TMUX_LOG:?}"
         ;;
     *)
@@ -2829,5 +2840,223 @@ require_match $'verdict\tBLOCKED' <(cat "${block_run_dir}/run-state.tsv")
 block_sha="$(awk -F $'\t' '$1 == "checkpoint_sha" { print $2 }' "${block_run_dir}/run-state.tsv")"
 require_match 'State revision: ' <(cat "${block_run_dir}/decision-${block_sha:0:12}.md")
 require_match 'Validation digest: ' <(cat "${block_run_dir}/decision-${block_sha:0:12}.md")
+
+printf '%s\n' '47. escalate and resolve transitions T9-T13, legacy first migrations, and resume respawn'
+export FAKE_TMUX_MODE=offline
+export FAKE_TMUX_PANES=normal
+er_run='er-run'
+run_arena start "$er_run" --repo "$project" --no-attach >/dev/null
+er_run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path "*/${er_run}/manifest.tsv" -exec dirname {} \;)"
+er_writer="$(manifest_value "${er_run_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' e >"${er_writer}/e.txt"
+git -C "$er_writer" add e.txt
+git -C "$er_writer" commit -m 'feat: e' >/dev/null
+run_arena submit "$er_run" >/dev/null
+# T9: escalate from submitted/reviewer (legal)
+run_arena escalate "$er_run" --reason-code reviewer_unreachable --reason 'pane dead' >/dev/null
+require_match $'run_status\tblocked' <(cat "${er_run_dir}/run-state.tsv")
+require_match $'phase\tsubmitted' <(cat "${er_run_dir}/run-state.tsv")
+require_match $'responsible_party\thuman' <(cat "${er_run_dir}/run-state.tsv")
+require_match $'reason_code\treviewer_unreachable' <(cat "${er_run_dir}/run-state.tsv")
+require_match $'reason_detail\tpane dead' <(cat "${er_run_dir}/run-state.tsv")
+require_match $'last_transition_actor\thuman' <(cat "${er_run_dir}/run-state.tsv")
+require_match $'last_transition_action\tescalate' <(cat "${er_run_dir}/run-state.tsv")
+[[ ! -e "${er_run_dir}/.run-lock" ]] || fail 'escalate left the run lock held'
+# duplicate escalate: idempotent zero-write
+er_rev="$(awk -F $'\t' '$1 == "state_revision" { print $2 }' "${er_run_dir}/run-state.tsv")"
+er_ws="$(awk -F $'\t' '$1 == "waiting_since" { print $2 }' "${er_run_dir}/run-state.tsv")"
+run_arena escalate "$er_run" --reason-code reviewer_unreachable --reason 'again' >"${tmp_root}/er-dup.out"
+require_match 'already escalated' "${tmp_root}/er-dup.out"
+[[ "$er_rev" == "$(awk -F $'\t' '$1 == "state_revision" { print $2 }' "${er_run_dir}/run-state.tsv")" ]] || fail 'duplicate escalate wrote state'
+[[ "$er_ws" == "$(awk -F $'\t' '$1 == "waiting_since" { print $2 }' "${er_run_dir}/run-state.tsv")" ]] || fail 'duplicate escalate reset waiting_since'
+[[ ! -e "${er_run_dir}/.run-lock" ]] || fail 'duplicate escalate left the run lock held'
+# T12: recover with an unreachable reviewer pane refuses without a transition
+# (offline tmux: has-session fails) and prints the two-step prerequisite
+if run_arena resolve "$er_run" --action recover --reason 'try' >"${tmp_root}/recover.out" 2>&1; then
+    fail 'recover with unreachable pane succeeded'
+fi
+require_match 'resume' "${tmp_root}/recover.out"
+require_match "agent-arena resume ${er_run}" "${tmp_root}/recover.out"
+[[ "$er_rev" == "$(awk -F $'\t' '$1 == "state_revision" { print $2 }' "${er_run_dir}/run-state.tsv")" ]] || fail 'refused recover wrote state'
+[[ ! -e "${er_run_dir}/.run-lock" ]] || fail 'refused recover left the run lock held'
+# T13: cancel -> canceled/phase-kept/none/none with empty waiting_since
+run_arena resolve "$er_run" --action cancel --reason 'abandoned' >/dev/null
+require_match $'run_status\tcanceled' <(cat "${er_run_dir}/run-state.tsv")
+require_match $'phase\tsubmitted' <(cat "${er_run_dir}/run-state.tsv")
+require_match $'responsible_party\tnone' <(cat "${er_run_dir}/run-state.tsv")
+require_match $'reason_code\tnone' <(cat "${er_run_dir}/run-state.tsv")
+require_match $'reason_detail\tabandoned' <(cat "${er_run_dir}/run-state.tsv")
+require_match $'waiting_since\t' <(cat "${er_run_dir}/run-state.tsv")
+require_match $'last_transition_action\tresolve-cancel' <(cat "${er_run_dir}/run-state.tsv")
+[[ ! -e "${er_run_dir}/.run-lock" ]] || fail 'cancel left the run lock held'
+# T10: resolve approve after a reviewer APPROVE -> completed/decided/none/none
+ap_run='ap-run'
+run_arena start "$ap_run" --repo "$project" --no-attach >/dev/null
+ap_run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path "*/${ap_run}/manifest.tsv" -exec dirname {} \;)"
+ap_writer="$(manifest_value "${ap_run_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' a >"${ap_writer}/a.txt"
+git -C "$ap_writer" add a.txt
+git -C "$ap_writer" commit -m 'feat: a' >/dev/null
+run_arena submit "$ap_run" >/dev/null
+run_arena validate "$ap_run" >/dev/null
+run_arena decision "$ap_run" --verdict APPROVE --summary ok --next go --no-relay >/dev/null
+run_arena resolve "$ap_run" --action approve >/dev/null
+require_match $'run_status\tcompleted' <(cat "${ap_run_dir}/run-state.tsv")
+require_match $'phase\tdecided' <(cat "${ap_run_dir}/run-state.tsv")
+require_match $'responsible_party\tnone' <(cat "${ap_run_dir}/run-state.tsv")
+require_match $'reason_code\tnone' <(cat "${ap_run_dir}/run-state.tsv")
+require_match $'verdict\tAPPROVE' <(cat "${ap_run_dir}/run-state.tsv")
+require_match $'validation_result\tPASS' <(cat "${ap_run_dir}/run-state.tsv")
+require_match $'waiting_since\t' <(cat "${ap_run_dir}/run-state.tsv")
+require_match $'last_transition_action\tresolve-approve' <(cat "${ap_run_dir}/run-state.tsv")
+[[ ! -e "${ap_run_dir}/.run-lock" ]] || fail 'approve left the run lock held'
+# T11: reject requires --reason and lands in active/decided/writer/
+# human_changes_requested with the verdict kept
+rj_run='rj-run'
+run_arena start "$rj_run" --repo "$project" --no-attach >/dev/null
+rj_run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path "*/${rj_run}/manifest.tsv" -exec dirname {} \;)"
+rj_writer="$(manifest_value "${rj_run_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' r >"${rj_writer}/r.txt"
+git -C "$rj_writer" add r.txt
+git -C "$rj_writer" commit -m 'feat: r' >/dev/null
+run_arena submit "$rj_run" >/dev/null
+run_arena validate "$rj_run" >/dev/null
+run_arena decision "$rj_run" --verdict APPROVE --summary ok --next go --no-relay >/dev/null
+rj_pre_rev="$(awk -F $'\t' '$1 == "state_revision" { print $2 }' "${rj_run_dir}/run-state.tsv")"
+if run_arena resolve "$rj_run" --action reject >"${tmp_root}/rj.out" 2>&1; then
+    fail 'reject without --reason succeeded'
+fi
+[[ "$rj_pre_rev" == "$(awk -F $'\t' '$1 == "state_revision" { print $2 }' "${rj_run_dir}/run-state.tsv")" ]] || \
+    fail 'reject without --reason wrote state'
+run_arena resolve "$rj_run" --action reject --reason 'needs rework' >/dev/null
+require_match $'run_status\tactive' <(cat "${rj_run_dir}/run-state.tsv")
+require_match $'phase\tdecided' <(cat "${rj_run_dir}/run-state.tsv")
+require_match $'responsible_party\twriter' <(cat "${rj_run_dir}/run-state.tsv")
+require_match $'reason_code\thuman_changes_requested' <(cat "${rj_run_dir}/run-state.tsv")
+require_match $'reason_detail\tneeds rework' <(cat "${rj_run_dir}/run-state.tsv")
+require_match $'verdict\tAPPROVE' <(cat "${rj_run_dir}/run-state.tsv")
+require_match $'last_transition_action\tresolve-reject' <(cat "${rj_run_dir}/run-state.tsv")
+[[ ! -e "${rj_run_dir}/.run-lock" ]] || fail 'reject left the run lock held'
+# spec addition (1): escalate while human is responsible for another reason
+# is an illegal transition (exit 2). block_run is blocked/decided/human/
+# block_resolution_required from section 46.
+bl_exit=0
+run_arena escalate "$block_run" --reason-code reviewer_unreachable --reason x \
+    >"${tmp_root}/bl-esc.out" 2>&1 || bl_exit=$?
+[[ "$bl_exit" == 2 ]] || fail "escalate from block_resolution_required exited ${bl_exit}, expected 2"
+require_match 'illegal transition' "${tmp_root}/bl-esc.out"
+[[ ! -e "${block_run_dir}/.run-lock" ]] || fail 'refused escalate left the run lock held'
+# spec addition (2): recover on a formal BLOCKED exits 2 even with a
+# reachable reviewer pane
+export FAKE_TMUX_MODE=relay
+export FAKE_TMUX_PANES=normal
+bl_exit=0
+run_arena resolve "$block_run" --action recover --reason x \
+    >"${tmp_root}/bl-rec.out" 2>&1 || bl_exit=$?
+[[ "$bl_exit" == 2 ]] || fail "recover on formal BLOCKED exited ${bl_exit}, expected 2"
+require_match 'operational escalation' "${tmp_root}/bl-rec.out"
+[[ ! -e "${block_run_dir}/.run-lock" ]] || fail 'refused recover left the run lock held'
+export FAKE_TMUX_MODE=offline
+# spec addition (3): approve from BLOCKED exits 2 (v1 has no manual override)
+bl_exit=0
+run_arena resolve "$block_run" --action approve >"${tmp_root}/bl-app.out" 2>&1 || bl_exit=$?
+[[ "$bl_exit" == 2 ]] || fail "approve from BLOCKED exited ${bl_exit}, expected 2"
+require_match 'reviewer APPROVE' "${tmp_root}/bl-app.out"
+# T11 from block_resolution_required: reject with the BLOCKED verdict kept
+run_arena resolve "$block_run" --action reject --reason 'fix the block' >/dev/null
+require_match $'run_status\tactive' <(cat "${block_run_dir}/run-state.tsv")
+require_match $'phase\tdecided' <(cat "${block_run_dir}/run-state.tsv")
+require_match $'responsible_party\twriter' <(cat "${block_run_dir}/run-state.tsv")
+require_match $'reason_code\thuman_changes_requested' <(cat "${block_run_dir}/run-state.tsv")
+require_match $'verdict\tBLOCKED' <(cat "${block_run_dir}/run-state.tsv")
+[[ ! -e "${block_run_dir}/.run-lock" ]] || fail 'BLOCKED reject left the run lock held'
+# AC8: legacy L5 (submitted/reviewer) admits escalate as its first migration
+leg_repo="$(basename "$(dirname "$block_run_dir")")"
+leg_er_run='legacy-l5-escalate'
+leg_er_dir="${state_root}/runs/${leg_repo}/${leg_er_run}"
+mkdir -p "$leg_er_dir"
+awk -F $'\t' -v dir="$leg_er_dir" 'BEGIN { OFS = FS }
+    $1 == "run_id" { $2 = "legacy-l5-escalate" }
+    $1 == "branch" { $2 = "agent-arena/pi/legacy-l5-escalate" }
+    $1 == "session_name" { $2 = "agent-arena-legacy-l5-escalate" }
+    $1 == "writer_session_dir" { $2 = dir "/writer-session" }
+    { print }' "${block_run_dir}/manifest.tsv" >"${leg_er_dir}/manifest.tsv"
+cp "${block_run_dir}/review.tsv" "${leg_er_dir}/review.tsv"
+run_arena escalate "$leg_er_run" --reason-code reviewer_unreachable --reason 'legacy dead pane' >/dev/null
+require_match $'state_revision\t1' <(cat "${leg_er_dir}/run-state.tsv")
+require_match $'run_status\tblocked' <(cat "${leg_er_dir}/run-state.tsv")
+require_match $'phase\tsubmitted' <(cat "${leg_er_dir}/run-state.tsv")
+require_match $'responsible_party\thuman' <(cat "${leg_er_dir}/run-state.tsv")
+require_match $'reason_code\treviewer_unreachable' <(cat "${leg_er_dir}/run-state.tsv")
+require_match $'checkpoint_round\tunknown' <(cat "${leg_er_dir}/run-state.tsv")
+require_match $'checkpoint_sha\t'"$block_sha" <(cat "${leg_er_dir}/run-state.tsv")
+# AC8: legacy L1 (decided/human/approval_pending, plain v0.3 archive) admits
+# resolve approve as its first migration
+leg_ap_run='legacy-l1-approve'
+leg_ap_dir="${state_root}/runs/${leg_repo}/${leg_ap_run}"
+mkdir -p "$leg_ap_dir"
+awk -F $'\t' -v dir="$leg_ap_dir" 'BEGIN { OFS = FS }
+    $1 == "run_id" { $2 = "legacy-l1-approve" }
+    $1 == "branch" { $2 = "agent-arena/pi/legacy-l1-approve" }
+    $1 == "session_name" { $2 = "agent-arena-legacy-l1-approve" }
+    $1 == "writer_session_dir" { $2 = dir "/writer-session" }
+    { print }' "${block_run_dir}/manifest.tsv" >"${leg_ap_dir}/manifest.tsv"
+cp "${block_run_dir}/review.tsv" "${leg_ap_dir}/review.tsv"
+cp "${block_run_dir}/validation.md" "${leg_ap_dir}/validation.md"
+cp "${block_run_dir}/validation-${block_sha:0:12}.md" "${leg_ap_dir}/validation-${block_sha:0:12}.md"
+cat >"${leg_ap_dir}/decision-${block_sha:0:12}.md" <<EOF
+# Agent Arena Gate Decision
+
+Run: legacy-l1-approve
+
+Review HEAD: ${block_sha}
+
+VERDICT: APPROVE
+
+## Summary
+
+legacy approve
+
+## Findings
+
+- No additional findings.
+
+## Next Step for Writer
+
+go
+EOF
+run_arena resolve "$leg_ap_run" --action approve >/dev/null
+require_match $'state_revision\t1' <(cat "${leg_ap_dir}/run-state.tsv")
+require_match $'run_status\tcompleted' <(cat "${leg_ap_dir}/run-state.tsv")
+require_match $'phase\tdecided' <(cat "${leg_ap_dir}/run-state.tsv")
+require_match $'responsible_party\tnone' <(cat "${leg_ap_dir}/run-state.tsv")
+require_match $'reason_code\tnone' <(cat "${leg_ap_dir}/run-state.tsv")
+require_match $'verdict\tAPPROVE' <(cat "${leg_ap_dir}/run-state.tsv")
+require_match $'validation_result\tPASS' <(cat "${leg_ap_dir}/run-state.tsv")
+require_match $'checkpoint_round\tunknown' <(cat "${leg_ap_dir}/run-state.tsv")
+require_match $'checkpoint_sha\t'"$block_sha" <(cat "${leg_ap_dir}/run-state.tsv")
+require_match $'waiting_since\t' <(cat "${leg_ap_dir}/run-state.tsv")
+# resume respawns a dead reviewer pane INSIDE the run lock
+rs_run='rs-respawn'
+run_arena start "$rs_run" --repo "$project" --no-attach >/dev/null
+rs_run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path "*/${rs_run}/manifest.tsv" -exec dirname {} \;)"
+export FAKE_TMUX_MODE=relay
+export FAKE_TMUX_PANES=reviewer-dead
+export FAKE_TMUX_LOCK_CHECK="${rs_run_dir}/.run-lock"
+: >"$fake_tmux_log"
+set +e
+run_arena resume "$rs_run" --repo "$project" >"${tmp_root}/rs-resume.out" 2>&1
+rs_status=$?
+set -e
+echo "rs-resume-status=${rs_status}" >>"${tmp_root}/rs-resume.out"
+cp "$fake_tmux_log" /tmp/rs-tmux.log 2>/dev/null || true
+cp "${tmp_root}/rs-resume.out" /tmp/rs-resume.out 2>/dev/null || true
+require_match 'respawn-pane -k -t %13 exec' "$fake_tmux_log"
+require_match 'reviewer' "$fake_tmux_log"
+require_match 'respawn-lock-present' "$fake_tmux_log"
+[[ ! -e "${rs_run_dir}/.run-lock" ]] || fail 'resume left the run lock held'
+unset FAKE_TMUX_LOCK_CHECK
+export FAKE_TMUX_PANES=normal
+export FAKE_TMUX_MODE=offline
 
 printf '%s\n' 'tests: ok'

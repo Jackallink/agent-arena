@@ -16,6 +16,8 @@ Commands:
   submit RUN_ID                  Freeze the writer's committed checkpoint for review
   validate RUN_ID                Run the project-defined validation gate
   decision RUN_ID [options]      Record the gate's formal decision
+  escalate RUN_ID                Raise a stuck reviewer-bound run to human
+  resolve RUN_ID                 Human disposition: approve, reject, recover, cancel
   relay RUN_ID [options]         Send a direct, literal agent-pane message
   status RUN_ID                  Show manifest, validation, and decision state
   list                           List all recorded runs with their state
@@ -32,14 +34,14 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "$command_name" in
-    doctor|init|start|submit|validate|decision|relay|status|list)
+    doctor|init|start|submit|validate|decision|escalate|resolve|relay|status|list)
         exec "${source_root}/lib/${command_name}.sh" "$@"
         ;;
     resume)
         [[ $# -ge 1 ]] || arena_die 'resume requires RUN_ID'
         run_id="$1"
         shift
-        exec "${source_root}/lib/start.sh" --run-id "$run_id" "$@"
+        ARENA_RESUME=1 exec "${source_root}/lib/start.sh" --run-id "$run_id" "$@"
         ;;
     version|--version|-V)
         <"${source_root}/VERSION" tr -d '\n'
