@@ -1494,4 +1494,86 @@ run_arena status state-wire --state-root "$state_fixture_dir" \
     fail "status accepted a blocked/decided state with checkpoint_round 0 (exit ${state_status_exit})"
 require_match 'corrupted state file' "${tmp_root}/state-wire-blocked-decided-round0.out"
 
+printf '%s\n' '39. run lock acquire, owner token, grace, and stale PID'
+lock_root="${tmp_root}/locks"
+mkdir -p "$lock_root"
+# a second acquire on a live lock must fail without disturbing the owner
+lock_exit=0
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/lock.sh"
+    arena_lock_acquire "$2" token-a
+    arena_lock_acquire "$2" token-b
+' _ "$source_root" "$lock_root/one" || lock_exit=$?
+[[ "$lock_exit" != 0 ]] || fail 'second acquire on a live lock did not fail'
+# the first owner still holds the lock and can release it with its token
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/lock.sh"
+    arena_lock_release "$2" token-a
+' _ "$source_root" "$lock_root/one" || fail 'owner-token release failed'
+[[ ! -e "$lock_root/one" ]] || fail 'owner-token release left the lock directory behind'
+# token mismatch release
+lock_exit=0
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/lock.sh"
+    arena_lock_acquire "$2" token-a
+    arena_lock_release "$2" token-wrong
+' _ "$source_root" "$lock_root/two" || lock_exit=$?
+[[ "$lock_exit" != 0 ]] || fail 'release with a wrong token succeeded'
+# metadata-less stale lock (grace): mtime older than 60s
+mkdir -p "$lock_root/three"
+touch -t 200001010000 "$lock_root/three"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/lock.sh"
+    arena_lock_acquire "$2" token-c
+' _ "$source_root" "$lock_root/three" || fail 'stale metadata-less lock was not recoverable'
+# metadata-less fresh lock (< 60s) is live
+mkdir -p "$lock_root/four"
+lock_exit=0
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/lock.sh"
+    arena_lock_acquire "$2" token-d
+' _ "$source_root" "$lock_root/four" || lock_exit=$?
+[[ "$lock_exit" != 0 ]] || fail 'fresh metadata-less lock was treated as stale'
+# dead-PID lock is recoverable
+mkdir -p "$lock_root/five"
+printf 'pid=999999999\ntoken=dead\ncreated_at=1\n' >"$lock_root/five/owner"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/lock.sh"
+    arena_lock_acquire "$2" token-e
+' _ "$source_root" "$lock_root/five" || fail 'dead-PID lock was not recoverable'
+# metadata temp residue equals absent metadata: stale residue is recoverable
+mkdir -p "$lock_root/six"
+printf 'partial' >"$lock_root/six/owner.tmp.123"
+touch -t 200001010000 "$lock_root/six"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/lock.sh"
+    arena_lock_acquire "$2" token-f
+' _ "$source_root" "$lock_root/six" || fail 'owner temp residue blocked acquisition'
+# fresh temp residue equals absent metadata too: still a live lock
+mkdir -p "$lock_root/seven"
+printf 'partial' >"$lock_root/seven/owner.tmp.456"
+lock_exit=0
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/lock.sh"
+    arena_lock_acquire "$2" token-g
+' _ "$source_root" "$lock_root/seven" || lock_exit=$?
+[[ "$lock_exit" != 0 ]] || fail 'fresh owner temp residue was treated as stale'
+# release on a path with no live owner metadata removes it without dying
+mkdir -p "$lock_root/eight"
+touch -t 200001010000 "$lock_root/eight"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/lock.sh"
+    arena_lock_release "$2" token-any
+' _ "$source_root" "$lock_root/eight" || fail 'release on a metadata-less lock died'
+[[ ! -e "$lock_root/eight" ]] || fail 'release on a metadata-less lock left the directory behind'
+
 printf '%s\n' 'tests: ok'
