@@ -3036,6 +3036,59 @@ require_match $'validation_result\tPASS' <(cat "${leg_ap_dir}/run-state.tsv")
 require_match $'checkpoint_round\tunknown' <(cat "${leg_ap_dir}/run-state.tsv")
 require_match $'checkpoint_sha\t'"$block_sha" <(cat "${leg_ap_dir}/run-state.tsv")
 require_match $'waiting_since\t' <(cat "${leg_ap_dir}/run-state.tsv")
+# AC8: legacy L5 (submitted/reviewer) first-migration escalate on a
+# hand-built review.tsv fixture (L-T3 pattern, no decision evidence) ->
+# materializes v1 blocked/human/reviewer_unreachable, phase submitted,
+# sticky unknown round, revision 1.
+l5f_run='legacy-l5-escalate-recover'
+l5f_dir="${state_root}/runs/${leg_repo}/${l5f_run}"
+mkdir -p "$l5f_dir"
+awk -F $'\t' -v dir="$l5f_dir" 'BEGIN { OFS = FS }
+    $1 == "run_id" { $2 = "legacy-l5-escalate-recover" }
+    $1 == "branch" { $2 = "agent-arena/pi/legacy-l5-escalate-recover" }
+    $1 == "session_name" { $2 = "agent-arena-legacy-l5-escalate-recover" }
+    $1 == "writer_session_dir" { $2 = dir "/writer-session" }
+    { print }' "${block_run_dir}/manifest.tsv" >"${l5f_dir}/manifest.tsv"
+l5f_sha='2222222222222222222222222222222222222222'
+printf 'review_head\t%s\nreview_worktree\t%s\ncursor_policy_hash\t%s\ngate_wrapper_hash\t%s\ngate_adapter\tcursor\ngate_policy_path\t.cursor/cli.json\n' \
+    "$l5f_sha" "$project" "$(printf x | shasum -a 256 | awk '{print $1}')" "$(printf y | shasum -a 256 | awk '{print $1}')" >"${l5f_dir}/review.tsv"
+[[ ! -e "${l5f_dir}/run-state.tsv" ]] || fail 'legacy L5 fixture was not state-absent'
+run_arena escalate "$l5f_run" --reason-code reviewer_unreachable --reason 'legacy dead pane' >/dev/null
+require_match $'state_revision\t1' <(cat "${l5f_dir}/run-state.tsv")
+require_match $'run_status\tblocked' <(cat "${l5f_dir}/run-state.tsv")
+require_match $'phase\tsubmitted' <(cat "${l5f_dir}/run-state.tsv")
+require_match $'responsible_party\thuman' <(cat "${l5f_dir}/run-state.tsv")
+require_match $'reason_code\treviewer_unreachable' <(cat "${l5f_dir}/run-state.tsv")
+require_match $'reason_detail\tlegacy dead pane' <(cat "${l5f_dir}/run-state.tsv")
+require_match $'checkpoint_round\tunknown' <(cat "${l5f_dir}/run-state.tsv")
+require_match $'checkpoint_sha\t'"$l5f_sha" <(cat "${l5f_dir}/run-state.tsv")
+require_match $'last_transition_actor\thuman' <(cat "${l5f_dir}/run-state.tsv")
+require_match $'last_transition_action\tescalate' <(cat "${l5f_dir}/run-state.tsv")
+l5f_ws="$(awk -F $'\t' '$1 == "waiting_since" { print $2 }' "${l5f_dir}/run-state.tsv")"
+l5f_lta="$(awk -F $'\t' '$1 == "last_transition_at" { print $2 }' "${l5f_dir}/run-state.tsv")"
+[[ -n "$l5f_ws" && "$l5f_ws" == "$l5f_lta" ]] || \
+    fail 'legacy escalate did not set waiting_since to last_transition_at'
+[[ ! -e "${l5f_dir}/.run-lock" ]] || fail 'legacy escalate left the run lock held'
+# T12 success: recover from the escalated legacy state above with a
+# reachable reviewer pane (relay tmux) -> active/submitted/reviewer/
+# review_pending, blocked flag cleared, revision bumped.
+export FAKE_TMUX_MODE=relay
+export FAKE_TMUX_PANES=normal
+run_arena resolve "$l5f_run" --action recover --reason 'pane back' >/dev/null
+require_match $'state_revision\t2' <(cat "${l5f_dir}/run-state.tsv")
+require_match $'run_status\tactive' <(cat "${l5f_dir}/run-state.tsv")
+require_match $'phase\tsubmitted' <(cat "${l5f_dir}/run-state.tsv")
+require_match $'responsible_party\treviewer' <(cat "${l5f_dir}/run-state.tsv")
+require_match $'reason_code\treview_pending' <(cat "${l5f_dir}/run-state.tsv")
+require_match $'reason_detail\tpane back' <(cat "${l5f_dir}/run-state.tsv")
+require_match $'checkpoint_round\tunknown' <(cat "${l5f_dir}/run-state.tsv")
+require_match $'checkpoint_sha\t'"$l5f_sha" <(cat "${l5f_dir}/run-state.tsv")
+require_match $'last_transition_actor\thuman' <(cat "${l5f_dir}/run-state.tsv")
+require_match $'last_transition_action\tresolve-recover' <(cat "${l5f_dir}/run-state.tsv")
+l5f_ws="$(awk -F $'\t' '$1 == "waiting_since" { print $2 }' "${l5f_dir}/run-state.tsv")"
+[[ -n "$l5f_ws" ]] || fail 'recover did not reset waiting_since'
+[[ ! -e "${l5f_dir}/.run-lock" ]] || fail 'recover left the run lock held'
+export FAKE_TMUX_MODE=offline
 # resume respawns a dead reviewer pane INSIDE the run lock
 rs_run='rs-respawn'
 run_arena start "$rs_run" --repo "$project" --no-attach >/dev/null
