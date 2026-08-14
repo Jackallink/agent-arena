@@ -2504,8 +2504,15 @@ require_match $'waiting_since\t'"${val_waiting}" <(cat "${val_run_dir}/run-state
 val_new_revision="$(awk -F $'\t' '$1 == "state_revision" { print $2 }' "${val_run_dir}/run-state.tsv")"
 [[ "$val_new_revision" -gt "$val_revision" ]] || fail 'revalidate did not bump revision'
 # a pending decision archive blocks validate at the first lock: exit 5 and
-# the gate never runs (no new report rotation)
+# the gate never runs (no new report rotation). The decision now commits
+# state, so capture the pre-decision tuple first and restore it afterwards
+# to simulate the evidence-first crash window (archive present, state lost).
+cp "${val_run_dir}/run-state.tsv" "${tmp_root}/val-pre-decision-state.tsv"
 run_arena decision "$val_run" --verdict CHANGES_REQUESTED --summary s --next n --no-relay >/dev/null
+require_match $'verdict\tCHANGES_REQUESTED' <(cat "${val_run_dir}/run-state.tsv")
+require_match $'responsible_party\twriter' <(cat "${val_run_dir}/run-state.tsv")
+require_match $'reason_code\tchanges_requested' <(cat "${val_run_dir}/run-state.tsv")
+cp "${tmp_root}/val-pre-decision-state.tsv" "${val_run_dir}/run-state.tsv"
 val_state_before_refusal="$(shasum -a 256 "${val_run_dir}/run-state.tsv" | awk '{print $1}')"
 val_refusal_exit=0
 run_arena validate "$val_run" >"${tmp_root}/val-refusal.out" 2>&1 || val_refusal_exit=$?
@@ -2515,8 +2522,9 @@ require_match 'pending decision residue' "${tmp_root}/val-refusal.out"
     fail 'pending-archive refusal changed the state file'
 [[ ! -e "${val_run_dir}/validation-${val_short}.r2.md" ]] || \
     fail 'pending-archive refusal ran the gate and rotated the canonical report'
-# decision state commits land in a later task; fabricate the decided tuple
-# the decision above would produce so the next submit is a legal T2
+# the crash-window simulation above restored the pre-decision state; the
+# decided tuple the decision produced must be present for the next submit
+# to be a legal T2, so fabricate it exactly as the decision would commit
 val_digest="$(awk -F $'\t' '$1 == "validation_digest" { print $2 }' "${val_run_dir}/run-state.tsv")"
 val_waiting_after="$(awk -F $'\t' '$1 == "waiting_since" { print $2 }' "${val_run_dir}/run-state.tsv")"
 val_transition_after="$(awk -F $'\t' '$1 == "last_transition_at" { print $2 }' "${val_run_dir}/run-state.tsv")"
@@ -2666,5 +2674,160 @@ live_owner_temp="${val_temp_dir}/.validation.validate.$$.1.tmp"
 printf '%s\n' live >"$live_owner_temp"
 run_arena validate "$val_temp_run" >/dev/null
 [[ -f "$live_owner_temp" ]] || fail 'validate removed a live owner temporary'
+
+printf '%s\n' '46. decision transitions T6-T8/T6r, archive metadata, and L-T6'
+dec_run='dec-meta'
+run_arena start "$dec_run" --repo "$project" --no-attach >/dev/null
+dec_run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path "*/${dec_run}/manifest.tsv" -exec dirname {} \;)"
+dec_writer="$(manifest_value "${dec_run_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' d >"${dec_writer}/d.txt"
+git -C "$dec_writer" add d.txt
+git -C "$dec_writer" commit -m 'feat: d' >/dev/null
+run_arena submit "$dec_run" >/dev/null
+run_arena validate "$dec_run" >/dev/null
+cp "${dec_run_dir}/run-state.tsv" "${tmp_root}/dec-pre-decision-state.tsv"
+dec_pre_revision="$(awk -F $'\t' '$1 == "state_revision" { print $2 }' "${dec_run_dir}/run-state.tsv")"
+dec_pre_digest="$(awk -F $'\t' '$1 == "validation_digest" { print $2 }' "${dec_run_dir}/run-state.tsv")"
+# T6: APPROVE lands in active/decided/human/approval_pending and the archive
+# carries the state metadata recorded at decision time
+run_arena decision "$dec_run" --verdict APPROVE --summary ok --next go --no-relay >/dev/null
+require_match $'run_status\tactive' <(cat "${dec_run_dir}/run-state.tsv")
+require_match $'phase\tdecided' <(cat "${dec_run_dir}/run-state.tsv")
+require_match $'responsible_party\thuman' <(cat "${dec_run_dir}/run-state.tsv")
+require_match $'reason_code\tapproval_pending' <(cat "${dec_run_dir}/run-state.tsv")
+require_match $'verdict\tAPPROVE' <(cat "${dec_run_dir}/run-state.tsv")
+require_match $'state_revision\t'"$((dec_pre_revision + 1))" <(cat "${dec_run_dir}/run-state.tsv")
+dec_sha="$(awk -F $'\t' '$1 == "checkpoint_sha" { print $2 }' "${dec_run_dir}/run-state.tsv")"
+archive="${dec_run_dir}/decision-${dec_sha:0:12}.md"
+require_match "State revision: ${dec_pre_revision}" <(cat "$archive")
+require_match "Validation digest: ${dec_pre_digest}" <(cat "$archive")
+require_match "State revision: " <(cat "$archive")
+require_match "Validation digest: " <(cat "$archive")
+dec_post_state="$(shasum -a 256 "${dec_run_dir}/run-state.tsv" | awk '{print $1}')"
+# duplicate: the state is aligned with the archive, so re-deciding is
+# rejected as an illegal transition with zero writes
+dup_exit=0
+run_arena decision "$dec_run" --verdict APPROVE --summary again --next again --no-relay \
+    >"${tmp_root}/dec-dup.out" 2>&1 || dup_exit=$?
+[[ "$dup_exit" == 2 ]] || fail "duplicate decision exited $dup_exit, expected 2"
+require_match 'illegal transition from active/decided/human/approval_pending' "${tmp_root}/dec-dup.out"
+[[ "$(shasum -a 256 "${dec_run_dir}/run-state.tsv" | awk '{print $1}')" == "$dec_post_state" ]] || \
+    fail 'duplicate decision changed the state file'
+[[ ! -e "${dec_run_dir}/.run-lock" ]] || fail 'duplicate decision left the run lock held'
+# T6r: archive-only residue (pre-decision state restored, verdict empty)
+# completes the commit with every guard re-checked
+cp "${tmp_root}/dec-pre-decision-state.tsv" "${dec_run_dir}/run-state.tsv"
+run_arena decision "$dec_run" --verdict APPROVE --summary ok --next go --no-relay >/dev/null
+require_match $'verdict\tAPPROVE' <(cat "${dec_run_dir}/run-state.tsv")
+require_match $'phase\tdecided' <(cat "${dec_run_dir}/run-state.tsv")
+require_match $'responsible_party\thuman' <(cat "${dec_run_dir}/run-state.tsv")
+require_match $'reason_code\tapproval_pending' <(cat "${dec_run_dir}/run-state.tsv")
+require_match $'state_revision\t'"$((dec_pre_revision + 1))" <(cat "${dec_run_dir}/run-state.tsv")
+# owning mismatch: the same residue with a hand-edited archive digest is a
+# conflict — exit 2, no transition, no pointer rewrite
+cp "${tmp_root}/dec-pre-decision-state.tsv" "${dec_run_dir}/run-state.tsv"
+dec_wrong_vd="$(printf z | shasum -a 256 | awk '{print $1}')"
+awk -v vd="$dec_wrong_vd" '{ if ($1 == "Validation" && $2 == "digest:") { $3 = vd } print }' \
+    "$archive" >"${tmp_root}/dec-archive-wrong-vd"
+cp "${tmp_root}/dec-archive-wrong-vd" "$archive"
+dec_mismatch_state="$(shasum -a 256 "${dec_run_dir}/run-state.tsv" | awk '{print $1}')"
+dec_mismatch_exit=0
+run_arena decision "$dec_run" --verdict APPROVE --summary ok --next go --no-relay \
+    >"${tmp_root}/dec-mismatch.out" 2>&1 || dec_mismatch_exit=$?
+[[ "$dec_mismatch_exit" == 2 ]] || fail "owning-mismatch decision exited $dec_mismatch_exit, expected 2"
+require_match 'does not match the current state' "${tmp_root}/dec-mismatch.out"
+[[ "$(shasum -a 256 "${dec_run_dir}/run-state.tsv" | awk '{print $1}')" == "$dec_mismatch_state" ]] || \
+    fail 'owning-mismatch decision changed the state file'
+[[ ! -e "${dec_run_dir}/.run-lock" ]] || fail 'owning-mismatch decision left the run lock held'
+# L-T6: a legacy run whose archive carries the v0.4 baseline metadata
+# (State revision: 0) completes the missing decision.md and materializes v1
+lt6_run='legacy-lt6'
+lt6_repo="$(basename "$(dirname "$dec_run_dir")")"
+lt6_dir="${state_root}/runs/${lt6_repo}/${lt6_run}"
+mkdir -p "$lt6_dir"
+awk -F $'\t' -v dir="$lt6_dir" 'BEGIN { OFS = FS }
+    $1 == "run_id" { $2 = "legacy-lt6" }
+    $1 == "branch" { $2 = "agent-arena/pi/legacy-lt6" }
+    $1 == "session_name" { $2 = "agent-arena-legacy-lt6" }
+    $1 == "writer_session_dir" { $2 = dir "/writer-session" }
+    { print }' "${dec_run_dir}/manifest.tsv" >"${lt6_dir}/manifest.tsv"
+cp "${dec_run_dir}/review.tsv" "${lt6_dir}/review.tsv"
+cp "${dec_run_dir}/validation.md" "${lt6_dir}/validation.md"
+cp "${dec_run_dir}/validation-${dec_sha:0:12}.md" "${lt6_dir}/validation-${dec_sha:0:12}.md"
+cat >"${lt6_dir}/decision-${dec_sha:0:12}.md" <<EOF
+# Agent Arena Gate Decision
+
+Run: legacy-lt6
+
+Review HEAD: ${dec_sha}
+
+VERDICT: APPROVE
+
+State revision: 0
+Validation digest: ${dec_pre_digest}
+
+## Summary
+
+legacy residue
+
+## Findings
+
+- No additional findings.
+
+## Next Step for Writer
+
+go
+EOF
+run_arena decision "$lt6_run" --verdict APPROVE --summary ok --next go --no-relay >/dev/null
+require_match $'state_revision\t1' <(cat "${lt6_dir}/run-state.tsv")
+require_match $'phase\tdecided' <(cat "${lt6_dir}/run-state.tsv")
+require_match $'responsible_party\thuman' <(cat "${lt6_dir}/run-state.tsv")
+require_match $'reason_code\tapproval_pending' <(cat "${lt6_dir}/run-state.tsv")
+require_match $'verdict\tAPPROVE' <(cat "${lt6_dir}/run-state.tsv")
+require_match $'checkpoint_round\tunknown' <(cat "${lt6_dir}/run-state.tsv")
+require_match $'checkpoint_sha\t'"$dec_sha" <(cat "${lt6_dir}/run-state.tsv")
+require_match $'validation_digest\t'"$dec_pre_digest" <(cat "${lt6_dir}/run-state.tsv")
+[[ -f "${lt6_dir}/decision.md" ]] || fail 'L-T6 did not complete decision.md'
+# L4: a legacy validated run with no archive records its first decision in
+# the same commit, with the archive carrying the State revision: 0 baseline
+l4_run='legacy-l4'
+l4_dir="${state_root}/runs/${lt6_repo}/${l4_run}"
+mkdir -p "$l4_dir"
+awk -F $'\t' -v dir="$l4_dir" 'BEGIN { OFS = FS }
+    $1 == "run_id" { $2 = "legacy-l4" }
+    $1 == "branch" { $2 = "agent-arena/pi/legacy-l4" }
+    $1 == "session_name" { $2 = "agent-arena-legacy-l4" }
+    $1 == "writer_session_dir" { $2 = dir "/writer-session" }
+    { print }' "${dec_run_dir}/manifest.tsv" >"${l4_dir}/manifest.tsv"
+cp "${dec_run_dir}/review.tsv" "${l4_dir}/review.tsv"
+cp "${dec_run_dir}/validation.md" "${l4_dir}/validation.md"
+cp "${dec_run_dir}/validation-${dec_sha:0:12}.md" "${l4_dir}/validation-${dec_sha:0:12}.md"
+run_arena decision "$l4_run" --verdict APPROVE --summary ok --next go --no-relay >/dev/null
+require_match $'state_revision\t1' <(cat "${l4_dir}/run-state.tsv")
+require_match $'phase\tdecided' <(cat "${l4_dir}/run-state.tsv")
+require_match $'verdict\tAPPROVE' <(cat "${l4_dir}/run-state.tsv")
+require_match $'checkpoint_round\tunknown' <(cat "${l4_dir}/run-state.tsv")
+require_match 'State revision: 0' <(cat "${l4_dir}/decision-${dec_sha:0:12}.md")
+require_match "Validation digest: ${dec_pre_digest}" <(cat "${l4_dir}/decision-${dec_sha:0:12}.md")
+[[ -f "${l4_dir}/decision.md" ]] || fail 'L4 first migration did not write decision.md'
+# T8: BLOCKED lands in blocked/decided/human/block_resolution_required
+block_run='dec-blocked'
+run_arena start "$block_run" --repo "$project" --no-attach >/dev/null
+block_run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path "*/${block_run}/manifest.tsv" -exec dirname {} \;)"
+block_writer="$(manifest_value "${block_run_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' b >"${block_writer}/b.txt"
+git -C "$block_writer" add b.txt
+git -C "$block_writer" commit -m 'feat: b' >/dev/null
+run_arena submit "$block_run" >/dev/null
+run_arena validate "$block_run" >/dev/null
+run_arena decision "$block_run" --verdict BLOCKED --summary blocked --next escalate --no-relay >/dev/null
+require_match $'run_status\tblocked' <(cat "${block_run_dir}/run-state.tsv")
+require_match $'phase\tdecided' <(cat "${block_run_dir}/run-state.tsv")
+require_match $'responsible_party\thuman' <(cat "${block_run_dir}/run-state.tsv")
+require_match $'reason_code\tblock_resolution_required' <(cat "${block_run_dir}/run-state.tsv")
+require_match $'verdict\tBLOCKED' <(cat "${block_run_dir}/run-state.tsv")
+block_sha="$(awk -F $'\t' '$1 == "checkpoint_sha" { print $2 }' "${block_run_dir}/run-state.tsv")"
+require_match 'State revision: ' <(cat "${block_run_dir}/decision-${block_sha:0:12}.md")
+require_match 'Validation digest: ' <(cat "${block_run_dir}/decision-${block_sha:0:12}.md")
 
 printf '%s\n' 'tests: ok'
