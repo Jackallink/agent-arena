@@ -367,11 +367,24 @@ arena_autopilot_round() {
 
 # ---- main loop ----
 # Single-instance per state root: acquire the autopilot lock up front. A live
-# lock (owner pid alive AND last_seen fresh, or a v0.4-style owner) exits 4.
+# lock is pid alive AND last_seen fresh (< 3x interval); a stale or dead
+# owner is reclaimed atomically. v0.4-style owners without last_seen stay
+# live while the pid is alive (backward compatible).
 arena_autopilot_lock_path="${state_root}/.autopilot-lock"
+arena_autopilot_lock_live() {
+    local last_seen now_ts
+    arena_lock_is_held "$1" || return 1
+    arena_lock_owner_alive "$1" || return 1
+    last_seen="$(awk -F= '$1 == "last_seen_at" { print $2 }' "$1/owner" 2>/dev/null)"
+    if [[ -z "$last_seen" ]]; then
+        return 0
+    fi
+    [[ "$last_seen" =~ ^[0-9]+$ ]] || return 0
+    now_ts="$(now)"
+    [[ "$((now_ts - last_seen))" -le "$((3 * interval))" ]]
+}
 if ! mkdir "$arena_autopilot_lock_path" 2>/dev/null; then
-    if arena_lock_is_held "$arena_autopilot_lock_path" && \
-        arena_lock_owner_alive "$arena_autopilot_lock_path"; then
+    if arena_autopilot_lock_live "$arena_autopilot_lock_path"; then
         printf 'autopilot already running (pid %s); --once with a live watch exits 4 (normal)\n' \
             "$(arena_lock_owner_pid "$arena_autopilot_lock_path")" >&2
         exit 4

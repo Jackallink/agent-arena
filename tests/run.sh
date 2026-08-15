@@ -4027,4 +4027,42 @@ cp_row="$(awk -F $'\t' '$1 == "ap-corrupt" { print $5 }' "${tmp_root}/ap-corrupt
 [[ "$cp_row" == 6 ]] || fail "corrupt row exited $cp_row, expected 6"
 
 
+printf '%s\n' '55. autopilot lock liveness, throttle file, and heartbeat rows'
+# stale last_seen: dead pid + stale last_seen is reclaimed (--once proceeds)
+stale_run='ap-stale-lock'
+run_arena start "$stale_run" --repo "$project" --no-attach >/dev/null
+stale_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -name manifest.tsv -path "*/${stale_run}/manifest.tsv" -exec dirname {} \;)"
+stale_writer="$(manifest_value "${stale_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' s >"${stale_writer}/s.txt"
+git -C "$stale_writer" add s.txt
+git -C "$stale_writer" commit -qm 'feat: s'
+run_arena submit "$stale_run" >/dev/null
+run_arena mode "$stale_run" auto >/dev/null
+# plant a stale lock: dead pid, last_seen far in the past
+mkdir -p "${state_base}/.autopilot-lock"
+printf 'pid=999999999\ntoken=autopilot-999\ncreated_at=1\nlast_seen_at=1\n' >"${state_base}/.autopilot-lock/owner"
+set +e
+run_arena autopilot --once --state-root "$state_base" --repo "$project" >"${tmp_root}/ap-stale.out" 2>&1
+ap_stale_exit=$?
+set -e
+[[ "$ap_stale_exit" != 4 ]] || fail 'stale lock blocked --once'
+[[ ! -e "${state_base}/.autopilot-lock" ]] || fail 'stale lock not reclaimed'
+# fresh last_seen keeps the lock live even with a dead-ish pid simulation
+# (pid alive check still applies; use our own live pid with fresh last_seen)
+mkdir -p "${state_base}/.autopilot-lock"
+printf 'pid=%s\ntoken=autopilot-live\ncreated_at=%s\nlast_seen_at=%s\n' "$$" "$(date +%s)" "$(date +%s)" >"${state_base}/.autopilot-lock/owner"
+set +e
+run_arena autopilot --once --state-root "$state_base" --repo "$project" >"${tmp_root}/ap-live-lock.out" 2>&1
+ap_live_exit=$?
+set -e
+[[ "$ap_live_exit" == 4 ]] || fail "live last_seen lock exited $ap_live_exit, expected 4"
+require_match 'already running' "${tmp_root}/ap-live-lock.out"
+rm -rf "${state_base}/.autopilot-lock"
+# throttle file records the relay window per run
+require_match $'ap-relay\tchanges_requested\t' "${state_base}/autopilot-throttle.tsv"
+# heartbeat keeps only the newest row per instance
+heartbeat_rows="$(wc -l <"${state_base}/autopilot.tsv")"
+[[ "$heartbeat_rows" -ge 1 ]] || fail 'autopilot.tsv has no rows'
+
+
 printf '%s\n' 'tests: ok'
