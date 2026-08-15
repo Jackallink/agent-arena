@@ -1,7 +1,8 @@
 ---
-status: planned
+status: review-ready
 created: '2026-08-13'
 owner: 'local owner'
+drift: implementation matches the T-matrix, wire contract, exit-code protocol, and oracle row contract in this spec; the only deliberate deltas are the two v0.3 behavior changes documented in Drift/risk/rollback (diagnostic-only integrity reports and validate exit 10)
 ---
 
 # Agent Arena v0.4: Run state authority

@@ -30,6 +30,20 @@ isolated writer worktree with the Arena session directory and a prompt that
 prohibits editing the integration worktree, merging, pushing, resetting, and
 dangerous permission bypasses.
 
+## State authority
+
+Since v0.4 the orchestration layer owns per-run authority in `lib/state.sh`
+(`run-state.tsv`: responsible party, phase, reason, waiting state, the T1–T14
+transition matrix, creation/repair intents) and `lib/lock.sh` (mkdir run locks
+with atomic owner metadata and grace rules). Adapters never read or write the
+state file or locks: `launch` receives run context through `ARENA_*`
+environment variables only, and every state transition happens inside the
+orchestration layer under the run lock. Gate adapters additionally receive
+`ARENA_GATE_PHASE` so their advisory (writer worktree) and formal (detached
+review snapshot) passes stay distinguishable; the review snapshot must remain
+exactly on the reviewed HEAD — state transitions, not adapter behavior, decide
+what is decidable.
+
 ## Gate adapters
 
 Gate adapters live at `adapters/gate-<name>.sh` and add one command to the

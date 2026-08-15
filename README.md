@@ -109,6 +109,9 @@ agent-arena submit RUN_ID
 agent-arena validate RUN_ID
 agent-arena decision RUN_ID --verdict APPROVE --summary "..." --next "..."
 agent-arena relay RUN_ID --to writer --from reviewer --message "..."
+agent-arena escalate RUN_ID --reason-code reviewer_unreachable --reason "..."
+agent-arena resolve RUN_ID --action approve|reject|recover|cancel --reason "..."
+agent-arena repair-state RUN_ID --candidate TOKEN --reason "..."
 agent-arena status RUN_ID
 agent-arena list
 ```
@@ -117,6 +120,52 @@ Relay delivery is direct but best effort: tmux cannot know whether an interactiv
 model is mid-turn. Writers can send progress or a question to Cursor; Cursor can
 send review feedback and the next step back to the writer. The decision record,
 not a pane message, is the audit truth.
+
+## Run state
+
+Since v0.4 every run carries a per-run `run-state.tsv` as the single source of
+truth for *who is next, waiting on what, since when, and how the wait is
+released*. Existing evidence files (`review.tsv`, validation reports, decision
+records) remain flow evidence but never reverse-derive responsibility.
+
+`status RUN_ID` is a read-only oracle: it prints the manifest, the bound
+evidence, and a one-sentence diagnosis such as
+
+```
+waiting on reviewer for review_pending since 1786781395; tmux session: not running; release: agent-arena validate or-run
+```
+
+`list` prints fixed columns — `REPOSITORY RUN_ID PROFILE GATE RUN_STATUS PHASE
+PARTY REASON_CODE WAITING_SINCE AUTHORITY ANOMALY` — where `AUTHORITY` is
+`state` for authoritative v1 rows and `legacy` for read-only projections.
+Neither oracle ever writes; `status` fails closed (exit 2) on corrupted state
+or conflicting evidence, and `list` aggregates per-run anomaly codes by
+priority `5 > 4 > 2 > 0`.
+
+### Human commands
+
+- `escalate RUN_ID --reason-code reviewer_unreachable --reason "..."` raises a
+  stuck run (reviewer responsibility, phase `submitted` or `validated`) to
+  human responsibility (`blocked`). Idempotent in the blocked state.
+- `resolve RUN_ID --action approve|reject|recover|cancel --reason "..."` is the
+  human disposition. `approve` completes a reviewer `APPROVE`; `reject` sends a
+  blocked run back; `recover` clears an operational escalation when the
+  reviewer pane is reachable again; `cancel` abandons the run.
+- `repair-state RUN_ID --candidate TOKEN --reason "..."` accepts a candidate
+  printed by `status` for legacy evidence conflicts or corrupted state. The
+  token binds the evidence digest and state baseline, so stale or foreign
+  tokens are rejected; the repair is intent-first and crash-recoverable.
+
+### Exit codes
+
+`0` ok · `1` usage · `2` corrupt state or evidence conflict · `3` stale CAS
+baseline (validate) · `4` live lock / transition in progress · `5` incomplete
+transition, retry the printed command · `10` validation recorded `FAIL`.
+
+See [the v0.4 run-state spec](docs/superpowers/specs/2026-08-13-run-state-authority.md)
+and [implementation plan](docs/superpowers/plans/2026-08-13-run-state-authority.md)
+for the full transition matrix (T1–T14 + L-T3/L-T6), legacy compatibility
+rules, and acceptance criteria.
 
 ## Formal gate adapters
 
