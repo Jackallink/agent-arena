@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Arena — 双 Agent 结对开发编排器</title>
+<style>
+  :root {
+    --bg: #0f1220; --bg2: #171a2e; --card: #1d2138; --line: #2c3150;
+    --text: #e8eaf6; --muted: #9aa3c7; --accent: #6c8cff; --accent2: #4ee1b0;
+    --warn: #ffb86c; --danger: #ff6b8a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif; line-height: 1.65; }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+
+  /* Hero */
+  .hero { padding: 84px 0 56px; background: radial-gradient(900px 420px at 70% -10%, rgba(108,140,255,.22), transparent), radial-gradient(700px 380px at 10% 110%, rgba(78,225,176,.12), transparent); border-bottom: 1px solid var(--line); }
+  .badge { display: inline-block; font-size: 13px; color: var(--accent2); border: 1px solid rgba(78,225,176,.4); border-radius: 999px; padding: 4px 14px; margin-bottom: 20px; letter-spacing: .3px; }
+  h1 { font-size: 46px; letter-spacing: -.5px; line-height: 1.2; }
+  h1 .grad { background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .tagline { font-size: 19px; color: var(--muted); margin-top: 18px; max-width: 780px; }
+  .tagline.en { font-size: 15px; margin-top: 8px; opacity: .85; }
+  .hero-cta { margin-top: 30px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .btn { display: inline-block; padding: 11px 22px; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: 15px; }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.ghost { border: 1px solid var(--line); color: var(--text); }
+  .btn.ghost:hover { border-color: var(--accent); }
+
+  /* Sections */
+  section { padding: 64px 0; border-bottom: 1px solid var(--line); }
+  h2 { font-size: 28px; margin-bottom: 8px; }
+  .sub { color: var(--muted); margin-bottom: 36px; font-size: 15px; }
+
+  /* Problem */
+  .problem { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+  .pcard { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
+  .pcard h3 { font-size: 17px; color: var(--danger); margin-bottom: 10px; }
+  .pcard p { color: var(--muted); font-size: 14.5px; }
+
+  /* Features */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 22px; transition: transform .15s, border-color .15s; }
+  .card:hover { transform: translateY(-3px); border-color: var(--accent); }
+  .card .icon { font-size: 24px; margin-bottom: 10px; }
+  .card h3 { font-size: 16.5px; margin-bottom: 8px; }
+  .card p { color: var(--muted); font-size: 14px; }
+
+  /* Flow */
+  .flow { background: var(--bg2); border: 1px solid var(--line); border-radius: 16px; padding: 30px; overflow-x: auto; }
+  .steps { display: flex; gap: 8px; align-items: stretch; flex-wrap: nowrap; min-width: 860px; }
+  .step { flex: 1; min-width: 118px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 10px; text-align: center; position: relative; }
+  .step .n { font-size: 12px; color: var(--accent); font-weight: 700; letter-spacing: 1px; }
+  .step .t { font-size: 14px; font-weight: 600; margin-top: 4px; }
+  .step .d { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .step.hl { border-color: var(--accent2); }
+  .arrow { align-self: center; color: var(--muted); font-size: 18px; }
+  .flow-note { margin-top: 16px; color: var(--muted); font-size: 13.5px; }
+
+  /* Modes */
+  .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+  .mode { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 24px; }
+  .mode h3 { font-size: 18px; margin-bottom: 6px; }
+  .mode .tag { font-size: 12px; padding: 3px 10px; border-radius: 999px; margin-left: 8px; vertical-align: 2px; }
+  .tag.human { background: rgba(255,184,108,.15); color: var(--warn); border: 1px solid rgba(255,184,108,.4); }
+  .tag.auto { background: rgba(78,225,176,.12); color: var(--accent2); border: 1px solid rgba(78,225,176,.4); }
+  .mode ul { margin-top: 12px; padding-left: 18px; color: var(--muted); font-size: 14px; }
+  .mode ul li { margin: 6px 0; }
+  .mode code { background: var(--bg2); padding: 1px 6px; border-radius: 5px; font-size: 13px; color: var(--text); }
+
+  /* Live evidence */
+  .evidence { background: var(--bg2); border: 1px solid var(--line); border-radius: 16px; padding: 26px; }
+  .ev-row { display: flex; gap: 18px; align-items: flex-start; padding: 14px 0; border-bottom: 1px dashed var(--line); }
+  .ev-row:last-child { border-bottom: none; }
+  .ev-role { flex: 0 0 150px; font-size: 13.5px; color: var(--accent2); font-weight: 700; }
+  .ev-role small { display: block; color: var(--muted); font-weight: 400; margin-top: 2px; }
+  .ev-body { flex: 1; font-size: 14px; color: var(--muted); }
+  .ev-body code { background: var(--card); padding: 2px 7px; border-radius: 5px; font-size: 13px; color: var(--text); }
+  .ev-state { margin-top: 16px; background: var(--card); border-radius: 10px; padding: 14px 18px; font-size: 13.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); white-space: pre-wrap; }
+
+  /* Quick start */
+  pre { background: var(--bg2); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; overflow-x: auto; font-size: 13.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); }
+  pre .c { color: var(--muted); }
+  pre .k { color: var(--accent); }
+  pre .g { color: var(--accent2); }
+
+  /* Stats */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 36px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 12px; text-align: center; padding: 20px 10px; }
+  .stat .v { font-size: 30px; font-weight: 700; color: var(--accent); }
+  .stat .l { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+  footer { padding: 40px 0 60px; color: var(--muted); font-size: 13.5px; text-align: center; }
+  footer a { color: var(--accent); text-decoration: none; }
+
+  @media (max-width: 760px) {
+    h1 { font-size: 34px; }
+    .problem, .modes { grid-template-columns: 1fr; }
+    .hero { padding: 56px 0 40px; }
+    .ev-role { flex-basis: 110px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Hero -->
+<div class="hero">
+  <div class="wrap">
+    <span class="badge">v0.5.1 · 双 Agent 结对开发编排器 · Local-first</span>
+    <h1>两个 AI Agent，一个<span class="grad">可审计的交付闭环</span></h1>
+    <p class="tagline">
+      Agent Arena 把两个不同来源的 AI agent（一个写代码、一个评审）放进完全隔离的工作区，
+      自动协作完成 <b>写码 → 提交 → 验证 → 决策 → 批准</b> 的闭环；
+      支持 <b>人工 / 自动双模式</b>，有人值守或无人值守都能安全推进。
+    </p>
+    <p class="tagline en">Two agents from different providers, one isolated, SHA-bound, unattended-ready loop: write → submit → validate → decide → approve, with human or auto approval modes.</p>
+    <div class="hero-cta">
+      <a class="btn primary" href="#quickstart">快速开始</a>
+      <a class="btn ghost" href="#live">真实运行证据</a>
+      <a class="btn ghost" href="https://github.com/Jackallink/agent-arena" target="_blank">GitHub ↗</a>
+    </div>
+  </div>
+</div>
+
+<!-- Problem -->
+<section>
+  <div class="wrap">
+    <h2>解决什么问题</h2>
+    <p class="sub">当两个 AI agent 结对开发，真正规模化的问题不是"能不能写码"，而是"如何可信地协作"。</p>
+    <div class="problem">
+      <div class="pcard">
+        <h3>✗ 没有隔离，互相污染</h3>
+        <p>两个 agent 共享工作区：writer 的改动、reviewer 的检查互相干扰；评审快照随时可能被改写，审计无从谈起。</p>
+      </div>
+      <div class="pcard">
+        <h3>✗ 没有权威状态与审计</h3>
+        <p>"下一个是谁、在等什么、怎么释放"只能靠聊天记录和人的记忆；验证/决策没有 SHA 绑定，出了事无法追溯。</p>
+      </div>
+      <div class="pcard">
+        <h3>✗ 无人值守就失控</h3>
+        <p>批准必须人肉点击、卡住没人知道、模型面板死了任务静默停摆——"跑起来"和"安全地跑起来"是两回事。</p>
+      </div>
+      <div class="pcard">
+        <h3>✗ 绑定单一模型/厂商</h3>
+        <p>writer 与评审耦合在同一生态，无法自由组合"最会写的"和"最会审的"两个模型。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section>
+  <div class="wrap">
+    <h2>核心优势</h2>
+    <p class="sub">隔离、审计、双模式、可恢复 —— 让多 Agent 协作达到生产级可信度。</p>
+    <div class="grid">
+      <div class="card"><div class="icon">🧩</div><h3>自带模型，自由组合</h3><p>任意 writer（Pi / Codex / OpenCode / Agy）× 任意 gate（Cursor / OpenCode）。已在真实环境用 Pi writer + Cursor reviewer 端到端验证。</p></div>
+      <div class="card"><div class="icon">🛡️</div><h3>隔离是设计出来的</h3><p>每个 run 独立 Git worktree 与 tmux 会话；评审快照为 detached HEAD，任何污染都会被运行后完整性检查检出。</p></div>
+      <div class="card"><div class="icon">🔏</div><h3>审计真相，不是聊天记录</h3><p>SHA 绑定的验证报告与决策记录是权威；run-state.tsv 回答"下一个是谁、在等什么、何时开始、如何释放"。</p></div>
+      <div class="card"><div class="icon">🤖</div><h3>人工 / 自动双模式</h3><p>human 模式保留人工批准；auto 模式 + autopilot 让顺利路径无人值守完成，并对每条停滞路径报警（exit 6）。</p></div>
+      <div class="card"><div class="icon">♻️</div><h3>崩溃可恢复</h3><p>creation / repair intent 让中断的转移可重试；旧版本 run 只读投影、首次写入自动迁移。</p></div>
+      <div class="card"><div class="icon">🧪</div><h3>质量门禁</h3><p>56 节 hermetic 测试 + tmuxp / CLI 契约 / 打包检查 + 每次发布前真实 CLI 冒烟证据。</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- Flow -->
+<section>
+  <div class="wrap">
+    <h2>工作流</h2>
+    <p class="sub">一次 run 的完整生命周期 —— 每一步都有锁、有状态、有审计。</p>
+    <div class="flow">
+      <div class="steps">
+        <div class="step"><div class="n">1</div><div class="t">Writer 写码</div><div class="d">隔离 worktree<br>提交 checkpoint</div></div>
+        <div class="arrow">→</div>
+        <div class="step"><div class="n">2</div><div class="t">Submit</div><div class="d">冻结快照<br>detached HEAD</div></div>
+        <div class="arrow">→</div>
+        <div class="step"><div class="n">3</div><div class="t">Validate</div><div class="d">确定性验证<br>CAS 发布报告</div></div>
+        <div class="arrow">→</div>
+        <div class="step"><div class="n">4</div><div class="t">Decision</div><div class="d">Reviewer 裁决<br>SHA 绑定归档</div></div>
+        <div class="arrow">→</div>
+        <div class="step hl"><div class="n">5</div><div class="t">Approval</div><div class="d">human 批准 或<br>autopilot 自动</div></div>
+        <div class="arrow">→</div>
+        <div class="step"><div class="n">6</div><div class="t">Completed</div><div class="d">终态 + 审计链</div></div>
+      </div>
+      <p class="flow-note">全流程在 <code>.run-lock</code> 下原子提交；中断可重试（creation/repair intent）；验证报告与决策记录 SHA 绑定，无法抵赖也无法伪造。</p>
+    </div>
+  </div>
+</section>
+
+<!-- Modes -->
+<section>
+  <div class="wrap">
+    <h2>双模式：人工把关，还是放手自动</h2>
+    <p class="sub">同一个状态机，两种运营方式 —— 切换由你决定，随时可改。</p>
+    <div class="modes">
+      <div class="mode">
+        <h3>👤 Human 模式<span class="tag human">默认 · 有人值守</span></h3>
+        <ul>
+          <li>reviewer 的 <code>APPROVE</code> 后，由人执行 <code>resolve --action approve</code> 才算完成</li>
+          <li>autopilot 只观测与报警：<code>--once</code> 返回 <code>6</code> 表示"需要人"</li>
+          <li>适合风险较高、需要逐单把关的仓库</li>
+        </ul>
+      </div>
+      <div class="mode">
+        <h3>🤖 Auto 模式<span class="tag auto">opt-in · 无人值守</span></h3>
+        <ul>
+          <li><code>project.conf</code> 设 <code>approval_mode="auto"</code>（或 <code>start --mode auto</code>）</li>
+          <li>autopilot 在冷却窗口后自动批准（<code>actor=system</code>，全程审计）</li>
+          <li>面板死亡自动升级、停滞自动报警、writer 收到节流提醒</li>
+          <li>适合验证脚本严格、低风险的仓库；随时 <code>mode RUN_ID human</code> 收回人工</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Live -->
+<section id="live">
+  <div class="wrap">
+    <h2>真实运行证据（2026-08-15）</h2>
+    <p class="sub">两个不同来源的真实模型 + autopilot，独立临时仓库，无人值守跑到完成。</p>
+    <div class="evidence">
+      <div class="ev-row">
+        <div class="ev-role">🤖 Pi writer<small>pi v0.84.2 · headless</small></div>
+        <div class="ev-body">创建 <code>feature.txt</code> → <code>git commit</code> <code>5b90585</code> → 运行 <code>agent-arena submit live-demo</code></div>
+      </div>
+      <div class="ev-row">
+        <div class="ev-role">🤖 Cursor reviewer<small>agent 2026.08.11 · 已认证</small></div>
+        <div class="ev-body"><code>./.agent-arena-gate validate</code> → exit 0 · <code>RESULT: PASS</code>；<code>decision --verdict APPROVE</code> 记录 SHA 绑定归档</div>
+      </div>
+      <div class="ev-row">
+        <div class="ev-role">🤖 Autopilot<small>auto 模式 · --once</small></div>
+        <div class="ev-body">冷却窗口后自动 <code>resolve --actor system</code> → <code>completed</code>；reason 携带实例 token；心跳 <code>acted=1 errors=0</code></div>
+      </div>
+      <div class="ev-state">run_status  completed
+responsible_party  none
+last_transition_actor  system
+last_transition_action  resolve-approve
+reason_detail  autopilot JakedeMacBook-Pro.local.74549.1545 1786802664</div>
+    </div>
+  </div>
+</section>
+
+<!-- Quick start -->
+<section id="quickstart">
+  <div class="wrap">
+    <h2>快速开始</h2>
+    <p class="sub">60 秒接入一个项目。</p>
+    <pre><span class="c"># 1. 项目接入（生成 .agent-arena/project.conf + validate.sh）</span>
+<span class="k">agent-arena</span> init --repo /path/to/project
+
+<span class="c"># 2. 启动 run（Pi 写 + Cursor 审）</span>
+<span class="k">agent-arena</span> start RUN_ID --repo /path/to/project
+
+<span class="c"># 3. writer 提交 checkpoint 后</span>
+<span class="k">agent-arena</span> submit RUN_ID
+
+<span class="c"># 4. 人工批准（默认 human 模式）</span>
+<span class="k">agent-arena</span> resolve RUN_ID --action approve
+
+<span class="c"># —— 或者无人值守（auto 模式）——</span>
+<span class="c"># project.conf: approval_mode="auto"</span>
+<span class="k">agent-arena</span> autopilot --watch   <span class="c"># 常驻</span>
+<span class="k">agent-arena</span> autopilot --once    <span class="c"># cron 单轮</span></pre>
+  </div>
+</section>
+
+<!-- Stats -->
+<section>
+  <div class="wrap">
+    <h2>项目状态</h2>
+    <p class="sub">从 v0.3 到 v0.5.1，一路有证据。</p>
+    <div class="stats">
+      <div class="stat"><div class="v">56</div><div class="l">hermetic 测试节</div></div>
+      <div class="stat"><div class="v">5</div><div class="l">GitHub Releases</div></div>
+      <div class="stat"><div class="v">2</div><div class="l">真实模型 live 闭环</div></div>
+      <div class="stat"><div class="v">19</div><div class="l">PDCA 修正轮次</div></div>
+      <div class="stat"><div class="v">0</div><div class="l">语义漂移（v0.4 契约）</div></div>
+    </div>
+    <p class="sub" style="margin-bottom:0">开发方法：多专家白板走查（5 角色 × 3 轮 + 辩论）→ SDD 规格（Gate 1 两轮）→ PDCA 实现 → 评审快照 → 发布。详见 <code>docs/superpowers/</code>。</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    Agent Arena · MIT License · <a href="https://github.com/Jackallink/agent-arena" target="_blank">github.com/Jackallink/agent-arena</a><br>
+    文档：<a href="../README.md">README</a> · <a href="../README.zh-CN.md">中文 README</a> · <a href="../docs/superpowers/specs/2026-08-13-autopilot-approval-mode.md">v0.5 规格</a>
+  </div>
+</footer>
+
+</body>
+</html>
