@@ -1,7 +1,8 @@
 ---
-status: planned
+status: review-ready
 created: '2026-08-15'
 owner: 'local owner'
+drift: implementation matches the contracts in this spec (mode config/switch, status read-path extension, resolve/escalate --actor, autopilot matrix and exit codes 0/4/6, observation files). The v0.4 state machine and wire contract are unchanged; the assertion-update list (config parser, Mode:/Verdict:/Validation result:/Last transition at:/pane lines, manifest mode rows, lock reclamation) is recorded in the plan.
 ---
 
 # Agent Arena v0.5: Autopilot approval modes (human/auto)
@@ -330,7 +331,7 @@ preserved.
 
 ## Testing strategy (hermetic only)
 
-Extends `tests/run.sh` with sections 50–53 (fake CLIs, temporary Git repos,
+Extends `tests/run.sh` with sections 50–55 (fake CLIs, temporary Git repos,
 private tmux sockets; no model/network):
 
 - §50 mode config/switch/drift/intent binding (v05-AC1/AC2/AC3, §38-style

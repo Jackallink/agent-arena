@@ -172,6 +172,43 @@ and [implementation plan](docs/superpowers/plans/2026-08-13-run-state-authority.
 for the full transition matrix (T1–T14 + L-T3/L-T6), legacy compatibility
 rules, and acceptance criteria.
 
+### Autopilot and approval modes
+
+Since v0.5 every run carries an approval mode (`human`, the default, or
+`auto`), snapped from `project.conf`'s `approval_mode` at `start` (override
+per run with `start --mode auto`) and switchable at runtime with
+`agent-arena mode RUN_ID human|auto` (locked and audited). `status` shows
+`Mode:` and a `(config: ...) ⚠` marker when the manifest and config drift.
+
+```
+agent-arena autopilot [--once] [--interval 30] [--approve-delay 300]
+                       [--relay-after 30] [--resume-attempts 0]
+                       [--repo PATH] [--all-repos] [--rounds N]
+```
+
+- In `auto` mode a run parked in `decided/human/approval_pending` with
+  `APPROVE` + `PASS` is approved after the cooling window
+  (`--approve-delay`), recorded with `last_transition_actor=system` and a
+  `reason` carrying the autopilot instance token.
+- Every stalled path alerts: `--once` exits `0` (all quiet), `4` (another
+  autopilot holds the lock — normal when watch+cron coexist), or `6` (a run
+  needs a human: approval pending, blocked, pane dead, stall, corrupt).
+- A dead reviewer pane in `submitted`/`validated` auto-escalates via T9;
+  stalled reviews (> 30 min) alert; stalled writers get at most one
+  `[autopilot]` reminder per `--relay-after` window.
+- Deployment: `autopilot --watch` for attended operation, cron
+  `autopilot --once` for unattended; avoid running both (the second exits 4).
+- Observation (never authoritative): `autopilot.tsv` (one heartbeat row per
+  instance), `autopilot.log` (append-only action log, rotated at 1 MB), and
+  `autopilot-throttle.tsv`. The audit chain stays `run-state.tsv` + SHA-bound
+  records.
+
+**Non-promise:** autopilot does not deliver code (`completed` is an Arena
+state, not a merge/push), does not wake writers beyond best-effort reminders,
+does not bypass trust prompts, and never cancels/rejects. `auto` mode is a
+trust-model downgrade (the only non-AI approval step becomes automated) —
+enable it only for repositories with strict validation scripts and low risk.
+
 ## Formal gate adapters
 
 Cursor remains the default formal gate and runs in normal interactive mode so
