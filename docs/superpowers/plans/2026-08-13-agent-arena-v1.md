@@ -122,6 +122,13 @@
   `dist/agent-arena-0.5.0.tar.gz` (sha256
   `5e1c04f57a7c1ddf3908dba7bb489046f44d8640c3409924a60c4c127db2413c`) and the checksum file attached.
 - Conclusion: source publication and archive release gates complete for v0.5.0.
+- v0.5.1 patch (2026-08-15): `help` lists `mode`/`autopilot` (dispatch gap
+  fix); `packaging/package.sh` emits relative-path checksums so `shasum -c`
+  works from any directory. Full two-model unattended live loop recorded
+  (real Pi writer + real Cursor reviewer + autopilot; evidence archived).
+  Release `v0.5.1` tag (`5e999d9`); archive
+  `dist/agent-arena-0.5.1.tar.gz` (sha256
+  `896ee9af581ec8fd77d16bc3a58175337471a5630180c04ab9f5aa0e88a9fd27`).
 - Live autopilot demo (2026-08-15, independent temp repo, evidence archived
   under the state directory): real authenticated Cursor model ran the gate in
   the detached review snapshot — `./.agent-arena-gate validate live-demo` →

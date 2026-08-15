@@ -82,10 +82,12 @@ mkdir -p "$release_dir"
 tar -C "$source_root" -cf - "${required[@]}" | tar -C "$release_dir" -xf -
 tar -C "$stage_root" -czf "$archive" "$release_name"
 
+# Relative-path checksum so `shasum -c` works from any directory after
+# downloading the archive and checksum pair (absolute paths would break it).
 if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$archive" >"$checksum"
+    (cd "$output_dir" && shasum -a 256 "$(basename "$archive")" >"$(basename "$checksum")")
 else
-    sha256sum "$archive" >"$checksum"
+    (cd "$output_dir" && sha256sum "$(basename "$archive")" >"$(basename "$checksum")")
 fi
 
 if [[ "$check_only" == 1 ]]; then
