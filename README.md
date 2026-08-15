@@ -1,9 +1,40 @@
 # Agent Arena
 
+> **One line:** Agent Arena lets two AI agents from different providers — one
+> **writer**, one **reviewer** — collaborate in fully isolated workspaces on a
+> single audit-trailed loop (write → submit → validate → decide → approve),
+> with **human or auto approval modes** so the loop runs attended or
+> unattended.
+>
+> **一句话：** Agent Arena 把两个不同来源的 AI agent（一个写代码、一个评审）
+> 放进完全隔离的工作区，自动协作完成"写码 → 提交 → 验证 → 决策 → 批准"的
+> 可审计闭环；支持人工/自动双模式，有人值守或无人值守都能安全推进。
+>
+> **中文版：** [README.zh-CN.md](README.zh-CN.md)
+
 Agent Arena is a standalone, local-first terminal workflow for one coding writer
 and a separate review, validation, and decision gate. `tmuxp` creates the four
 panes; Git worktrees isolate the handoff; `tmux` relays short messages directly
 between the agents.
+
+## Why Agent Arena
+
+- **Bring your own agents** — any writer (Pi, Codex, OpenCode, Agy) pairs with
+  any formal gate (Cursor, OpenCode); verified live end-to-end with a real Pi
+  writer and a real Cursor reviewer (2026-08-15).
+- **Isolation by construction** — each run gets its own Git worktree and tmux
+  session; the review snapshot is a detached HEAD that cannot be polluted
+  without being detected (post-run integrity check).
+- **Audit truth, not chat** — the SHA-bound validation report and decision
+  record are the source of truth; `run-state.tsv` answers "who is next,
+  waiting on what, since when, how is it released".
+- **Attended or unattended** — `human` mode keeps a human approval step;
+  `auto` mode plus `autopilot` completes the happy path unattended and alerts
+  on every stalled path (exit 6).
+- **Crash-safe** — creation/repair intents make interrupted transitions
+  retryable; legacy runs project read-only and migrate on first write.
+- **Quality-gated** — 56 hermetic test sections, tmuxp/CLI-contract/package
+  checks, and real-CLI smoke evidence before every release.
 
 Every profile pairs one writer with one gate. **Cursor Agent** is the default
 formal review, validation, and decision gate; `--gate opencode` or a
@@ -12,16 +43,15 @@ Pi, Codex, OpenCode, and Agy remain writers only. A direct relay is useful
 feedback, but the SHA-bound validation report and decision record remain the
 audit truth.
 
-> **Validation status:** v0.5 has hermetic adapter tests (56 sections —
+> **Validation status:** v0.5.1 has hermetic adapter tests (56 sections —
 > v0.4 §0–49 with zero semantic drift plus autopilot §50–55), tmuxp smoke,
-> no-model CLI contract checks, and a real-Cursor gate smoke (2026-08-15,
-> agent 2026.08.11-e8db854, authenticated): the gate wrapper `validate` ran
-> end-to-end through the real CLI and recorded `RESULT: PASS` with the
-> SHA-bound report published. One drift was observed (D5): shell redirection
-> writes (`echo x > file`) bypassed the sandbox denials in this agent build;
-> the post-run snapshot integrity check detected the pollution and kept the
-> audit chain closed. `doctor` confirms local prerequisites, not
-> provider-side behavior.
+> no-model CLI contract checks, and real-CLI smoke: a full two-model
+> unattended loop (real Pi writer → real Cursor reviewer → autopilot auto
+> approval) recorded 2026-08-15. One drift is documented (D5): shell
+> redirection writes (`echo x > file`) bypassed the Cursor sandbox denials in
+> agent 2026.08.11; the post-run snapshot integrity check detects such
+> pollution and keeps the audit chain closed. `doctor` confirms local
+> prerequisites, not provider-side behavior.
 
 ## Location model
 
