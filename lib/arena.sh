@@ -35,7 +35,7 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "$command_name" in
-    doctor|init|start|submit|validate|decision|escalate|resolve|relay|repair-state|status|list)
+    doctor|init|start|submit|validate|decision|escalate|resolve|relay|repair-state|mode|autopilot|status|list)
         exec "${source_root}/lib/${command_name}.sh" "$@"
         ;;
     resume)

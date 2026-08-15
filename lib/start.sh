@@ -40,8 +40,20 @@ writer_explicit=0
 gate_explicit=0
 attach=1
 log_panes=0
+mode_arg=''
+mode_explicit=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --mode)
+            [[ $# -ge 2 ]] || arena_die '--mode requires a value'
+            case "$2" in
+                human|auto) ;;
+                *) arena_die "invalid --mode: $2 (legal values: human, auto)" ;;
+            esac
+            mode_arg="$2"
+            mode_explicit=1
+            shift 2
+            ;;
         --run-id)
             [[ $# -ge 2 ]] || arena_die '--run-id requires a value'
             run_id="$2"
@@ -130,6 +142,15 @@ repo_runs_dir="${runs_root}/${repo_id}"
 run_dir="${repo_runs_dir}/${run_id}"
 writer_root="${worktree_root}/${repo_id}/${run_id}"
 writer_worktree="${writer_root}/writer"
+
+# Effective approval mode: --mode flag wins (validated at parse time),
+# else project.conf (default human).
+if [[ "$mode_explicit" == 1 ]]; then
+    effective_mode="$mode_arg"
+else
+    arena_load_project_config "$repository"
+    effective_mode="$ARENA_CONFIG_APPROVAL_MODE"
+fi
 session_name="agent-arena-${repo_id}-${run_id}"
 configuration="${source_root}/templates/tmuxp/arena.yaml"
 
@@ -254,7 +275,8 @@ if [[ -e "$run_dir" || -L "$run_dir" ]] && [[ "$intent_stage" != S2 ]]; then
             "gate_adapter=${gate_adapter}" "session_name=${session_name}" \
             "base_sha=${base_sha}" "branch=${branch}" "writer_worktree=${writer_worktree}" \
             "writer_adapter_path=${source_root}/adapters/${writer_adapter}.sh" \
-            "gate_adapter_path=${source_root}/adapters/gate-${gate_adapter}.sh" || exit 2
+            "gate_adapter_path=${source_root}/adapters/gate-${gate_adapter}.sh" \
+            "mode=${effective_mode}" || exit 2
         arena_lock_acquire "${run_dir}/.run-lock" "start-$$"
         run_lock_held=1
         if [[ "$intent_stage" == S5 ]]; then
@@ -321,7 +343,8 @@ else
             "gate_adapter=${gate_adapter}" "session_name=${session_name}" \
             "base_sha=${base_sha}" "branch=${branch}" "writer_worktree=${writer_worktree}" \
             "writer_adapter_path=${source_root}/adapters/${writer_adapter}.sh" \
-            "gate_adapter_path=${source_root}/adapters/gate-${gate_adapter}.sh" || exit 2
+            "gate_adapter_path=${source_root}/adapters/gate-${gate_adapter}.sh" \
+            "mode=${effective_mode}" || exit 2
     fi
 
     # Creation lock ordering: parent lock → intent → mkdir run_dir →
@@ -338,6 +361,7 @@ else
         "base_sha=${base_sha}" "branch=${branch}" \
         "writer_worktree=${writer_worktree}" \
         "writer_adapter_path=${source_root}/adapters/${writer_adapter}.sh" \
+        "mode=${effective_mode}" \
         "gate_adapter_path=${source_root}/adapters/gate-${gate_adapter}.sh"
     arena_make_private_dir "$run_dir"
     arena_make_private_dir "$writer_session_dir"
@@ -366,7 +390,8 @@ else
     arena_write_manifest "$run_dir" "$run_id" "$repository" "$base_sha" \
         "$writer_worktree" "$branch" "$session_name" "$source_root" "$worktree_root" \
         "$ARENA_PROJECT_CONFIG" "$profile" "$writer_adapter" "$writer_label" \
-        "$writer_session_dir" "$gate_adapter"
+        "$writer_session_dir" "$gate_adapter" \
+        "$effective_mode" "system" "$(date +%s)"
     rm -f "$intent"
     arena_lock_release "$parent_lock" "start-$$"
     parent_lock_held=0

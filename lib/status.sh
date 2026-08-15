@@ -79,6 +79,16 @@ arena_status_reviewer_pane_alive() {
     [[ "$count" == 1 ]]
 }
 
+arena_status_writer_pane_alive() {
+    local session_name="$1"
+    local count
+    count="$(tmux list-panes -s -t "=${session_name}" -F "$(arena_pane_format)" 2>/dev/null | \
+        awk -F $'\t' -v session="$session_name" \
+            '$1 == session && $3 == "writer" && $4 == "writer-agent" && \
+             $5 == "0" && $6 == "0" && $7 == "0" && $8 == "0" { n += 1 } END { print n + 0 }')"
+    [[ "$count" == 1 ]]
+}
+
 # The one-sentence diagnosis plus the per-scenario lines. Terminal states
 # (party none) print the terminal line instead and are handled by the caller.
 arena_status_diagnosis() {
@@ -103,6 +113,20 @@ arena_status_diagnosis() {
     if [[ "$pane_line" == 'reviewer pane: unreachable; ' ]]; then
         printf 'reviewer pane: unreachable; agent-arena resume %s (respawns the reviewer pane), confirm the trust prompt in the pane, then re-run recover\n' "$target_run_id"
     fi
+    # Pane liveness lines (machine-readable for autopilot): reachable unless
+    # the tmux session is gone or the role pane is dead/ambiguous.
+    if command -v tmux >/dev/null 2>&1 && tmux has-session -t "=${session_name}" 2>/dev/null; then
+        if arena_status_reviewer_pane_alive "$session_name"; then
+            printf 'Reviewer pane: reachable\n'
+        else
+            printf 'Reviewer pane: unreachable\n'
+        fi
+        if arena_status_writer_pane_alive "$session_name"; then
+            printf 'Writer pane: reachable\n'
+        else
+            printf 'Writer pane: unreachable\n'
+        fi
+    fi
 }
 
 printf 'Run: %s\n' "$ARENA_MANIFEST_RUN_ID"
@@ -115,12 +139,25 @@ printf 'Writer: %s\n' "$ARENA_MANIFEST_WRITER_LABEL"
 printf 'Writer worktree: %s\n' "$ARENA_MANIFEST_WRITER_WORKTREE"
 printf 'Branch: %s\n' "$ARENA_MANIFEST_BRANCH"
 printf 'Tmux session: %s\n' "$ARENA_MANIFEST_SESSION_NAME"
+# Approval mode from the manifest snapshot; drift against project.conf shows
+# a warning marker. A missing/unreadable config never dies status.
+config_mode="$(source "${source_root}/lib/config.sh" 2>/dev/null && \
+    arena_load_project_config "$ARENA_MANIFEST_REPOSITORY" >/dev/null 2>&1 && \
+    printf '%s' "${ARENA_CONFIG_APPROVAL_MODE:-human}")"
+if [[ -n "$config_mode" && "$ARENA_MANIFEST_MODE" != "$config_mode" ]]; then
+    printf 'Mode: %s (config: %s) ⚠\n' "$ARENA_MANIFEST_MODE" "$config_mode"
+else
+    printf 'Mode: %s\n' "$ARENA_MANIFEST_MODE"
+fi
 
 if [[ -f "${run_dir}/run-state.tsv" ]]; then
     # Priority check (4): ordinary parse of the authoritative state.
     # Corrupted or illegal state fails closed (exit 2).
     arena_state_read "$run_dir"
     printf 'State: %s\n' "$run_dir"
+    printf 'Verdict: %s\n' "${ARENA_STATE_VERDICT:-not recorded}"
+    printf 'Validation result: %s\n' "${ARENA_STATE_VALIDATION_RESULT:-not run}"
+    printf 'Last transition at: %s\n' "$ARENA_STATE_LAST_TRANSITION_AT"
     integrity_status=0
     if [[ -f "${run_dir}/review.tsv" ]]; then
         arena_read_review_manifest "$run_dir"

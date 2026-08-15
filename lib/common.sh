@@ -353,14 +353,21 @@ arena_write_manifest() {
     local writer_label="${13}"
     local writer_session_dir="${14}"
     local gate_adapter="${15}"
+    local mode="${16:-human}"
+    local mode_actor="${17:-system}"
+    local mode_updated_at="${18:-$(date +%s)}"
     local tmp_file value
 
     for value in "$run_id" "$repository" "$base_sha" "$writer_worktree" "$branch" \
         "$session_name" "$tool_root" "$worktree_root" "$project_config" "$profile" \
-        "$writer_adapter" "$writer_label" "$writer_session_dir" "$gate_adapter"; do
+        "$writer_adapter" "$writer_label" "$writer_session_dir" "$gate_adapter" "$mode"; do
         arena_reject_control_characters "$value"
         [[ -n "$value" ]] || arena_die 'run manifest value must not be empty'
     done
+    case "$mode" in
+        human|auto) ;;
+        *) arena_die "invalid run manifest mode: $mode" ;;
+    esac
     arena_profile_resolve "$profile"
     [[ "$ARENA_PROFILE_WRITER_ADAPTER" == "$writer_adapter" ]] || \
         arena_die 'writer adapter does not match the selected profile'
@@ -391,6 +398,9 @@ arena_write_manifest() {
         printf 'writer_label\t%s\n' "$writer_label"
         printf 'writer_session_dir\t%s\n' "$writer_session_dir"
         printf 'gate_adapter\t%s\n' "$gate_adapter"
+        printf 'mode\t%s\n' "$mode"
+        printf 'mode_actor\t%s\n' "$mode_actor"
+        printf 'mode_updated_at\t%s\n' "$mode_updated_at"
     } >"$tmp_file"
     chmod 600 "$tmp_file"
     mv "$tmp_file" "${run_dir}/manifest.tsv"
@@ -416,6 +426,9 @@ arena_read_manifest() {
     ARENA_MANIFEST_WRITER_LABEL=''
     ARENA_MANIFEST_WRITER_SESSION_DIR=''
     ARENA_MANIFEST_GATE_ADAPTER=''
+    ARENA_MANIFEST_MODE='human'
+    ARENA_MANIFEST_MODE_ACTOR=''
+    ARENA_MANIFEST_MODE_UPDATED_AT=''
     ARENA_MANIFEST_LEGACY_PROFILE=0
     local profile_field_count=0
 
@@ -447,6 +460,9 @@ arena_read_manifest() {
                 profile_field_count=$((profile_field_count + 1))
                 ;;
             gate_adapter) ARENA_MANIFEST_GATE_ADAPTER="$value" ;;
+            mode) ARENA_MANIFEST_MODE="$value" ;;
+            mode_actor) ARENA_MANIFEST_MODE_ACTOR="$value" ;;
+            mode_updated_at) ARENA_MANIFEST_MODE_UPDATED_AT="$value" ;;
             *) arena_die "unknown manifest key '$key' in $manifest" ;;
         esac
     done <"$manifest"

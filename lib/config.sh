@@ -14,19 +14,25 @@ arena_load_project_config() {
 
     ARENA_PROJECT_NAME=''
     ARENA_PROJECT_VALIDATION_SCRIPT=''
+    ARENA_CONFIG_APPROVAL_MODE='human'
     while IFS= read -r line || [[ -n "$line" ]]; do
         [[ -z "$line" || "$line" == \#* ]] && continue
-        if [[ "$line" =~ ^(project_name|validation_script)=\"([^\"]*)\"$ ]]; then
+        if [[ "$line" =~ ^(project_name|validation_script|approval_mode)=\"([^\"]*)\"$ ]]; then
             key="${BASH_REMATCH[1]}"
             value="${BASH_REMATCH[2]}"
             case "$key" in
                 project_name) ARENA_PROJECT_NAME="$value" ;;
                 validation_script) ARENA_PROJECT_VALIDATION_SCRIPT="$value" ;;
+                approval_mode) ARENA_CONFIG_APPROVAL_MODE="$value" ;;
             esac
         else
             arena_die "invalid project configuration line in $config: $line"
         fi
     done <"$config"
+    case "$ARENA_CONFIG_APPROVAL_MODE" in
+        human|auto) ;;
+        *) arena_die "invalid approval_mode in $config: $ARENA_CONFIG_APPROVAL_MODE (legal values: human, auto)" ;;
+    esac
 
     arena_validate_text "$ARENA_PROJECT_NAME" 'project_name' 128
     arena_validate_text "$ARENA_PROJECT_VALIDATION_SCRIPT" 'validation_script' 256

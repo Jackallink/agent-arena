@@ -48,6 +48,11 @@ repository_name="$(basename "$repository")"
     printf '%s\n' '# Project adapter for Agent Arena.'
     printf 'project_name="%s"\n' "$repository_name"
     printf 'validation_script=".agent-arena/validate.sh"\n'
+    printf '%s\n' '# approval_mode: human (default) requires a person to approve every'
+    printf '%s\n' '# reviewer APPROVE; auto lets `agent-arena autopilot` approve validated'
+    printf '%s\n' '# checkpoints unattended. auto is a trust-model downgrade: only enable'
+    printf '%s\n' '# it for repositories with strict validation scripts and low risk.'
+    printf 'approval_mode="human"\n'
 } >"$config"
 cat >"$validation" <<'EOF'
 #!/usr/bin/env bash

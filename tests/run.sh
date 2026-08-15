@@ -3650,13 +3650,18 @@ for claim in claim-a claim-b; do
 done
 [[ "$wins" == 1 ]] || fail "expected exactly one winner, got $wins"
 # owner carries last_seen_at after acquire and arena_lock_touch refreshes it
+lock_winner="$(ARENA_SOURCE_ROOT="$source_root" bash -c '
+    source "$1/lib/lock.sh"
+    arena_lock_owner_token "$2"
+' _ "$source_root" "$lock_root/one")"
+[[ -n "$lock_winner" ]] || fail 'no lock winner recorded'
 ARENA_SOURCE_ROOT="$source_root" bash -c '
     set -euo pipefail
     source "$1/lib/lock.sh"
     grep -q "^last_seen_at=" "$2/owner" || exit 9
     arena_lock_touch "$2" "$3" || exit 10
     grep -q "^last_seen_at=" "$2/owner" || exit 11
-' _ "$source_root" "$lock_root/one" claim-a || fail 'last_seen_at contract broken'
+' _ "$source_root" "$lock_root/one" "$lock_winner" || fail 'last_seen_at contract broken'
 # token mismatch on touch fails (no refresh)
 ARENA_SOURCE_ROOT="$source_root" bash -c '
     set -euo pipefail
@@ -3680,6 +3685,114 @@ set -e
 [[ "$reap_exit" == 4 ]] || fail "reclamation race exited $reap_exit, expected 4"
 grep -q "^token=dead$" "$lock_root/two/owner" ||     fail 'failed reclamation mutated the owner'
 rm -f "$lock_root/two.reap.blocker."*
+
+
+printf '%s\n' '51. approval mode config, switch, drift, and intent binding'
+git -C "$project" status --porcelain=v1 --untracked-files=all >&2 || true
+sleep 1
+git -C "$project" status --porcelain=v1 --untracked-files=all >&2 || true
+# init template carries approval_mode with the risk comment
+require_match 'approval_mode="human"' "${project}/.agent-arena/project.conf"
+require_match 'approval_mode' "${project}/.agent-arena/project.conf"
+# strict parser still rejects unknown keys
+cat >"${tmp_root}/bad.conf" <<'EOF'
+project_name="x"
+validation_script=".agent-arena/validate.sh"
+bogus_key="y"
+EOF
+if ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/config.sh"
+    arena_load_project_config "$2"
+' _ "$source_root" "$tmp_root/bad.conf" 2>/dev/null; then
+    fail 'config parser accepted an unknown key'
+fi
+# start snapshots the effective mode into the manifest
+run_arena start mode-run --repo "$project" --no-attach >/dev/null
+mode_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -name manifest.tsv -path '*/mode-run/manifest.tsv' -exec dirname {} \;)"
+require_match $'mode\thuman' <(cat "${mode_dir}/manifest.tsv")
+require_match $'mode_actor\tsystem' <(cat "${mode_dir}/manifest.tsv")
+require_match $'mode_updated_at\t' <(cat "${mode_dir}/manifest.tsv")
+# status shows Mode plus the extended oracle lines
+run_arena status mode-run >"${tmp_root}/mode-status.out"
+require_match 'Mode: human' "${tmp_root}/mode-status.out"
+require_match 'Verdict: not recorded' "${tmp_root}/mode-status.out"
+require_match 'Validation result: not run' "${tmp_root}/mode-status.out"
+require_match 'Last transition at: ' "${tmp_root}/mode-status.out"
+# start --mode auto overrides the config for the run
+run_arena start mode-auto-run --repo "$project" --mode auto --no-attach >/dev/null
+mode_auto_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -name manifest.tsv -path '*/mode-auto-run/manifest.tsv' -exec dirname {} \;)"
+require_match $'mode\tauto' <(cat "${mode_auto_dir}/manifest.tsv")
+# --mode with an illegal value dies at parse time (before any preflight)
+if run_arena start mode-bad-run --repo "$project" --mode bogus --no-attach >"${tmp_root}/mode-bad.out" 2>&1; then
+    fail 'start --mode bogus succeeded'
+fi
+require_match 'invalid --mode' "${tmp_root}/mode-bad.out"
+# mode switch: human -> auto under the run lock, recorded with actor
+run_arena mode mode-run auto >/dev/null
+require_match $'mode\tauto' <(cat "${mode_dir}/manifest.tsv")
+require_match $'mode_actor\thuman' <(cat "${mode_dir}/manifest.tsv")
+# unchanged switch is idempotent
+run_arena mode mode-run auto >"${tmp_root}/mode-unchanged.out"
+require_match 'unchanged' "${tmp_root}/mode-unchanged.out"
+# drift: manifest mode != project.conf mode shows the warning marker.
+# start first (config still human -> manifest human, repo clean), then flip
+# the config and observe the marker via status (status reads config directly).
+run_arena start mode-drift-run --repo "$project" --no-attach >/dev/null
+printf 'approval_mode="auto"\n' >>"${project}/.agent-arena/project.conf"
+run_arena status mode-drift-run >"${tmp_root}/mode-drift3.out"
+require_match 'Mode: human (config: auto) ⚠' "${tmp_root}/mode-drift3.out"
+git -C "$project" checkout -- .agent-arena/project.conf
+git -C "$project" update-index --refresh >/dev/null 2>&1 || true
+# matching config after restore shows the marker for the auto-manifest run
+run_arena status mode-auto-run >"${tmp_root}/mode-drift4.out"
+require_match 'Mode: auto (config: human) ⚠' "${tmp_root}/mode-drift4.out"
+# intent binding: interrupted start retried after a mode change fails closed
+mode_bind_run='mode-bind-run'
+run_arena start "$mode_bind_run" --repo "$project" --no-attach >/dev/null
+mode_bind_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -name manifest.tsv -path "*/${mode_bind_run}/manifest.tsv" -exec dirname {} \;)"
+mode_bind_repo="$(basename "$(dirname "$mode_bind_dir")")"
+mode_bind_base="$(git -C "$project" rev-parse HEAD)"
+rm -f "${mode_bind_dir}/run-state.tsv"
+# bind an intent with mode=human using the same resolved paths start uses
+# (arena_abs_dir resolves /var -> /private/var on macOS), so only the mode
+# differs when the retry passes --mode auto
+mode_bind_repo_path="$(CDPATH='' cd -- "$project" && pwd -P)"
+mode_bind_worktree_base="$(CDPATH='' cd -- "$worktree_base" && pwd -P)"
+mode_bind_state_root="$(CDPATH='' cd -- "$state_root" && pwd -P)"
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/state.sh"
+    arena_creation_intent_write "$2/runs" "$3" "$4" \
+        "repository=$5" "state_root=$2" "worktree_root=$6" \
+        "profile=pi-cursor" "gate_adapter=cursor" \
+        "session_name=agent-arena-$3-$4" "base_sha=$7" \
+        "branch=agent-arena/pi/$4" "writer_worktree=$6/$3/$4/writer" \
+        "writer_adapter_path=$1/adapters/pi.sh" \
+        "gate_adapter_path=$1/adapters/gate-cursor.sh" \
+        "mode=human"
+' _ "$source_root" "$mode_bind_state_root" "$mode_bind_repo" "$mode_bind_run" "$mode_bind_repo_path" "$mode_bind_worktree_base" "$mode_bind_base" || \
+    fail 'mode intent fixture failed'
+# retry with --mode auto differs from the bound intent mode=human -> fail closed
+if run_arena start "$mode_bind_run" --repo "$project" --mode auto --no-attach >"${tmp_root}/mode-bind.out" 2>&1; then
+    fail 'mode-drifted interrupted start retry succeeded'
+fi
+require_match 'differ' "${tmp_root}/mode-bind.out"
+require_match 'mode' "${tmp_root}/mode-bind.out"
+# terminal runs refuse the switch (full loop on mode-run then switch)
+mode_writer="$(manifest_value "${mode_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' m >"${mode_writer}/m.txt"
+git -C "$mode_writer" add m.txt
+git -C "$mode_writer" commit -qm 'feat: m'
+run_arena submit mode-run >/dev/null
+run_arena validate mode-run >/dev/null
+run_arena decision mode-run --verdict APPROVE --summary ok --next done --no-relay >/dev/null
+run_arena resolve mode-run --action approve --reason done >/dev/null
+require_match $'run_status\tcompleted' <(cat "${mode_dir}/run-state.tsv")
+if run_arena mode mode-run auto >"${tmp_root}/mode-terminal.out" 2>&1; then
+    fail 'mode switch on a terminal run succeeded'
+fi
+require_match 'terminal' "${tmp_root}/mode-terminal.out"
 
 
 printf '%s\n' 'tests: ok'
