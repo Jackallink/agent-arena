@@ -97,3 +97,8 @@
      stayed closed; README documents the non-guarantee. No code change is
      needed for the hermetic contract; a future adapter pass may add
      sandbox-level write blocks.
+  4. Archive install smoke: `dist/agent-arena-0.4.0.tar.gz` checksum
+     verified; `packaging/install.sh --prefix <tmp>` installed; the installed
+     `agent-arena` ran `doctor` and `help` (escalate/resolve/repair-state/
+     list present) and completed a fresh lifecycle in a real Git repo
+     (init → start → submit → status → list) with correct run-state rows.
