@@ -1,5 +1,48 @@
 # Release Notes
 
+## v0.5.0 — Autopilot approval modes (2026-08-15)
+
+Human/auto approval modes plus an autopilot orchestrator: the review loop can
+now run unattended along the happy path while every stalled path becomes an
+observable alert.
+
+### New capabilities
+
+- **Approval modes**: `approval_mode` in `project.conf` (default `human`),
+  `start --mode auto` per-run override, and runtime `agent-arena mode RUN_ID
+  human|auto` (under the run lock, audited, refused on terminal runs). `status`
+  prints `Mode:` and a drift marker when config and manifest disagree.
+- **Autopilot**: `agent-arena autopilot --once|--watch` with
+  `--interval/--approve-delay/--relay-after/--resume-attempts/--repo/
+  --all-repos/--rounds`. In auto mode, APPROVE+PASS checkpoints are approved
+  after a cooling window with `actor=system` and an instance-token reason;
+  dead reviewer panes auto-escalate (T9); stalls, pane-dead writers, blocked
+  runs, and corrupt/conflict/incomplete states alert (exit 6).
+- **Oracle extension**: `status` now prints `Verdict:`, `Validation result:`,
+  `Last transition at:`, and reviewer/writer pane liveness lines — the only
+  read path autopilot uses.
+- **Audit**: autopilot exit-code protocol `0/4/6` (needs-human is 6, distinct
+  from every v0.4 code); per-instance heartbeats with `last_seen` lock
+  liveness; append-only action log with rotation; relay reminders throttled.
+- **Foundation fixes**: atomic lock reclamation (rename-to-tombstone,
+  two-claimer safe); `resolve`/`escalate --actor human|system`; approve
+  `--reason` preserved into `reason_detail`.
+
+### Verification (2026-08-15, hermetic, no model/network)
+
+- Hermetic suite: 56 sections green (v0.4 §0–49 with zero semantic drift plus
+  §50–55), tmuxp smoke, CLI contract smoke, and package check green.
+- Multi-expert walkthrough (5 roles, 3 rounds, debate) + Gate-1 second round:
+  all rulings applied (docs/superpowers/walkthrough/2026-08-13-v05-autopilot-walkthrough/).
+- Review: detached snapshot tag `review/autopilot-v0.5` re-verified green;
+  PR #3 merged into `main` at `66258b3` (fast-forward).
+
+### Release gate
+
+- Gate 4 evidence: credential/tracked-file scan clean before this release
+  (recorded in `docs/superpowers/plans/2026-08-13-agent-arena-v1.md`).
+- Archive checksum: `dist/agent-arena-0.5.0.tar.gz.sha256`.
+
 ## v0.4.0 — Run state authority (2026-08-15)
 
 Every run now has one authoritative answer to "who is next, waiting on what,
