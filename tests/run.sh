@@ -4,7 +4,7 @@ set -euo pipefail
 source_root="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 arena="${source_root}/bin/agent-arena"
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/agent-arena-test.XXXXXX")"
-trap 'rm -rf "$tmp_root"' EXIT
+trap 'rm -rf "$tmp_root" 2>/dev/null || { sleep 0.3; rm -rf "$tmp_root" 2>/dev/null; } || true' EXIT
 
 fail() {
     printf 'test failure: %s\n' "$*" >&2
@@ -3858,6 +3858,173 @@ git -C "$es2_writer" commit -qm 'feat: e2'
 run_arena submit "$es2_run" >/dev/null
 run_arena escalate "$es2_run" --reason-code reviewer_unreachable --reason 'pane dead 2' >/dev/null
 require_match $'last_transition_actor\thuman' <(cat "${es2_dir}/run-state.tsv")
+
+
+printf '%s\n' '53. autopilot auto approval, exit-code protocol, and human mode'
+# run through to approval_pending (fast loop)
+ap_run='ap-auto'
+run_arena start "$ap_run" --repo "$project" --no-attach >/dev/null
+ap_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -name manifest.tsv -path "*/${ap_run}/manifest.tsv" -exec dirname {} \;)"
+ap_writer="$(manifest_value "${ap_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' p >"${ap_writer}/p.txt"
+git -C "$ap_writer" add p.txt
+git -C "$ap_writer" commit -qm 'feat: p'
+run_arena submit "$ap_run" >/dev/null
+run_arena validate "$ap_run" >/dev/null
+run_arena decision "$ap_run" --verdict APPROVE --summary ok --next done --no-relay >/dev/null
+# autopilot on a human-mode run: zero mutations, exit 6 (needs human)
+# --approve-delay 0: outside the cooling window the alert fires in human mode
+set +e
+run_arena autopilot --once --approve-delay 0 --state-root "$state_base" --repo "$project" >"${tmp_root}/ap-human.out" 2>&1
+ap_human_exit=$?
+set -e
+[[ "$ap_human_exit" == 6 ]] || fail "human-mode autopilot exited $ap_human_exit, expected 6"
+require_match $'run_status\tactive' <(cat "${ap_dir}/run-state.tsv")
+require_match $'scan\t6' "${tmp_root}/ap-human.out"
+require_match $'needs-human' <(cat "${state_base}/autopilot.log")
+# cooling window: approve-delay far in the future -> the run is observed,
+# not acted (its per-run row is 0 regardless of other runs' alerts)
+set +e
+run_arena autopilot --once --approve-delay 3600 --state-root "$state_base" --repo "$project" >"${tmp_root}/ap-cool.out" 2>&1
+ap_cool_exit=$?
+set -e
+require_match $'run_status\tactive' <(cat "${ap_dir}/run-state.tsv")
+ap_cool_row="$(awk -F $'\t' '$1 == "ap-auto" { print $5 }' "${tmp_root}/ap-cool.out" | head -1)"
+[[ "$ap_cool_row" == 0 ]] || fail "cooling ap-auto row exited $ap_cool_row, expected 0"
+# auto mode with delay 0: approves with actor=system and instance-token reason
+run_arena mode "$ap_run" auto >/dev/null
+set +e
+run_arena autopilot --once --approve-delay 0 --state-root "$state_base" --repo "$project" >"${tmp_root}/ap-auto.out" 2>&1
+ap_auto_exit=$?
+set -e
+require_match $'run_status\tcompleted' <(cat "${ap_dir}/run-state.tsv")
+require_match $'last_transition_actor\tsystem' <(cat "${ap_dir}/run-state.tsv")
+require_match $'last_transition_action\tresolve-approve' <(cat "${ap_dir}/run-state.tsv")
+require_match $'reason_detail\tautopilot ' <(cat "${ap_dir}/run-state.tsv")
+ap_auto_row="$(awk -F $'\t' '$1 == "ap-auto" { print $5 }' "${tmp_root}/ap-auto.out" | head -1)"
+[[ "$ap_auto_row" == 0 ]] || fail "auto ap-auto row exited $ap_auto_row, expected 0"
+# idempotent rescan: the completed run is skipped (its row stays 0)
+set +e
+run_arena autopilot --once --approve-delay 0 --state-root "$state_base" --repo "$project" >"${tmp_root}/ap-again.out" 2>&1
+ap_again_exit=$?
+set -e
+ap_again_row="$(awk -F $'\t' '$1 == "ap-auto" { print $5 }' "${tmp_root}/ap-again.out" | head -1)"
+[[ "$ap_again_row" == 0 ]] || fail "idempotent rescan ap-auto row exited $ap_again_row"
+# heartbeat exists with one row per instance (host.pid.nonce ...) and the
+# action log records the acted approve
+[[ -f "${state_base}/autopilot.tsv" ]] || fail 'autopilot.tsv missing'
+require_match "$(hostname)." "${state_base}/autopilot.tsv"
+[[ -f "${state_base}/autopilot.log" ]] || fail 'autopilot.log missing'
+require_match $'resolve-approve\tacted' <(cat "${state_base}/autopilot.log")
+# live lock: a running watch makes --once exit 4 (normal)
+run_arena autopilot --watch --interval 3600 --state-root "$state_base" --repo "$project" >/dev/null 2>&1 &
+ap_watch_pid=$!
+sleep 1
+set +e
+run_arena autopilot --once --state-root "$state_base" --repo "$project" >"${tmp_root}/ap-lock.out" 2>&1
+ap_lock_exit=$?
+set -e
+[[ "$ap_lock_exit" == 4 ]] || fail "locked --once exited $ap_lock_exit, expected 4"
+require_match 'already running' "${tmp_root}/ap-lock.out"
+# run_arena is a function: $! is the wrapper subshell, so kill the autopilot
+# process itself via the lock owner pid (SIGTERM releases the lock)
+ap_owner_pid="$(awk -F= '$1 == "pid" { print $2 }' "${state_base}/.autopilot-lock/owner" 2>/dev/null)"
+kill "$ap_owner_pid" 2>/dev/null || true
+wait "$ap_watch_pid" 2>/dev/null || true
+sleep 0.3
+[[ ! -e "${state_base}/.autopilot-lock" ]] || fail 'watch lock not released on SIGTERM'
+
+
+printf '%s\n' '54. autopilot pane-dead escalate, stall alert, relay throttle, rounds, and status mapping'
+# pane-dead reviewer in auto mode -> auto escalate (T9) -> blocked
+pd_run='ap-pane-dead'
+run_arena start "$pd_run" --repo "$project" --no-attach >/dev/null
+pd_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -name manifest.tsv -path "*/${pd_run}/manifest.tsv" -exec dirname {} \;)"
+pd_writer="$(manifest_value "${pd_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' d >"${pd_writer}/d.txt"
+git -C "$pd_writer" add d.txt
+git -C "$pd_writer" commit -qm 'feat: d'
+run_arena submit "$pd_run" >/dev/null
+run_arena mode "$pd_run" auto >/dev/null
+export FAKE_TMUX_MODE=live FAKE_TMUX_PANES=reviewer-dead
+set +e
+run_arena autopilot --once --state-root "$state_base" --repo "$project" >"${tmp_root}/ap-pd.out" 2>&1
+ap_pd_exit=$?
+set -e
+unset FAKE_TMUX_MODE FAKE_TMUX_PANES
+require_match $'run_status\tblocked' <(cat "${pd_dir}/run-state.tsv")
+require_match $'reason_code\treviewer_unreachable' <(cat "${pd_dir}/run-state.tsv")
+require_match $'last_transition_actor\tsystem' <(cat "${pd_dir}/run-state.tsv")
+# stall: a submitted run waiting > 30 min alerts (exit 6 per-run row)
+st_run='ap-stall'
+run_arena start "$st_run" --repo "$project" --no-attach >/dev/null
+st_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -name manifest.tsv -path "*/${st_run}/manifest.tsv" -exec dirname {} \;)"
+st_writer="$(manifest_value "${st_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' s >"${st_writer}/s.txt"
+git -C "$st_writer" add s.txt
+git -C "$st_writer" commit -qm 'feat: s'
+run_arena submit "$st_run" >/dev/null
+old_ts="$(( $(date +%s) - 7200 ))"
+awk -F $'\t' -v ts="$old_ts" 'BEGIN { OFS = FS } $1 == "waiting_since" { $2 = ts } { print }' \
+    "${st_dir}/run-state.tsv" >"${st_dir}/run-state.tsv.next"
+mv "${st_dir}/run-state.tsv.next" "${st_dir}/run-state.tsv"
+set +e
+run_arena autopilot --once --state-root "$state_base" --repo "$project" >"${tmp_root}/ap-stall.out" 2>&1
+ap_stall_exit=$?
+set -e
+st_row="$(awk -F $'\t' '$1 == "ap-stall" { print $5 }' "${tmp_root}/ap-stall.out" | head -1)"
+[[ "$st_row" == 6 ]] || fail "stall row exited $st_row, expected 6"
+require_match $'stalled:' <(cat "${state_base}/autopilot.log")
+# relay throttle: changes_requested gets at most one reminder per window
+rt_run='ap-relay'
+run_arena start "$rt_run" --repo "$project" --no-attach >/dev/null
+rt_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -name manifest.tsv -path "*/${rt_run}/manifest.tsv" -exec dirname {} \;)"
+rt_writer="$(manifest_value "${rt_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' r >"${rt_writer}/r.txt"
+git -C "$rt_writer" add r.txt
+git -C "$rt_writer" commit -qm 'feat: r'
+run_arena submit "$rt_run" >/dev/null
+# park in changes_requested: decision CHANGES_REQUESTED
+run_arena validate "$rt_run" >/dev/null
+run_arena decision "$rt_run" --verdict CHANGES_REQUESTED --summary fix --next more --no-relay >/dev/null
+awk -F $'\t' -v ts="$old_ts" 'BEGIN { OFS = FS } $1 == "waiting_since" { $2 = ts } { print }' \
+    "${rt_dir}/run-state.tsv" >"${rt_dir}/run-state.tsv.next"
+mv "${rt_dir}/run-state.tsv.next" "${rt_dir}/run-state.tsv"
+export FAKE_TMUX_MODE=live FAKE_TMUX_PANES=normal
+: >"$fake_tmux_log"
+set +e
+run_arena autopilot --once --state-root "$state_base" --repo "$project" >/dev/null 2>&1
+set -e
+relay_count_1="$(grep -c '\[autopilot\]' "$fake_tmux_log" || true)"
+set +e
+run_arena autopilot --once --state-root "$state_base" --repo "$project" >/dev/null 2>&1
+set -e
+relay_count_2="$(grep -c '\[autopilot\]' "$fake_tmux_log" || true)"
+unset FAKE_TMUX_MODE FAKE_TMUX_PANES
+[[ "$relay_count_1" -ge 1 ]] || fail 'no relay reminder sent'
+[[ "$relay_count_2" == "$relay_count_1" ]] || fail "relay not throttled ($relay_count_1 -> $relay_count_2)"
+require_match $'skipped-throttled' <(cat "${state_base}/autopilot.log")
+# --rounds N terminates the watch loop
+set +e
+run_arena autopilot --watch --rounds 2 --interval 1 --state-root "$state_base" --repo "$project" >"${tmp_root}/ap-rounds.out" 2>&1
+ap_rounds_exit=$?
+set -e
+# the loop terminates after N rounds; the exit code mirrors the last round's
+# aggregate (0 or 6 depending on alerting runs in scope)
+[[ "$ap_rounds_exit" == 0 || "$ap_rounds_exit" == 6 ]] || \
+    fail "--rounds 2 exited $ap_rounds_exit"
+# status mapping: corrupt state -> status 2 -> autopilot error 6
+cp_run='ap-corrupt'
+run_arena start "$cp_run" --repo "$project" --no-attach >/dev/null
+cp_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -name manifest.tsv -path "*/${cp_run}/manifest.tsv" -exec dirname {} \;)"
+{ cat "${cp_dir}/run-state.tsv"; printf 'bogus_key\t1\n'; } >"${cp_dir}/run-state.tsv.next"
+mv "${cp_dir}/run-state.tsv.next" "${cp_dir}/run-state.tsv"
+set +e
+run_arena autopilot --once --state-root "$state_base" --repo "$project" >"${tmp_root}/ap-corrupt.out" 2>&1
+ap_corrupt_exit=$?
+set -e
+cp_row="$(awk -F $'\t' '$1 == "ap-corrupt" { print $5 }' "${tmp_root}/ap-corrupt.out" | head -1)"
+[[ "$cp_row" == 6 ]] || fail "corrupt row exited $cp_row, expected 6"
 
 
 printf '%s\n' 'tests: ok'
