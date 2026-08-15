@@ -102,3 +102,23 @@
      `agent-arena` ran `doctor` and `help` (escalate/resolve/repair-state/
      list present) and completed a fresh lifecycle in a real Git repo
      (init → start → submit → status → list) with correct run-state rows.
+
+
+## Gate 4 evidence — v0.5.0 autopilot approval modes (2026-08-15)
+
+- Credential/tracked-file scan clean: 77 tracked files, no sensitive file
+  names or credential patterns.
+- Hermetic validation: `tests/run.sh` 56 sections green (v0.4 §0–49 zero
+  semantic drift + §50–55), tmuxp smoke, CLI contract smoke, `package.sh
+  --check`, and `bash -n` all green.
+- Design review: multi-expert walkthrough (5 roles, 3 rounds, debate) +
+  Gate-1 second round with all rulings applied, recorded in
+  `docs/superpowers/walkthrough/2026-08-13-v05-autopilot-walkthrough/`.
+- Review: detached snapshot tag `review/autopilot-v0.5` (commit `66258b3`)
+  re-verified green; PR #3 merged into `main` (fast-forward `66258b3`);
+  branch deleted after merge.
+- Release: `v0.5.0` tag on `main` (`a52d4d9` release commit);
+  https://github.com/Jackallink/agent-arena/releases/tag/v0.5.0 with
+  `dist/agent-arena-0.5.0.tar.gz` (sha256
+  `000793d5d0c5ecb1437217e119f76233d69ad35bcdcc75de2ecead63653aaa44`) and the checksum file attached.
+- Conclusion: source publication and archive release gates complete for v0.5.0.
