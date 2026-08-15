@@ -122,3 +122,15 @@
   `dist/agent-arena-0.5.0.tar.gz` (sha256
   `5e1c04f57a7c1ddf3908dba7bb489046f44d8640c3409924a60c4c127db2413c`) and the checksum file attached.
 - Conclusion: source publication and archive release gates complete for v0.5.0.
+- Live autopilot demo (2026-08-15, independent temp repo, evidence archived
+  under the state directory): real authenticated Cursor model ran the gate in
+  the detached review snapshot — `./.agent-arena-gate validate live-demo` →
+  exit 0 `RESULT: PASS`, then `decision --verdict APPROVE` recorded the
+  SHA-bound archive; the run parked at decided/human/approval_pending; the
+  real `autopilot --once` (auto mode, `--approve-delay 0`) auto-approved it —
+  `completed`, `last_transition_actor=system`,
+  `action=resolve-approve`, `reason_detail=autopilot <instance> <ts>` — with
+  heartbeat (`autopilot.tsv` scanned=1 acted=1 errors=0) and action log
+  (`approval_pending resolve-approve acted`). Scope note: the writer pane was
+  stubbed (no local Pi CLI); the live parts are the reviewer model and the
+  autopilot automation.
