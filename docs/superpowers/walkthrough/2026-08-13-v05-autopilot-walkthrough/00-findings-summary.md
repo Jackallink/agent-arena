@@ -94,3 +94,32 @@ Task 5  文档与回归：spec review-ready、README 非承诺表（完成边界
 - [Round 2 — 技术追踪/契约聚合](02-round2-technical-trace.md)
 - [Round 3 — 集成/错误聚合](03-round3-integration-check.md)
 - 专家原文：expert-security.md / expert-statemachine.md / expert-sre.md / expert-product.md / expert-qa.md
+
+
+---
+
+## Gate 1 第二轮（spec 评审）：2026-08-15 追加
+
+5 位专家对正式 spec 的评审（spec-review-*.md）：**5/5 一致 CONDITIONAL PASS**
+（方向正确、无需重写；statemachine 9 / security 7 / sre 7 / product 10 / qa 11 项必改，
+去重后核心 10 项）。
+
+### 必改项与修订状态
+
+| # | 必改项 | 来源 | 修订 |
+|---|---|---|---|
+| G1 | **manifest 未知行事实错误**：`arena_read_manifest` fail-closed（非"已容忍"），plan Task 1 漏改 common.sh，rollback 叙事失真 | statemachine/security/product/qa | spec drift 修正 + plan Task 1 加 common.sh/init.sh + rollback 改为"保留 v0.5 二进制弃用 autopilot" |
+| G2 | **status oracle 数据缺口**：verdict/VR/last_transition_at 非终态不输出、无 writer pane 行 → AC4/AC7/AC8 测不出 | product/qa | 读路径契约：status 扩展 4 行（Verdict/Validation result/Last transition at/writer pane），AC11 清单登记 |
+| G3 | **停滞检测维度丢失**：AC8 承诺停滞报警但矩阵无停滞行、阈值未 pin | security/sre/product/qa | 矩阵加停滞行 + 阈值表（review_pending/decision_pending 30min；blocked 即时） |
+| G4 | **escalate actor 硬编码**：autopilot 自动 escalate 会在权威记录里记成 human | security/qa | escalate 加 `--actor`（默认 human，autopilot 传 system） |
+| G5 | **start --mode auto 悬空**：run 级 opt-in 只在散文 | security/sre/product/qa | AC1 + 命令面 + intent 绑定契约化（flag 优先级 > config） |
+| G6 | **exit 5/6 矛盾**：incomplete 归属三处打架，协议表 5 可能死值 | statemachine/security/sre/product/qa | 协议表 0/4/6（去 5）+ status→处置映射表 pin（intent/legacy residue skip、repair/residue error） |
+| G7 | **矩阵缺行**：blocked+live pane、session-down 第三态、冷却窗口内退出码 | security/product/qa | 三 pane 态矩阵 + 冷却窗口内 observe（exit 0） |
+| G8 | **mode 切换 actor 无落盘载体** | security/qa | manifest 加 `mode_actor` 行 |
+| G9 | **plan 测试缺陷**：双实例 fixture 非真并发、--watch 零测试、断言清单元描述 | statemachine/sre/product/qa | 真并发 fixture（后台+wait）、`--rounds N` 测试钩子、Task 5 Step 2b 具体清单 |
+| G10 | **观测契约缺口**：throttle schema 只在 plan、log 无轮转、锁活性归属不清 | product/sre/qa | spec 定义 autopilot-throttle.tsv schema + 1MB 轮转 + last_seen 仅 autopilot 锁 |
+
+### Gate 1 结论
+
+**PASS（附修订）**：10 项必改已全部落入修订后的 spec + plan（`d3616d2` 之后的新提交）。
+无方向性错误、无不可测 AC（G2/G3/G6 pin 死后 11/11 AC 可测）。修订后 spec 396 行、plan 300 行。

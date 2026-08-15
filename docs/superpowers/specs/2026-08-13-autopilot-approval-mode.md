@@ -29,6 +29,15 @@ other non-terminal state is either observed silently or reported with a
 non-zero exit code (stop-and-alarm). Autopilot never self-heals: it does not
 merge, push, cancel, reject, or silently restart model panes.
 
+**Read-path contract (normative):** autopilot's only read path per run is the
+`status` oracle (v05-AC7). To carry the data the action matrix needs, `status`
+output is extended with four lines (all additive; existing grep-based
+assertions are unaffected): `Verdict: APPROVE|CHANGES_REQUESTED|BLOCKED` (or
+`not recorded`), `Validation result: PASS|FAIL` (or `not run`),
+`Last transition at: <epoch>` (the approve-delay anchor), and a writer-pane
+liveness line (`writer pane: unreachable;` when the writer pane is dead or the
+tmux session is gone — symmetric with the existing reviewer line).
+
 In scope: approval-mode config and run-level switching; `autopilot` command
 (`--once` and `--watch`); pane-liveness × state two-dimensional scanning;
 autopilot exit-code protocol; heartbeat and action logs; relay throttling;
@@ -64,23 +73,28 @@ User stories:
 ### Acceptance criteria (v05-AC)
 
 - **v05-AC1** `approval_mode` parses from `project.conf` (`human` default, strict
-  parser, invalid values die with the legal-value list); `start` snapshots it
-  into the run manifest (`mode` + `mode_updated_at`); legacy manifests without
-  the field read as `human`.
+  parser, invalid values die with the legal-value list); `start --mode auto`
+  overrides it per run (flag precedence > config, validated against the same
+  enum); `start` snapshots the effective mode into the run manifest (`mode` +
+  `mode_updated_at`); legacy manifests without the field read as `human`.
 - **v05-AC2** `agent-arena mode RUN_ID human|auto` switches a live run under the
-  run lock, records the switch (actor + timestamp), and `status` shows
-  `Mode: <mode>` plus `(config: <mode>) ⚠` when the manifest and project.conf
-  disagree.
+  run lock and records the switch in the manifest (`mode_actor` +
+  `mode_updated_at` rows, atomic mktemp+mv); terminal runs are refused (exit
+  2); `status` shows `Mode: <mode>` plus `(config: <mode>) ⚠` when the
+  manifest and project.conf disagree. A missing/unreadable project.conf
+  never dies `status`: the drift marker is simply omitted.
 - **v05-AC3** `mode` is part of the T1r creation-intent derived inputs: an
   interrupted `start` retried after an `approval_mode` change fails closed
   (exit 2), like the existing parameter-drift rules.
 - **v05-AC4** `autopilot --once` in auto mode approves a run parked in
   `decided/human/approval_pending` with `verdict=APPROVE` and
-  `validation_result=PASS`, but only after `--approve-delay` seconds since the
-  decision; the resulting state records `last_transition_actor=system`,
-  `last_transition_action=resolve-approve`, and `reason_detail` carrying the
-  autopilot instance token; repeated scans are idempotent (already-`completed`
-  is a benign race, logged not counted).
+  `validation_result=PASS` (both read from the extended `status` output), but
+  only after `--approve-delay` seconds since `Last transition at` (the
+  decision time); while inside the cooling window the run is **observed, not
+  alerted** (contributes exit 0); the resulting state records
+  `last_transition_actor=system`, `last_transition_action=resolve-approve`,
+  and `reason_detail` carrying the autopilot instance token; repeated scans
+  are idempotent (already-`completed` is a benign race, logged not counted).
 - **v05-AC5** `autopilot --once` in human mode performs zero state mutations
   and still exits 6 when a run needs a human (approval_pending, blocked,
   corrupt/conflict/incomplete).
@@ -88,14 +102,20 @@ User stories:
   exits 4 with the owner pid; the lock liveness check requires `pid alive AND
   last_seen fresh (< 3×interval)`, and reclamation is atomic
   (rename-to-tombstone) with a two-claimer fixture test.
-- **v05-AC7** scanning uses the `status` oracle per run (exit codes 0/2/4/5)
-  as the only read path; live lock (4) is deferred (skip this round, no
-  counting); legacy runs and interrupted-start intent stages are skipped.
-- **v05-AC8** pane-liveness × state matrix: reviewer pane dead in
-  `submitted`/`validated` (auto mode) auto-escalates via T9
-  (`reviewer_unreachable`); writer pane dead in `changes_requested`/
-  `human_changes_requested` alerts (exit 6); stalled states (waiting longer
-  than per-state defaults) alert (exit 6).
+- **v05-AC7** scanning uses the `status` oracle per run as the only read path,
+  with this exit-code mapping: `0` parse the extended output; `2` corrupt /
+  legacy conflict → error (exit 6); `4` live lock → defer (skip this round,
+  no counting); `5` incomplete → creation-intent stages (S1–S6) and legacy
+  residue are skipped silently, repair-intent residue and other incomplete
+  states are errors (exit 6); `1` (unexpected) → error (exit 6). `status`
+  never returns 3 or 10.
+- **v05-AC8** pane-liveness × state matrix (below) with three pane states:
+  live / dead / session-down (no tmux session). Reviewer pane dead or
+  session-down in `submitted`/`validated` (auto mode) auto-escalates via T9
+  (`reviewer_unreachable`); writer pane dead or session-down in
+  `changes_requested`/`human_changes_requested` alerts (exit 6); a `blocked`
+  run alerts regardless of pane state. Stall detection: a run waiting longer
+  than the per-state threshold below alerts (exit 6).
 - **v05-AC9** relay reminders are throttled per run per reason
   (`last_relay_at`, default `--relay-after 30` minutes) and carry an
   `[autopilot]` prefix; repeats within the window are logged as
@@ -113,7 +133,8 @@ User stories:
 
 ### Mode configuration contract
 
-`project.conf` (strict parser, unknown lines die):
+`project.conf` (strict parser, unknown lines die; `approval_mode` is a bare
+`key=value` line like the existing keys):
 
 ```text
 project_name="..."
@@ -121,13 +142,20 @@ validation_script=".agent-arena/validate.sh"
 approval_mode=human|auto     # init writes `human` with a risk comment
 ```
 
-Run manifest gains two rows written by `start` (and updated only by
-`agent-arena mode` under the run lock, atomic mktemp+mv):
+Run manifest gains three rows written by `start` (and updated only by
+`agent-arena mode` under the run lock, atomic mktemp+mv). Because
+`arena_read_manifest` fails closed on unknown keys, `lib/common.sh`'s reader
+and writer are extended in the same change (v05-AC11 assertion-update list):
 
 ```text
 mode    human|auto
+mode_actor    system|human|<adapter>   # start → system; mode command → human or the CLI actor
 mode_updated_at    <epoch>
 ```
+
+`start --mode auto` sets the effective mode for the run (precedence over
+`project.conf`), is validated against the same enum, and is bound into the
+creation intent like every other derived input (v05-AC3).
 
 `agent-arena mode RUN_ID human|auto`:
 - requires the run lock (exit 4 while held by a live owner);
@@ -141,7 +169,7 @@ mode differs from the current `project.conf` `approval_mode`,
 `Mode: <manifest mode> (config: <config mode>) ⚠`. The manifest snapshot is
 authoritative for autopilot; config changes affect only new runs.
 
-### resolve audit pass-through
+### resolve/escalate audit pass-through
 
 `agent-arena resolve RUN_ID --action approve [--actor human|system] [--reason "..."]`:
 - `--actor` defaults to `human` (v0.4 behavior); autopilot passes `system`
@@ -152,39 +180,65 @@ authoritative for autopilot; config changes affect only new runs.
 - action stays `resolve-approve` (already a legal
   `last_transition_action` value).
 
+`agent-arena escalate RUN_ID --reason-code reviewer_unreachable --reason "..." [--actor human|system]`:
+- same `--actor` semantics; today `escalate.sh` hard-codes
+  `last_transition_actor='human'` on both paths, so autopilot's automatic T9
+  escalation would be recorded as a human action — the flag fixes that
+  (actor=system for autopilot; default remains human).
+
 ### autopilot command surface
 
 ```text
 agent-arena autopilot [--once] [--interval SECONDS=30] [--approve-delay SECONDS=300]
                        [--relay-after MINUTES=30] [--resume-attempts N=0]
-                       [--repo PATH] [--all-repos] [--state-root PATH]
+                       [--repo PATH] [--all-repos] [--rounds N] [--state-root PATH]
 ```
 
-- `--watch` (default) loops forever; `--once` runs one scan and exits.
+- `--watch` (default) loops forever; `--once` runs one scan and exits;
+  `--rounds N` runs N scans then exits (hermetic-test hook for the watch loop;
+  N=1 behaves like `--once`).
 - Scope: `--repo PATH` (default: the repository of the current directory) or
   `--all-repos` (explicit, logged). Runs outside the scope are never touched.
+  `--repo` accepts either a repository path or a repo id.
+- `--watch` prints one summary line per round to stdout (`<ts> scanned=<n>
+  acted=<n> needs-human=<n> errors=<n>`); `--once` prints the per-run TSV rows
+  plus the same summary line.
 - A per-state-root autopilot lock (`.autopilot-lock` in the state root, owner
   metadata + `last_seen_at` refreshed after every scan) serializes instances.
+  `last_seen_at` liveness applies only to the autopilot lock; v0.4 lock
+  semantics are untouched.
 
-### Action matrix (state × mode × pane liveness)
+### Action matrix (state × mode × pane liveness × stall)
 
-| State (authoritative) | pane | human mode | auto mode |
-|---|---|---|---|
-| decided/human/approval_pending, APPROVE+PASS | any | alert (exit 6) | after `--approve-delay`: resolve approve (actor=system) |
-| decided/human/approval_pending, other | any | alert | alert (guard mismatch = error) |
-| blocked/human/block_resolution_required | any | alert | alert, never act |
-| blocked/human/reviewer_unreachable | dead | alert | alert; if `--resume-attempts>0` and attempts remain: resume (result=unconfirmed), still exit 6 |
-| submitted/reviewer/review_pending | **dead** | alert | escalate (T9) then alert; if already escalated → alert |
-| validated/reviewer/decision_pending | **dead** | alert | escalate (T9) then alert |
-| submitted/reviewer/review_pending | live | observe | observe |
-| validated/reviewer/decision_pending | live | observe | observe |
-| active/writer/changes_requested | live, idle > relay-after | relay reminder (throttled) | relay reminder (throttled) |
-| active/writer/changes_requested | **dead** | alert | alert |
-| active/writer/human_changes_requested | (same as changes_requested) | — | — |
-| intake / decided/writer / other active | any | observe | observe |
-| completed / canceled | any | skip | skip |
-| corrupt / conflict / incomplete (status 2/5) | — | error (exit 6) | error (exit 6) |
-| live lock (status 4) | — | defer | defer |
+Pane states: `live` (role pane present, not dead, input on), `dead` (pane dead
+or missing), `down` (no tmux session at all). Stall = waiting longer than the
+per-state threshold; the clock is `waiting_since` from the extended `status`
+output. Thresholds are pinned defaults (not configurable in v0.5):
+
+| State (authoritative) | pane | stalled | human mode | auto mode |
+|---|---|---|---|---|
+| decided/human/approval_pending, APPROVE+PASS | any | inside `--approve-delay` | observe (exit 0) | observe (exit 0) |
+| decided/human/approval_pending, APPROVE+PASS | any | after `--approve-delay` | alert (exit 6) | resolve approve (actor=system), log acted |
+| decided/human/approval_pending, other guard | any | any | alert | alert (guard mismatch = error) |
+| blocked/human/block_resolution_required | any | any | alert | alert, never act |
+| blocked/human/reviewer_unreachable | any | any | alert | alert; if `--resume-attempts>0` and attempts remain: resume (result=unconfirmed), still exit 6 |
+| submitted/reviewer/review_pending | **dead/down** | — | alert | escalate (T9, actor=system), then alert |
+| validated/reviewer/decision_pending | **dead/down** | — | alert | escalate (T9, actor=system), then alert |
+| submitted/reviewer/review_pending | live | ≤ 30 min | observe | observe |
+| submitted/reviewer/review_pending | live | > 30 min | alert | alert |
+| validated/reviewer/decision_pending | live | ≤ 30 min | observe | observe |
+| validated/reviewer/decision_pending | live | > 30 min | alert | alert |
+| active/writer/changes_requested | live | ≤ `--relay-after` | observe | observe |
+| active/writer/changes_requested | live | > `--relay-after` | relay reminder (throttled) | relay reminder (throttled) |
+| active/writer/changes_requested | **dead/down** | any | alert | alert |
+| active/writer/human_changes_requested | (same rows as changes_requested) | — | — | — |
+| active/decided/writer/* | any | any | observe | observe |
+| active/intake or other active | any | any | observe | observe |
+| completed / canceled | any | — | skip | skip |
+| corrupt / conflict (status 2) | — | — | error (exit 6) | error (exit 6) |
+| incomplete (status 5: repair intent / other) | — | — | error (exit 6) | error (exit 6) |
+| creation-intent stages S1–S6 / legacy residue (status 5) | — | — | skip (zero side effects) | skip (zero side effects) |
+| live lock (status 4) | — | — | defer | defer |
 
 Every unlisted state defaults to observe (zero side effects).
 
@@ -192,14 +246,16 @@ Every unlisted state defaults to observe (zero side effects).
 
 | Code | Meaning |
 |---|---|
-| 0 | scan complete, no action needed |
+| 0 | scan complete, no action needed (all runs observed, completed, or inside a cooling window) |
 | 4 | autopilot lock busy (another instance) — normal when watch+cron coexist |
-| 5 | incomplete/residue encountered |
-| 6 | at least one run needs a human (approval_pending, blocked, stall, corrupt/conflict) |
+| 6 | at least one run needs a human or has an anomaly (approval_pending outside the cooling window, blocked, stall, pane-dead, corrupt/conflict/incomplete) |
 
-Aggregation priority `6 > 5 > 4 > 0` (mirrors the `list` model). Benign races
-(state moved / lock momentarily busy / residue skipped) are logged with a
-`benign-race`/`deferred` result and never enter the aggregate code.
+Aggregation priority `6 > 4 > 0`. Benign races (state moved / lock
+momentarily busy / intent stages / legacy residue skipped / already
+completed) are logged with a `benign-race`/`deferred` result and never enter
+the aggregate code. There is deliberately **no exit 5** in the autopilot
+protocol: v0.4's exit 5 semantics (incomplete transition) are consumed inside
+the per-run mapping above.
 
 `--once` prints a per-run TSV summary to stdout (same schema as the action log:
 `run_id mode state action result`) for cron consumption.
@@ -218,9 +274,14 @@ preserved.
 
 - `autopilot.tsv`: one row per instance (`instance=host:pid:nonce`,
   `last_scan_at`, `scanned`, `acted`, `errors`, `last_seen_at`, `scope`).
-  Watch and cron instances each own a row; staleness is per row.
+  Watch and cron instances each own a row; staleness is per row; the file
+  keeps only the most recent row per instance (a crashed instance's row is
+  overwritten on its next scan — observation only).
 - `autopilot.log`: append-only TSV `timestamp run_id mode state action result`
   with result in `acted|deferred|benign-race|needs-human|error|skipped-throttled|unconfirmed`.
+  Rotated at 1 MB (`.1`, `.2`, keep 3) — rotation never blocks a scan.
+- `autopilot-throttle.tsv` (relay throttle + resume counters): one row per run
+  per reason: `run_id reason last_relay_at resume_attempts`.
 - Both files are best-effort observation; the audit chain remains
   `run-state.tsv` + SHA-bound decision/validation archives. Every autopilot
   action carries `--reason "autopilot <instance> <scan-ts>"` so log rows,
@@ -260,7 +321,8 @@ preserved.
   row may be missing — correlation via `reason` instance token.
 - watch + cron `--once` coexist: `--once` exits 4 (normal); README documents
   the deployment matrix (watch for attended, cron `--once` for unattended;
-  avoid both).
+  avoid both). US2's "start `autopilot --watch` and leave" is replaced by the
+  cron `--once` deployment in unattended scenarios.
 - `--resume-attempts>0`: spawn result recorded `unconfirmed`; blocked state
   stays until a human confirms the trust prompt; exit 6 persists.
 - Terminal runs, legacy runs, intent stages (S1–S6), and runs outside the
@@ -272,30 +334,42 @@ Extends `tests/run.sh` with sections 50–53 (fake CLIs, temporary Git repos,
 private tmux sockets; no model/network):
 
 - §50 mode config/switch/drift/intent binding (v05-AC1/AC2/AC3, §38-style
-  manifest assertions; strict parser keeps rejecting unknown lines).
+  manifest assertions; strict parser keeps rejecting unknown lines; manifest
+  reader accepts the new rows; `start --mode auto` precedence; `mode` command
+  lock/terminal refusals).
 - §51 autopilot `--once` auto approval (v05-AC4): end-to-end APPROVE+PASS →
   `completed`; asserts actor=system, action=resolve-approve, reason_detail
-  token; approve-delay enforced; idempotent rescan (benign race logged).
+  token; approve-delay enforced (window = observe/exit 0; after = act);
+  idempotent rescan (benign race logged).
 - §52 human mode + alerting (v05-AC5/AC10): zero mutations; exit 6 on
   approval_pending/blocked; cancel/reject never issued; resume-attempts
-  unconfirmed path.
-- §53 lock/heartbeat/throttle (v05-AC6/AC8/AC9): two-claimer reclamation
-  fixture; last_seen staleness; pane-dead escalate; relay throttle window;
-  exit-code aggregation priority 6>5>4>0.
+  unconfirmed path; stall thresholds (backdated `waiting_since` → exit 6);
+  pane-dead rows (fake tmux `reviewer-dead`/`dead`/no-session shapes);
+  status exit-code mapping incl. exit 1 → error and S1–S6 skip.
+- §53 lock/heartbeat/throttle (v05-AC6/AC8/AC9): two-claimer reclamation with
+  genuinely concurrent claimers (backgrounded subshells + wait); last_seen
+  staleness (dead pid + fresh last_seen = live; stale = reclaimed); relay
+  throttle window (fake tmux send-keys count); exit-code aggregation priority
+  6>4>0; `--rounds 2` watch-loop termination; log rotation boundary.
 
 v0.4 sections 1–49 keep zero semantic drift; the assertion-update list
 (config parser + `Mode:` line + manifest rows) is recorded in the plan.
 
 ## Drift, risk, and rollback
 
-**Drift from v0.4:** no wire-contract or T-matrix change. `resolve` gains an
-optional `--actor` (default `human`) and preserves `--reason` on approve —
-both values (`system`, `resolve-approve`) already exist in the v0.4 enum.
-`project.conf` gains `approval_mode`; manifests gain `mode`/`mode_updated_at`
-(unknown rows were already tolerated in manifests; state-file 16-key contract
-is untouched). `status` gains one `Mode:` line (existing assertions are
-grep-based; the plan lists the updated assertions). `lib/lock.sh` reclamation
-becomes atomic — behavior-compatible for all existing tests.
+**Drift from v0.4:** no wire-contract or T-matrix change. `resolve` and
+`escalate` gain an optional `--actor` (default `human`) and `resolve` preserves
+`--reason` on approve — all values (`system`, `resolve-approve`) already exist
+in the v0.4 enums. `project.conf` gains `approval_mode`; manifests gain
+`mode`/`mode_actor`/`mode_updated_at` — because `arena_read_manifest` fails
+closed on unknown keys, `lib/common.sh`'s reader/writer are extended in the
+same change (the state-file 16-key contract is untouched; v0.4.0 binaries
+cannot read v0.5 manifests — rollback means keeping the v0.5 binary and
+disabling autopilot, not downgrading the binary). `status` gains `Mode:`,
+`Verdict:`, `Validation result:`, `Last transition at:`, and writer-pane
+lines (additive; existing assertions are grep-based; the plan lists the
+updated assertions). `lib/lock.sh` reclamation becomes atomic —
+behavior-compatible for all existing tests.
 
 **Trust-model note (normative):** auto mode removes the only non-AI approval
 step from the audit chain. This is an explicit trust-model downgrade, bounded

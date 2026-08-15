@@ -63,9 +63,11 @@ atomic. Hermetic tests extend `tests/run.sh` (§50–53).
 
 **Interfaces:** `arena_lock_acquire LOCK_PATH TOKEN` — dead-owner branch becomes
 `mv`-to-tombstone (only one claimer wins) then rebuild; failed rebuild exits 4
-(retry), never continues. Behavior-compatible for all existing tests.
+(retry), never continues. Behavior-compatible for all existing tests. Owner
+metadata gains an optional `last_seen_at` field (autopilot locks only; v0.4
+lock semantics untouched).
 
-- [ ] **Step 1: Write the failing test** (two concurrent reclaimers)
+- [ ] **Step 1: Write the failing test** (two genuinely concurrent reclaimers)
 
 ```bash
 printf '%s\n' '50. lock reclamation: two claimers, exactly one wins'
@@ -73,14 +75,26 @@ lock_root="${tmp_root}/reap-locks"
 mkdir -p "$lock_root"
 mkdir -p "$lock_root/one"
 printf 'pid=999999999\ntoken=dead\ncreated_at=1\n' >"$lock_root/one/owner"
-ARENA_SOURCE_ROOT="$source_root" bash -c '
-    set -euo pipefail
-    source "$1/lib/lock.sh"
-    arena_lock_acquire "$2" claim-a
-    # simulate the loser: its mkdir after a lost race must fail, not corrupt
-    if arena_lock_acquire "$2" claim-b 2>/dev/null; then exit 9; fi
-    arena_lock_is_held "$2" || exit 10
-' _ "$source_root" "$lock_root/one" || fail 'reclamation race not safe'
+# two backgrounded claimers race the same dead lock; exactly one may win
+for claim in claim-a claim-b; do
+    ARENA_SOURCE_ROOT="$source_root" bash -c '
+        set -euo pipefail
+        source "$1/lib/lock.sh"
+        arena_lock_acquire "$2" "$3" && exit 0 || exit 1
+    ' _ "$source_root" "$lock_root/one" "$claim" &
+done
+wait
+wins=0
+for claim in claim-a claim-b; do
+    token="$(ARENA_SOURCE_ROOT="$source_root" bash -c '
+        set -euo pipefail
+        source "$1/lib/lock.sh"
+        arena_lock_owner_token "$2"
+    ' _ "$source_root" "$lock_root/one")"
+    [[ "$token" == "$claim" ]] && wins=$((wins + 1))
+done
+[[ "$wins" == 1 ]] || fail "expected exactly one winner, got $wins"
+# last_seen liveness: dead pid + fresh last_seen = live; stale last_seen = reclaimed
 ```
 
 - [ ] **Step 2: Run it to verify it fails** (today `rm -rf`+`mkdir` lets both claimers "win").
@@ -104,7 +118,13 @@ fi
 
 ### Task 1: approval_mode config, manifest snapshot, mode command, drift, intent binding
 
-**Files:** Modify `lib/config.sh`, `lib/start.sh`, `lib/status.sh`, `lib/arena.sh`; Create `lib/mode.sh`; Test `tests/run.sh` (§50).
+**Files:** Modify `lib/config.sh` (approval_mode), `lib/init.sh` (template row),
+`lib/common.sh` (`arena_read_manifest`/`arena_write_manifest` accept and write
+`mode`/`mode_actor`/`mode_updated_at` — required, the reader fails closed on
+unknown keys today), `lib/start.sh` (`--mode` flag, manifest rows, intent
+binding), `lib/status.sh` (`Mode:` + drift marker + `Verdict:` +
+`Validation result:` + `Last transition at:` + writer-pane lines), `lib/arena.sh`;
+Create `lib/mode.sh`; Test `tests/run.sh` (§50).
 
 **Interfaces:** `arena_config_approval_mode CONFIG` (prints `human`|`auto`, dies on invalid);
 `arena_mode_set RUN_DIR MODE` (under run lock, atomic manifest rewrite);
@@ -143,7 +163,7 @@ require_match 'Mode: human (config: auto) ⚠' "${tmp_root}/mode-drift.out"
 
 ### Task 2: resolve audit pass-through (--actor, approve reason)
 
-**Files:** Modify `lib/resolve.sh`; Test `tests/run.sh` (§51 preamble).
+**Files:** Modify `lib/resolve.sh`, `lib/escalate.sh`; Test `tests/run.sh` (§51 preamble).
 
 **Interfaces:** `resolve RUN_ID --action approve [--actor human|system] [--reason "..."]` —
 actor defaults to `human`; approve preserves `--reason` into `reason_detail` when given.
@@ -161,7 +181,10 @@ require_match $'last_transition_actor\thuman' <(cat "${dec2_run_dir}/run-state.t
 ```
 
 - [ ] **Step 2: Run it to verify it fails** — `--actor` unknown; approve clears reason_detail.
-- [ ] **Step 3: Implement** — parse `--actor` (validate `human|system`); approve branch: write `reason_detail="$reason"` when non-empty (else clear, v0.4 behavior); set `ARENA_STATE_LAST_TRANSITION_ACTOR` from the flag.
+- [ ] **Step 3: Implement** — `resolve`: parse `--actor` (validate `human|system`);
+  approve branch: write `reason_detail="$reason"` when non-empty (else clear,
+  v0.4 behavior); set `ARENA_STATE_LAST_TRANSITION_ACTOR` from the flag.
+  `escalate`: same `--actor` option on both T9 paths (default `human`).
 - [ ] **Step 4: Run tests** — new assertions green; §0–49 green.
 - [ ] **Step 5: Commit** — `feat: resolve --actor and approve reason preservation for autopilot audit`.
 
@@ -171,9 +194,13 @@ require_match $'last_transition_actor\thuman' <(cat "${dec2_run_dir}/run-state.t
 
 **Files:** Create `lib/autopilot.sh`; Modify `lib/arena.sh`; Test `tests/run.sh` (§51 auto approve, §52 human/alert).
 
-**Interfaces:** `arena_autopilot_run ONCE SCOPE ...`; helpers `arena_autopilot_scan_run RUN_DIR`,
-`arena_autopilot_act RUN_DIR` (returns `acted|deferred|benign-race|needs-human|error`),
-`arena_autopilot_aggregate` (6>5>4>0); per-run `status` is the only read path.
+**Interfaces:** `arena_autopilot_run ONCE SCOPE ROUNDS ...`; helpers
+`arena_autopilot_scan_run RUN_DIR` (status exit-code mapping: 0 parse / 2 error
+/ 4 defer / 5 skip-intent-or-error / 1 error),
+`arena_autopilot_act RUN_DIR` (returns
+`acted|deferred|benign-race|needs-human|error`),
+`arena_autopilot_aggregate` (6>4>0); per-run `status` is the only read path;
+approve-delay window = observe; stall thresholds from the spec matrix.
 
 - [ ] **Step 1: Write the failing test** (§51: full loop)
 
@@ -190,12 +217,15 @@ require_match $'last_transition_actor\tsystem' <(cat "${ap_run_dir}/run-state.ts
 ```
 
 - [ ] **Step 2: Run it to verify it fails** — no `autopilot` command.
-- [ ] **Step 3: Implement** — parse flags; autopilot lock (owner + `last_seen_at`);
-  scope resolution (`--repo` default cwd, `--all-repos`); per-run `status` read
-  (map exit codes 0/2/4/5 → state parse / error / defer / incomplete); action
-  matrix dispatch (approve with delay check; escalate on reviewer-pane dead;
-  alerts); exit-code aggregation; per-run TSV stdout summary; `--once` vs
-  `--watch` loop.
+- [ ] **Step 3: Implement** — parse flags (`--rounds` included); autopilot lock
+  (owner + `last_seen_at` refresh per scan); scope resolution (`--repo`
+  path-or-id default cwd, `--all-repos`); per-run `status` read (map exit
+  codes 0/2/4/5/1 per the spec mapping; parse extended lines Verdict /
+  Validation result / Last transition at / pane lines); action matrix dispatch
+  (approve with delay window; escalate with `--actor system` on reviewer
+  pane dead/down; stall alerts; relay reminders throttled); exit-code
+  aggregation 6>4>0; per-run TSV stdout summary + round summary line;
+  `--once` / `--watch` / `--rounds N` loop.
 - [ ] **Step 4: Run tests** — §51/§52 green; §0–50 green.
 - [ ] **Step 5: Commit** — `feat: autopilot scan loop with state×pane matrix and exit 6`.
 
@@ -205,9 +235,12 @@ require_match $'last_transition_actor\tsystem' <(cat "${ap_run_dir}/run-state.ts
 
 **Files:** Modify `lib/autopilot.sh` (already created); Test `tests/run.sh` (§53).
 
-**Interfaces:** `arena_autopilot_heartbeat_write` (per-instance row),
-`arena_autopilot_log ACTION RESULT`, `arena_autopilot_relay_throttled RUN_DIR`
-(`last_relay_at` observation, `--relay-after` default 30).
+**Interfaces:** `arena_autopilot_heartbeat_write` (per-instance row,
+`last_seen_at` refresh into the autopilot lock owner),
+`arena_autopilot_log ACTION RESULT` (append + 1 MB rotation),
+`arena_autopilot_relay_throttled RUN_DIR` (reads/writes
+`autopilot-throttle.tsv`: `run_id reason last_relay_at resume_attempts`;
+`--relay-after` default 30).
 
 - [ ] **Step 1: Write the failing test** (§53)
 
@@ -250,6 +283,16 @@ parser, `Mode:` line, manifest rows) per v05-AC11.
   matrix, non-promise table, trust-model note); spec frontmatter →
   `review-ready` with the drift note (zero wire-contract change; `--actor`,
   mode rows, lock fix).
+- [ ] **Step 2b: Assertion-update list (v05-AC11)** — record in the spec/PR
+  the concrete v0.4 assertion deltas: (1) `lib/config.sh` parser now accepts
+  `approval_mode` (new §50 tests cover legal/illegal values); (2)
+  `arena_read_manifest`/`arena_write_manifest` accept and emit the three mode
+  rows (§38-style manifest assertions extended); (3) `status` output gains
+  `Mode:`, `Verdict:`, `Validation result:`, `Last transition at:`, and the
+  writer-pane line (all v0.4 status assertions are grep-based — verified
+  unaffected); (4) `start --mode` flag precedence (no existing test passes
+  `--mode`); (5) `resolve`/`escalate --actor` default `human` (no existing
+  test passes `--actor`; actor assertions for human paths unchanged).
 - [ ] **Step 3: Commit** — `docs: autopilot usage, non-promise table, and review-ready status`.
 
 ---
@@ -261,6 +304,13 @@ parser, `Mode:` line, manifest rows) per v05-AC11.
   v05-AC11 → Task 5. Walkthrough rulings (exit 6, actor=system, no list column,
   resume 0, observation files never authoritative, atomic reclamation) all
   mapped to Tasks 0–5. ✅
+- **Gate-1 second round (5 experts, 44 must-fix items deduplicated):** all
+  rulings applied — status read-path extension (verdict/VR/last-transition/
+  writer-pane lines), escalate `--actor`, `start --mode`, exit protocol 0/4/6
+  (no 5), stall thresholds, three pane states, cooling-window observe,
+  `mode_actor` row, throttle schema, log rotation, `--rounds` hook, genuinely
+  concurrent reclamation fixture, `lib/init.sh` + `lib/common.sh` in Task 1,
+  concrete assertion-update list, rollback narrative corrected. ✅
 - **Placeholder scan:** no stubs — every Task's Step 3 references the spec
   contract directly; Task 3's matrix is the spec's action matrix verbatim.
 - **Type consistency:** `arena_config_approval_mode`, `arena_mode_set`,
