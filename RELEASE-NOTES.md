@@ -1,5 +1,26 @@
 # Release Notes
 
+## v0.5.1 — Patch (2026-08-15)
+
+Patch release after v0.5.0.
+
+### Fixes
+
+- `help` now lists the `mode` and `autopilot` commands (they were dispatched
+  but missing from the help text).
+
+### Verification (2026-08-15)
+
+- Hermetic suite unchanged: 56 sections green, tmuxp smoke, CLI contract
+  smoke, package check, and `bash -n` all green.
+- Live validation (independent temp repo, no development project touched):
+  full two-model unattended loop with the real Pi CLI (v0.84.2) as writer
+  (created a feature, committed, ran `submit`) and the real authenticated
+  Cursor agent as reviewer (`validate` → `RESULT: PASS`, `decision APPROVE`),
+  then the real `autopilot --once` auto-approved the run to `completed`
+  (actor=system, instance-token reason). Evidence archived under the state
+  directory and recorded in the v1 implementation plan.
+
 ## v0.5.0 — Autopilot approval modes (2026-08-15)
 
 Human/auto approval modes plus an autopilot orchestrator: the review loop can
