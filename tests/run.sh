@@ -40,6 +40,16 @@ manifest_value() {
     awk -F $'\t' -v key="$key" '$1 == key { print $2 }' "$manifest"
 }
 
+# Extract one cell from a single-space-separated list row. The fixed-column
+# rows may carry empty cells (terminal authority, empty anomaly); splitting
+# on every space character preserves them.
+list_column() {
+    local row="$1"
+    local column="$2"
+
+    printf '%s\n' "$row" | awk -F '[ ]' -v column="$column" '{ print $column }'
+}
+
 assert_no_dangerous_writer_flags() {
     local file="$1"
     local flag
@@ -1037,13 +1047,28 @@ require_match 'agent-arena: preflight boom' "${tmp_root}/tmuxp-fail.out"
 require_no_match 'Traceback' "${tmp_root}/tmuxp-fail.out"
 unset FAKE_TMUXP_EXIT FAKE_TMUXP_OUTPUT
 
-printf '%s\n' '29. list reports runs with derived state'
+printf '%s\n' '29. list reports runs with the fixed oracle columns'
 run_arena list >"${tmp_root}/list.out"
+require_match 'REPOSITORY RUN_ID PROFILE GATE RUN_STATUS PHASE PARTY REASON_CODE WAITING_SINCE AUTHORITY ANOMALY' "${tmp_root}/list.out"
 require_match 'run-one' "${tmp_root}/list.out"
 require_match 'run-pane-dead' "${tmp_root}/list.out"
 require_match 'pi-cursor' "${tmp_root}/list.out"
-require_match 'DECIDED' "${tmp_root}/list.out"
-require_match 'SUBMITTED' "${tmp_root}/list.out"
+# run-one was approved at the decision gate (section 8) and resubmitted
+# (section 18): its authoritative v1 row carries the submitted projection
+list_row_one="$(awk '$2 == "run-one" { print; exit }' "${tmp_root}/list.out")"
+[[ -n "$list_row_one" ]] || fail 'list has no run-one row'
+[[ "$(list_column "$list_row_one" 5)" == active ]] || \
+    fail 'list run-one row does not report run_status active'
+[[ "$(list_column "$list_row_one" 6)" == submitted ]] || \
+    fail 'list run-one row does not report phase submitted'
+[[ "$(list_column "$list_row_one" 7)" == reviewer ]] || \
+    fail 'list run-one row does not report party reviewer'
+[[ "$(list_column "$list_row_one" 8)" == review_pending ]] || \
+    fail 'list run-one row does not report reason_code review_pending'
+[[ "$(list_column "$list_row_one" 10)" == state ]] || \
+    fail 'list run-one row is not authoritative state'
+[[ "$(list_column "$list_row_one" 11)" == '' ]] || \
+    fail 'list run-one row carries an anomaly'
 PATH="${fake_bin}:${PATH}" ARENA_STATE_ROOT="${tmp_root}/empty-state" \
     "$arena" list >"${tmp_root}/list-empty.out"
 require_match 'no runs recorded' "${tmp_root}/list-empty.out"
@@ -3410,5 +3435,194 @@ require_match $'reason_detail\tcheckpoint head drift' <(cat "${rp_dir}/run-state
 require_match $'phase\tsubmitted' <(cat "${rp_dir}/run-state.tsv")
 [[ ! -e "${rp_dir}/.repair.intent" ]] || fail 'valid-v1 repair left the intent behind'
 [[ ! -e "${rp_dir}/.run-lock" ]] || fail 'valid-v1 repair left the run lock held'
+
+printf '%s\n' '49. status and list oracles'
+# one-sentence diagnosis for a normal v1 run
+or_run='or-run'
+run_arena start "$or_run" --repo "$project" --no-attach >/dev/null
+or_run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path "*/${or_run}/manifest.tsv" -exec dirname {} \;)"
+or_repo="$(basename "$(dirname "$or_run_dir")")"
+or_writer="$(manifest_value "${or_run_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' o >"${or_writer}/o.txt"
+git -C "$or_writer" add o.txt
+git -C "$or_writer" commit -m 'feat: o' >/dev/null
+run_arena submit "$or_run" >/dev/null
+find "${or_run_dir}" -type f | sort >"${tmp_root}/or-files-before.list"
+run_arena status "$or_run" >"${tmp_root}/or-status.out"
+require_match 'waiting on reviewer for review_pending' "${tmp_root}/or-status.out"
+require_match 'tmux session: not running' "${tmp_root}/or-status.out"
+require_match 'release: agent-arena validate or-run' "${tmp_root}/or-status.out"
+# status is zero-write: the run directory gains no files
+find "${or_run_dir}" -type f | sort >"${tmp_root}/or-files-after.list"
+cmp -s "${tmp_root}/or-files-before.list" "${tmp_root}/or-files-after.list" || \
+    fail 'status wrote files into the run directory'
+# status/list never return 3 or 10
+run_arena status "$or_run" >/dev/null 2>&1 || { ec=$?; [[ "$ec" == 3 || "$ec" == 10 ]] && fail "status returned $ec"; }
+# usage errors remain exit 1 for both oracles
+run_arena status >/dev/null 2>&1 || { ec=$?; [[ "$ec" == 1 ]] || fail "status usage exited $ec"; }
+run_arena list --bogus >/dev/null 2>&1 || { ec=$?; [[ "$ec" == 1 ]] || fail "list usage exited $ec"; }
+# legacy conflict: status prints the conflict list plus the same repair
+# candidate the helper computes, with the discarded-evidence list
+or_conf_run='or-conflict'
+or_conf_dir="${state_root}/runs/${or_repo}/${or_conf_run}"
+mkdir -p "$or_conf_dir"
+awk -F $'\t' -v dir="$or_conf_dir" 'BEGIN { OFS = FS }
+    $1 == "run_id" { $2 = "or-conflict" }
+    $1 == "branch" { $2 = "agent-arena/pi/or-conflict" }
+    $1 == "session_name" { $2 = "agent-arena-or-conflict" }
+    $1 == "writer_session_dir" { $2 = dir "/writer-session" }
+    { print }' "${or_run_dir}/manifest.tsv" >"${or_conf_dir}/manifest.tsv"
+cp "${or_run_dir}/review.tsv" "${or_conf_dir}/review.tsv"
+or_conf_old='3333333333333333333333333333333333333333'
+printf 'Review HEAD: %s\nVERDICT: APPROVE\n' "$or_conf_old" >"${or_conf_dir}/decision-${or_conf_old}.md"
+rp_candidates "$or_conf_dir" >"${tmp_root}/or-cand.out"
+or_token="$(rp_first_token "${tmp_root}/or-cand.out")"
+[[ "$or_token" =~ ^[0-9a-f]{12}$ ]] || fail 'oracle candidate token is not 12 hex digits'
+set +e
+run_arena status or-conflict >"${tmp_root}/or-conflict.out" 2>&1
+or_conflict_exit=$?
+set -e
+[[ "$or_conflict_exit" == 2 ]] || fail "status conflict exited $or_conflict_exit, expected 2"
+require_match 'legacy evidence conflicts:' "${tmp_root}/or-conflict.out"
+require_match 'decision archive bound to differing SHA' "${tmp_root}/or-conflict.out"
+require_match "repair-candidate ${or_token} ->" "${tmp_root}/or-conflict.out"
+require_match 'discarded evidence' "${tmp_root}/or-conflict.out"
+require_match "decision-${or_conf_old}.md" "${tmp_root}/or-conflict.out"
+rm -rf "$or_conf_dir"
+# refusal-only conflict (orphan evidence without review.tsv): the conflict
+# prints, no repair-candidate line, exit 2
+or_ref_run='or-refusal'
+or_ref_dir="${state_root}/runs/${or_repo}/${or_ref_run}"
+mkdir -p "$or_ref_dir"
+awk -F $'\t' -v dir="$or_ref_dir" 'BEGIN { OFS = FS }
+    $1 == "run_id" { $2 = "or-refusal" }
+    $1 == "branch" { $2 = "agent-arena/pi/or-refusal" }
+    $1 == "session_name" { $2 = "agent-arena-or-refusal" }
+    $1 == "writer_session_dir" { $2 = dir "/writer-session" }
+    { print }' "${or_run_dir}/manifest.tsv" >"${or_ref_dir}/manifest.tsv"
+printf 'Review HEAD: %s\nVERDICT: APPROVE\n' "4444444444444444444444444444444444444444" >"${or_ref_dir}/decision-4444444444444444444444444444444444444444.md"
+set +e
+run_arena status or-refusal >"${tmp_root}/or-refusal.out" 2>&1
+or_refusal_exit=$?
+set -e
+[[ "$or_refusal_exit" == 2 ]] || fail "status refusal exited $or_refusal_exit, expected 2"
+require_match 'legacy evidence conflicts:' "${tmp_root}/or-refusal.out"
+require_match 'orphan evidence with no review.tsv' "${tmp_root}/or-refusal.out"
+require_no_match 'repair-candidate' "${tmp_root}/or-refusal.out"
+require_no_match 'discarded evidence' "${tmp_root}/or-refusal.out"
+rm -rf "$or_ref_dir"
+# remove the leftovers that still carry anomalies (an orphan conflict, a
+# future-schema corrupt state, a fail-closed repair intent, a refusal-only
+# pointer conflict, and the section-42 creation-intent mismatch) so the
+# list aggregation below sees a clean runs root
+rm -rf "${rp_repo_dir}/repair-orphan-refusal" "${rp_repo_dir}/repair-future-schema" "${rp_repo_dir}/repair-intent-tampered" "${rp_repo_dir}/repair-pointer-refusal"
+rm -rf "${state_root}/runs/${s5b_repo}/s5-mismatch" "${state_root}/runs/${s5b_repo}/.creating-s5-mismatch"
+# corrupted state file: status fails closed with exit 2 and the
+# corruption message, without touching the file
+cp "${or_run_dir}/run-state.tsv" "${tmp_root}/or-state-backup.tsv"
+{ cat "${or_run_dir}/run-state.tsv"; printf 'run_status\tactive\n'; } >"${or_run_dir}/run-state.tsv.corrupt"
+mv "${or_run_dir}/run-state.tsv.corrupt" "${or_run_dir}/run-state.tsv"
+or_corrupt_hash="$(shasum -a 256 "${or_run_dir}/run-state.tsv" | awk '{print $1}')"
+set +e
+run_arena status "$or_run" >"${tmp_root}/or-corrupt.out" 2>&1
+or_corrupt_exit=$?
+set -e
+[[ "$or_corrupt_exit" == 2 ]] || fail "status corrupt exit $or_corrupt_exit, expected 2"
+require_match 'corrupted state file' "${tmp_root}/or-corrupt.out"
+[[ "$(shasum -a 256 "${or_run_dir}/run-state.tsv" | awk '{print $1}')" == "$or_corrupt_hash" ]] || \
+    fail 'status modified the corrupted state file'
+mv "${tmp_root}/or-state-backup.tsv" "${or_run_dir}/run-state.tsv"
+chmod 600 "${or_run_dir}/run-state.tsv"
+# creation intent with no live owner: S6 -> exit 5 retry:start (owned by
+# start), S4 -> the manual abort protocol with exit 2
+printf 'run_id\t%s\n' "$or_run" >"${state_root}/runs/${or_repo}/.creating-${or_run}"
+set +e
+run_arena status "$or_run" >"${tmp_root}/or-creation-intent.out" 2>&1
+or_creation_exit=$?
+set -e
+[[ "$or_creation_exit" == 5 ]] || fail "status creation intent exited $or_creation_exit, expected 5"
+require_match 'incomplete transition; retry: agent-arena start or-run' "${tmp_root}/or-creation-intent.out"
+mv "$or_writer" "${or_writer}.moved"
+set +e
+run_arena status "$or_run" >"${tmp_root}/or-creation-s4.out" 2>&1
+or_creation_s4_exit=$?
+set -e
+[[ "$or_creation_s4_exit" == 2 ]] || fail "status creation intent S4 exited $or_creation_s4_exit, expected 2"
+require_match 'interrupted start stage S4' "${tmp_root}/or-creation-s4.out"
+mv "${or_writer}.moved" "$or_writer"
+rm -f "${state_root}/runs/${or_repo}/.creating-${or_run}"
+# repair intent with no live lock: exit 5 with the exact retry, before any
+# ordinary state parse
+printf 'baseline\tabsent\nevidence\t%s\ntoken\t%s\nreason\ttest oracle\ntarget_digest\t%s\ntarget_payload\tplaceholder\naudit_copy\t\nmove_map\t\nstamp\t%s\n' \
+    "$(printf x | shasum -a 256 | awk '{print $1}')" "aaaaaaaaaaaa" \
+    "$(printf y | shasum -a 256 | awk '{print $1}')" "$(date +%s)" \
+    >"${or_run_dir}/.repair.intent"
+set +e
+run_arena status "$or_run" >"${tmp_root}/or-repair-intent.out" 2>&1
+or_repair_exit=$?
+set -e
+[[ "$or_repair_exit" == 5 ]] || fail "status repair intent exited $or_repair_exit, expected 5"
+require_match 'incomplete transition; retry: agent-arena repair-state or-run --candidate <token> --reason "..."' "${tmp_root}/or-repair-intent.out"
+rm -f "${or_run_dir}/.repair.intent"
+# live lock: 'transition in progress' exit 4 always wins
+mkdir -p "${or_run_dir}/.run-lock"
+printf 'pid=%s\ntoken=test-live-owner\ncreated_at=%s\n' "$$" "$(date +%s)" >"${or_run_dir}/.run-lock/owner"
+set +e
+run_arena status "$or_run" >"${tmp_root}/or-lock.out" 2>&1
+or_lock_exit=$?
+set -e
+[[ "$or_lock_exit" == 4 ]] || fail "status live lock exited $or_lock_exit, expected 4"
+require_match 'transition in progress' "${tmp_root}/or-lock.out"
+rm -rf "${or_run_dir}/.run-lock"
+# list fixed columns, the authoritative or-run row, and a legacy row that
+# carries the read-only projection
+run_arena list >"${tmp_root}/or-list.out"
+require_match 'REPOSITORY RUN_ID PROFILE GATE RUN_STATUS PHASE PARTY REASON_CODE WAITING_SINCE AUTHORITY ANOMALY' "${tmp_root}/or-list.out"
+require_match 'or-run' "${tmp_root}/or-list.out"
+or_row="$(awk '$2 == "or-run" { print; exit }' "${tmp_root}/or-list.out")"
+[[ -n "$or_row" ]] || fail 'list has no or-run row'
+[[ "$(list_column "$or_row" 6)" == submitted ]] || \
+    fail 'list or-run row does not report phase submitted'
+[[ "$(list_column "$or_row" 10)" == state ]] || \
+    fail 'list or-run row is not authoritative state'
+[[ "$(list_column "$or_row" 11)" == '' ]] || fail 'list or-run row carries an anomaly'
+or_legacy_run='legacy-list-row'
+or_legacy_dir="${state_root}/runs/${or_repo}/${or_legacy_run}"
+mkdir -p "$or_legacy_dir"
+awk -F $'\t' -v dir="$or_legacy_dir" 'BEGIN { OFS = FS }
+    $1 == "run_id" { $2 = "legacy-list-row" }
+    $1 == "branch" { $2 = "agent-arena/pi/legacy-list-row" }
+    $1 == "session_name" { $2 = "agent-arena-legacy-list-row" }
+    $1 == "writer_session_dir" { $2 = dir "/writer-session" }
+    { print }' "${or_run_dir}/manifest.tsv" >"${or_legacy_dir}/manifest.tsv"
+cp "${or_run_dir}/review.tsv" "${or_legacy_dir}/review.tsv"
+run_arena list >"${tmp_root}/or-legacy-list.out"
+or_legacy_row="$(awk '$2 == "legacy-list-row" { print; exit }' "${tmp_root}/or-legacy-list.out")"
+[[ -n "$or_legacy_row" ]] || fail 'list has no legacy-list-row row'
+[[ "$(list_column "$or_legacy_row" 6)" == submitted ]] || \
+    fail 'legacy list row does not project phase submitted'
+[[ "$(list_column "$or_legacy_row" 7)" == reviewer ]] || \
+    fail 'legacy list row does not project party reviewer'
+[[ "$(list_column "$or_legacy_row" 10)" == legacy ]] || \
+    fail 'legacy list row is not marked legacy'
+[[ "$(list_column "$or_legacy_row" 11)" == '' ]] || fail 'legacy list row carries an anomaly'
+# legacy status: read-only projection with the diagnosis sentence
+run_arena status "$or_legacy_run" >"${tmp_root}/or-legacy-status.out"
+require_match 'legacy / inferred, not persisted' "${tmp_root}/or-legacy-status.out"
+require_match 'waiting on reviewer for review_pending since unknown' "${tmp_root}/or-legacy-status.out"
+# list aggregation: one live-locked run plus normal runs -> exit 4, and the
+# locked row is marked in-progress
+mkdir -p "${or_run_dir}/.run-lock"
+printf 'pid=%s\ntoken=test-live-owner\ncreated_at=%s\n' "$$" "$(date +%s)" >"${or_run_dir}/.run-lock/owner"
+set +e
+run_arena list >"${tmp_root}/or-aggregate.out" 2>&1
+or_aggregate_exit=$?
+set -e
+[[ "$or_aggregate_exit" == 4 ]] || fail "list aggregation exited $or_aggregate_exit, expected 4"
+or_locked_row="$(awk '$2 == "or-run" { print; exit }' "${tmp_root}/or-aggregate.out")"
+[[ -n "$or_locked_row" ]] || fail 'aggregated list has no or-run row'
+[[ "$(list_column "$or_locked_row" 11)" == in-progress ]] || \
+    fail 'locked or-run row is not marked in-progress'
+rm -rf "${or_run_dir}/.run-lock"
 
 printf '%s\n' 'tests: ok'

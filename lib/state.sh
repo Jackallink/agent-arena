@@ -658,14 +658,14 @@ arena_state_precheck_intents() {
                 printf 'interrupted start stage %s: inspect %s; if it contains only Arena-created artifacts, remove the directory, the creation intent, the Git worktree registration (git worktree remove; git worktree prune), and the writer branch, then re-run start\n' "$stage" "$run_dir" >&2
                 exit 2
             fi
-            printf 'interrupted start; retry: agent-arena start %s\n' "$run_id" >&2
+            printf 'incomplete transition; retry: agent-arena start %s\n' "$run_id" >&2
             exit 5
             ;;
         S1|S2|S5|S6)
             if [[ "$caller" == start ]]; then
                 return 0
             fi
-            printf 'interrupted start; retry: agent-arena start %s\n' "$run_id" >&2
+            printf 'incomplete transition; retry: agent-arena start %s\n' "$run_id" >&2
             exit 5
             ;;
         *) return 0 ;;
