@@ -47,10 +47,29 @@ arena_lock_metadata_less_fresh() {
     [[ "$mtime" -ge "$grace_cutoff" ]]
 }
 
+# Atomically reclaim a stale lock: rename to a tombstone (exactly one
+# concurrent claimer wins the rename), remove the tombstone, then rebuild.
+# A lost race or failed rebuild exits 4 (retry) and never continues into the
+# critical section. Behavior-compatible for all v0.4 callers.
+arena_lock_reclaim() {
+    local lock_path="$1" token="$2"
+    local tombstone
+    tombstone="${lock_path}.reap.${token}.$$"
+    if mv "$lock_path" "$tombstone" 2>/dev/null; then
+        rm -rf "$tombstone"
+        if ! mkdir "$lock_path" 2>/dev/null; then
+            printf 'cannot reacquire lock (reclamation raced): %s\n' "$lock_path" >&2
+            exit 4
+        fi
+        return 0
+    fi
+    return 1
+}
+
 arena_lock_acquire() {
     local lock_path="$1"
     local token="$2"
-    local owner_tmp grace_cutoff pid mtime
+    local owner_tmp grace_cutoff pid mtime now
 
     [[ -n "$token" ]] || arena_die 'lock token must not be empty'
     if ! mkdir "$lock_path" 2>/dev/null; then
@@ -58,28 +77,45 @@ arena_lock_acquire() {
             if arena_lock_owner_alive "$lock_path"; then
                 arena_die "transition in progress (lock held by pid $(arena_lock_owner_pid "$lock_path"))"
             fi
-            rm -rf "$lock_path"
-            mkdir "$lock_path" 2>/dev/null || arena_die "cannot acquire lock: $lock_path"
+            arena_lock_reclaim "$lock_path" "$token" || exit 4
         else
             # metadata-less window: grace rule
             grace_cutoff="$(($(date +%s) - 60))"
             mtime="$(arena_lock_mtime "$lock_path")" || mtime=''
             if [[ -n "$mtime" && "$mtime" =~ ^[0-9]+$ && "$mtime" -lt "$grace_cutoff" ]]; then
-                rm -rf "$lock_path"
-                mkdir "$lock_path" 2>/dev/null || arena_die "cannot acquire lock: $lock_path"
+                arena_lock_reclaim "$lock_path" "$token" || exit 4
             else
                 printf 'transition in progress (lock without metadata): %s\n' "$lock_path" >&2
                 exit 4
             fi
         fi
     fi
+    now="$(date +%s)"
     owner_tmp="${lock_path}/owner.tmp.$$"
     {
         printf 'pid=%s\n' "$$"
         printf 'token=%s\n' "$token"
-        printf 'created_at=%s\n' "$(date +%s)"
+        printf 'created_at=%s\n' "$now"
+        printf 'last_seen_at=%s\n' "$now"
     } >"$owner_tmp"
     mv "$owner_tmp" "${lock_path}/owner"
+}
+
+# Refresh last_seen_at in the owner metadata (autopilot long-lived locks only;
+# v0.4 locks never call this). Token must match; a missing owner fails.
+arena_lock_touch() {
+    local lock_path="$1" token="$2"
+    local owner now
+    owner="${lock_path}/owner"
+    [[ -f "$owner" ]] || return 1
+    [[ "$(arena_lock_owner_token "$lock_path")" == "$token" ]] || return 1
+    now="$(date +%s)"
+    if grep -q '^last_seen_at=' "$owner"; then
+        sed "s/^last_seen_at=.*/last_seen_at=${now}/" "$owner" >"${owner}.tmp.$$"
+    else
+        { cat "$owner"; printf 'last_seen_at=%s\n' "$now"; } >"${owner}.tmp.$$"
+    fi
+    mv "${owner}.tmp.$$" "$owner"
 }
 
 arena_lock_release() {

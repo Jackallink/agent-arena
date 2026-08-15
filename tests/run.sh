@@ -3625,4 +3625,61 @@ or_locked_row="$(awk '$2 == "or-run" { print; exit }' "${tmp_root}/or-aggregate.
     fail 'locked or-run row is not marked in-progress'
 rm -rf "${or_run_dir}/.run-lock"
 
+printf '%s\n' '50. lock reclamation: two concurrent claimers, exactly one wins'
+lock_root="${tmp_root}/reap-locks"
+mkdir -p "$lock_root"
+mkdir -p "$lock_root/one"
+printf 'pid=999999999\ntoken=dead\ncreated_at=1\n' >"$lock_root/one/owner"
+# two backgrounded claimers race the same dead lock; exactly one may win
+for claim in claim-a claim-b; do
+    ARENA_SOURCE_ROOT="$source_root" bash -c '
+        set -euo pipefail
+        source "$1/lib/lock.sh"
+        arena_lock_acquire "$2" "$3" >/dev/null 2>&1 && exit 0 || exit 1
+    ' _ "$source_root" "$lock_root/one" "$claim" &
+done
+wait
+wins=0
+for claim in claim-a claim-b; do
+    token="$(ARENA_SOURCE_ROOT="$source_root" bash -c '
+        set -euo pipefail
+        source "$1/lib/lock.sh"
+        arena_lock_owner_token "$2"
+    ' _ "$source_root" "$lock_root/one" 2>/dev/null)"
+    [[ "$token" == "$claim" ]] && wins=$((wins + 1))
+done
+[[ "$wins" == 1 ]] || fail "expected exactly one winner, got $wins"
+# owner carries last_seen_at after acquire and arena_lock_touch refreshes it
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/lock.sh"
+    grep -q "^last_seen_at=" "$2/owner" || exit 9
+    arena_lock_touch "$2" "$3" || exit 10
+    grep -q "^last_seen_at=" "$2/owner" || exit 11
+' _ "$source_root" "$lock_root/one" claim-a || fail 'last_seen_at contract broken'
+# token mismatch on touch fails (no refresh)
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/lock.sh"
+    arena_lock_touch "$2" wrong-token && exit 9 || exit 0
+' _ "$source_root" "$lock_root/one" || fail 'touch with wrong token succeeded'
+# reclamation raced by a second claimer: fails closed with exit 4, owner untouched
+mkdir -p "$lock_root/two"
+printf 'pid=999999999\ntoken=dead\ncreated_at=1\n' >"$lock_root/two/owner"
+set +e
+ARENA_SOURCE_ROOT="$source_root" bash -c '
+    set -euo pipefail
+    source "$1/lib/lock.sh"
+    # occupy the would-be tombstone path (same shell, same $$) with a FILE
+    # so the mv cannot complete; the claimer must fail closed with exit 4
+    touch "$2.reap.blocker.$$"
+    arena_lock_acquire "$2" blocker && exit 9
+' _ "$source_root" "$lock_root/two" >/dev/null 2>&1
+reap_exit=$?
+set -e
+[[ "$reap_exit" == 4 ]] || fail "reclamation race exited $reap_exit, expected 4"
+grep -q "^token=dead$" "$lock_root/two/owner" ||     fail 'failed reclamation mutated the owner'
+rm -f "$lock_root/two.reap.blocker."*
+
+
 printf '%s\n' 'tests: ok'
