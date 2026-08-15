@@ -131,6 +131,14 @@
   `completed`, `last_transition_actor=system`,
   `action=resolve-approve`, `reason_detail=autopilot <instance> <ts>` — with
   heartbeat (`autopilot.tsv` scanned=1 acted=1 errors=0) and action log
-  (`approval_pending resolve-approve acted`). Scope note: the writer pane was
-  stubbed (no local Pi CLI); the live parts are the reviewer model and the
-  autopilot automation.
+  (`approval_pending resolve-approve acted`).
+- Full two-model unattended loop (2026-08-15, independent temp repo, evidence
+  archived as `full-live-pi-cursor-autopilot.log`): the real Pi CLI
+  (v0.84.2, headless) created `feature.txt`, committed `feat: live demo
+  feature` (5b90585), and ran `agent-arena submit live-demo`; the real
+  authenticated Cursor agent ran the gate wrapper (`validate` → exit 0
+  `RESULT: PASS`, `decision --verdict APPROVE` recorded against
+  5b90585c000b); the real `autopilot --once` (auto mode) approved the run to
+  `completed` with actor=system and an instance-token reason. This completes
+  the unattended loop end-to-end with two different real model CLIs (Pi
+  writer + Cursor reviewer) plus the autopilot automation.
