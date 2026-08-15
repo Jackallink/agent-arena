@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
 > (recommended) or superpowers:executing-plans to implement this plan task-by-task.
-> Steps use checkbox (`- [ ]`) syntax for tracking.
+> Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Implement the v0.5 human/auto approval modes: `approval_mode` config +
 run-level `mode` switching, the `autopilot` orchestrator (`--once`/`--watch`),
@@ -67,7 +67,7 @@ atomic. Hermetic tests extend `tests/run.sh` (§50–53).
 metadata gains an optional `last_seen_at` field (autopilot locks only; v0.4
 lock semantics untouched).
 
-- [ ] **Step 1: Write the failing test** (two genuinely concurrent reclaimers)
+- [x] **Step 1: Write the failing test** (two genuinely concurrent reclaimers)
 
 ```bash
 printf '%s\n' '50. lock reclamation: two claimers, exactly one wins'
@@ -97,8 +97,8 @@ done
 # last_seen liveness: dead pid + fresh last_seen = live; stale last_seen = reclaimed
 ```
 
-- [ ] **Step 2: Run it to verify it fails** (today `rm -rf`+`mkdir` lets both claimers "win").
-- [ ] **Step 3: Implement atomic reclamation**
+- [x] **Step 2: Run it to verify it fails** (today `rm -rf`+`mkdir` lets both claimers "win").
+- [x] **Step 3: Implement atomic reclamation**
 
 ```bash
 # in arena_lock_acquire, dead-owner branch:
@@ -111,8 +111,8 @@ else
 fi
 ```
 
-- [ ] **Step 4: Run tests** — §39 and all earlier sections green; the new fixture green.
-- [ ] **Step 5: Commit** — `git add lib/lock.sh tests/run.sh` → `fix: atomic dead-owner lock reclamation for autopilot concurrency`.
+- [x] **Step 4: Run tests** — §39 and all earlier sections green; the new fixture green.
+- [x] **Step 5: Commit** — `git add lib/lock.sh tests/run.sh` → `fix: atomic dead-owner lock reclamation for autopilot concurrency`.
 
 ---
 
@@ -130,7 +130,7 @@ Create `lib/mode.sh`; Test `tests/run.sh` (§50).
 `arena_mode_set RUN_DIR MODE` (under run lock, atomic manifest rewrite);
 `arena_mode_drift RUN_DIR` (compares manifest vs config for the `⚠` marker).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```bash
 printf '%s\n' '50. approval mode config, switch, drift, and intent binding'
@@ -154,10 +154,10 @@ require_match 'Mode: human (config: auto) ⚠' "${tmp_root}/mode-drift.out"
 # (fixture: write a creation intent with mode=human, change config, retry -> exit 2)
 ```
 
-- [ ] **Step 2: Run it to verify it fails** — `approval_mode` unknown to the strict parser; no manifest rows; no `mode` command.
-- [ ] **Step 3: Implement** — config parser key + validation; start snapshot + intent parameter (`mode=${ARENA_CONFIG_APPROVAL_MODE}`) + retry comparison; `lib/mode.sh` (parse, run-lock, atomic manifest rewrite, `mode_updated_at`, autopilot.log `mode` row); status `Mode:` line + drift marker; arena dispatch.
-- [ ] **Step 4: Run tests** — §50 green; §0–49 green (assertion-update list: config parser now accepts the new key; status gains a line — all existing assertions are grep-based and unaffected).
-- [ ] **Step 5: Commit** — `feat: approval_mode config, manifest snapshot, mode switching, and drift display`.
+- [x] **Step 2: Run it to verify it fails** — `approval_mode` unknown to the strict parser; no manifest rows; no `mode` command.
+- [x] **Step 3: Implement** — config parser key + validation; start snapshot + intent parameter (`mode=${ARENA_CONFIG_APPROVAL_MODE}`) + retry comparison; `lib/mode.sh` (parse, run-lock, atomic manifest rewrite, `mode_updated_at`, autopilot.log `mode` row); status `Mode:` line + drift marker; arena dispatch.
+- [x] **Step 4: Run tests** — §50 green; §0–49 green (assertion-update list: config parser now accepts the new key; status gains a line — all existing assertions are grep-based and unaffected).
+- [x] **Step 5: Commit** — `feat: approval_mode config, manifest snapshot, mode switching, and drift display`.
 
 ---
 
@@ -168,7 +168,7 @@ require_match 'Mode: human (config: auto) ⚠' "${tmp_root}/mode-drift.out"
 **Interfaces:** `resolve RUN_ID --action approve [--actor human|system] [--reason "..."]` —
 actor defaults to `human`; approve preserves `--reason` into `reason_detail` when given.
 
-- [ ] **Step 1: Write the failing test** (in §51 setup: run to approval_pending, then)
+- [x] **Step 1: Write the failing test** (in §51 setup: run to approval_pending, then)
 
 ```bash
 run_arena resolve "$dec_run" --action approve --actor system --reason 'autopilot smoke-token' >/dev/null
@@ -180,13 +180,13 @@ run_arena resolve "$dec2_run" --action approve >/dev/null
 require_match $'last_transition_actor\thuman' <(cat "${dec2_run_dir}/run-state.tsv")
 ```
 
-- [ ] **Step 2: Run it to verify it fails** — `--actor` unknown; approve clears reason_detail.
-- [ ] **Step 3: Implement** — `resolve`: parse `--actor` (validate `human|system`);
+- [x] **Step 2: Run it to verify it fails** — `--actor` unknown; approve clears reason_detail.
+- [x] **Step 3: Implement** — `resolve`: parse `--actor` (validate `human|system`);
   approve branch: write `reason_detail="$reason"` when non-empty (else clear,
   v0.4 behavior); set `ARENA_STATE_LAST_TRANSITION_ACTOR` from the flag.
   `escalate`: same `--actor` option on both T9 paths (default `human`).
-- [ ] **Step 4: Run tests** — new assertions green; §0–49 green.
-- [ ] **Step 5: Commit** — `feat: resolve --actor and approve reason preservation for autopilot audit`.
+- [x] **Step 4: Run tests** — new assertions green; §0–49 green.
+- [x] **Step 5: Commit** — `feat: resolve --actor and approve reason preservation for autopilot audit`.
 
 ---
 
@@ -202,7 +202,7 @@ require_match $'last_transition_actor\thuman' <(cat "${dec2_run_dir}/run-state.t
 `arena_autopilot_aggregate` (6>4>0); per-run `status` is the only read path;
 approve-delay window = observe; stall thresholds from the spec matrix.
 
-- [ ] **Step 1: Write the failing test** (§51: full loop)
+- [x] **Step 1: Write the failing test** (§51: full loop)
 
 ```bash
 printf '%s\n' '51. autopilot auto approval and exit-code protocol'
@@ -216,8 +216,8 @@ require_match $'last_transition_actor\tsystem' <(cat "${ap_run_dir}/run-state.ts
 # human mode: no mutation, exit 6 on approval_pending
 ```
 
-- [ ] **Step 2: Run it to verify it fails** — no `autopilot` command.
-- [ ] **Step 3: Implement** — parse flags (`--rounds` included); autopilot lock
+- [x] **Step 2: Run it to verify it fails** — no `autopilot` command.
+- [x] **Step 3: Implement** — parse flags (`--rounds` included); autopilot lock
   (owner + `last_seen_at` refresh per scan); scope resolution (`--repo`
   path-or-id default cwd, `--all-repos`); per-run `status` read (map exit
   codes 0/2/4/5/1 per the spec mapping; parse extended lines Verdict /
@@ -226,8 +226,8 @@ require_match $'last_transition_actor\tsystem' <(cat "${ap_run_dir}/run-state.ts
   pane dead/down; stall alerts; relay reminders throttled); exit-code
   aggregation 6>4>0; per-run TSV stdout summary + round summary line;
   `--once` / `--watch` / `--rounds N` loop.
-- [ ] **Step 4: Run tests** — §51/§52 green; §0–50 green.
-- [ ] **Step 5: Commit** — `feat: autopilot scan loop with state×pane matrix and exit 6`.
+- [x] **Step 4: Run tests** — §51/§52 green; §0–50 green.
+- [x] **Step 5: Commit** — `feat: autopilot scan loop with state×pane matrix and exit 6`.
 
 ---
 
@@ -242,7 +242,7 @@ require_match $'last_transition_actor\tsystem' <(cat "${ap_run_dir}/run-state.ts
 `autopilot-throttle.tsv`: `run_id reason last_relay_at resume_attempts`;
 `--relay-after` default 30).
 
-- [ ] **Step 1: Write the failing test** (§53)
+- [x] **Step 1: Write the failing test** (§53)
 
 ```bash
 printf '%s\n' '53. autopilot heartbeat, relay throttle, and two-claimer lock'
@@ -252,15 +252,15 @@ printf '%s\n' '53. autopilot heartbeat, relay throttle, and two-claimer lock'
 # last_seen staleness: lock with dead pid but fresh last_seen -> live; stale -> reclaimed
 ```
 
-- [ ] **Step 2: Run it to verify it fails**.
-- [ ] **Step 3: Implement** — heartbeat/log writers (per-instance rows, result
+- [x] **Step 2: Run it to verify it fails**.
+- [x] **Step 3: Implement** — heartbeat/log writers (per-instance rows, result
   classification); throttle state file under the state root
   (`autopilot-throttle.tsv`: `run_id reason last_relay_at`); lock
   `last_seen_at` refresh after every scan; staleness check in acquire for
   autopilot locks (`pid alive AND last_seen fresh`), gated to autopilot locks
   so v0.4 lock semantics are untouched.
-- [ ] **Step 4: Run tests** — §53 green; §0–52 green.
-- [ ] **Step 5: Commit** — `feat: autopilot heartbeat, action log, and relay throttling`.
+- [x] **Step 4: Run tests** — §53 green; §0–52 green.
+- [x] **Step 5: Commit** — `feat: autopilot heartbeat, action log, and relay throttling`.
 
 ---
 
@@ -270,7 +270,7 @@ printf '%s\n' '53. autopilot heartbeat, relay throttle, and two-claimer lock'
 `docs/superpowers/specs/2026-08-13-autopilot-approval-mode.md` (frontmatter → `review-ready` +
 assertion-update list), `RELEASE-NOTES.md` (v0.5.0 draft); Test: full suites.
 
-- [ ] **Step 1: Full regression**
+- [x] **Step 1: Full regression**
 
 ```bash
 bash tests/run.sh && bash tests/tmuxp-smoke.sh && bash tests/cli-contract-smoke.sh   && bash packaging/package.sh --check && bash -n lib/*.sh adapters/*.sh
@@ -279,11 +279,11 @@ bash tests/run.sh && bash tests/tmuxp-smoke.sh && bash tests/cli-contract-smoke.
 Expected: §0–53 green; the plan records the assertion-update list (config
 parser, `Mode:` line, manifest rows) per v05-AC11.
 
-- [ ] **Step 2: Document** — README "Autopilot" section (flags, deployment
+- [x] **Step 2: Document** — README "Autopilot" section (flags, deployment
   matrix, non-promise table, trust-model note); spec frontmatter →
   `review-ready` with the drift note (zero wire-contract change; `--actor`,
   mode rows, lock fix).
-- [ ] **Step 2b: Assertion-update list (v05-AC11)** — record in the spec/PR
+- [x] **Step 2b: Assertion-update list (v05-AC11)** — record in the spec/PR
   the concrete v0.4 assertion deltas: (1) `lib/config.sh` parser now accepts
   `approval_mode` (new §50 tests cover legal/illegal values); (2)
   `arena_read_manifest`/`arena_write_manifest` accept and emit the three mode
@@ -293,7 +293,7 @@ parser, `Mode:` line, manifest rows) per v05-AC11.
   unaffected); (4) `start --mode` flag precedence (no existing test passes
   `--mode`); (5) `resolve`/`escalate --actor` default `human` (no existing
   test passes `--actor`; actor assertions for human paths unchanged).
-- [ ] **Step 3: Commit** — `docs: autopilot usage, non-promise table, and review-ready status`.
+- [x] **Step 3: Commit** — `docs: autopilot usage, non-promise table, and review-ready status`.
 
 ---
 

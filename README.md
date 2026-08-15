@@ -12,14 +12,15 @@ Pi, Codex, OpenCode, and Agy remain writers only. A direct relay is useful
 feedback, but the SHA-bound validation report and decision record remain the
 audit truth.
 
-> **Validation status:** v0.4 has hermetic adapter tests (50 sections),
-> tmuxp smoke, no-model CLI contract checks, and a real-Cursor gate smoke
-> (2026-08-15, agent 2026.08.11-e8db854, authenticated): the gate wrapper
-> `validate` ran end-to-end through the real CLI and recorded `RESULT: PASS`
-> with the SHA-bound report published. One drift was observed (D5): shell
-> redirection writes (`echo x > file`) bypassed the sandbox denials in this
-> agent build; the post-run snapshot integrity check detected the pollution
-> and kept the audit chain closed. `doctor` confirms local prerequisites, not
+> **Validation status:** v0.5 has hermetic adapter tests (56 sections —
+> v0.4 §0–49 with zero semantic drift plus autopilot §50–55), tmuxp smoke,
+> no-model CLI contract checks, and a real-Cursor gate smoke (2026-08-15,
+> agent 2026.08.11-e8db854, authenticated): the gate wrapper `validate` ran
+> end-to-end through the real CLI and recorded `RESULT: PASS` with the
+> SHA-bound report published. One drift was observed (D5): shell redirection
+> writes (`echo x > file`) bypassed the sandbox denials in this agent build;
+> the post-run snapshot integrity check detected the pollution and kept the
+> audit chain closed. `doctor` confirms local prerequisites, not
 > provider-side behavior.
 
 ## Location model
