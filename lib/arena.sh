@@ -20,6 +20,8 @@ Commands:
   resolve RUN_ID                 Human disposition: approve, reject, recover, cancel
   relay RUN_ID [options]         Send a direct, literal agent-pane message
   repair-state RUN_ID [options]  Accept a status-printed repair candidate
+  mode RUN_ID human|auto         Switch a live run's approval mode
+  autopilot [options]            Auto-approve and alert; --once for cron
   status RUN_ID                  Show manifest, validation, and decision state
   list                           List all recorded runs with their state
   version                        Print the Agent Arena version
