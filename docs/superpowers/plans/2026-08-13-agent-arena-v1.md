@@ -53,3 +53,23 @@
 - Conclusion: the gate is loadable, deny-list enforcement works, network is blocked, and
   the four gate wrapper commands pass under the real authenticated CLI. Gate 4 evidence is
   complete; spec status may move to `complete` after owner sign-off.
+
+
+## Gate 4 evidence — v0.4.0 run state authority (2026-08-15)
+
+- Credential/tracked-file scan clean: 57 tracked files, no sensitive file names
+  (.env/.pem/.key/secret/credential/id_rsa) and no credential patterns
+  (GitHub/OpenAI/AWS tokens, private-key headers, api_key/password/token
+  assignments); test lock tokens are fixture placeholders only.
+- Hermetic validation: `tests/run.sh` 50 sections green (v0.3 regression §1–37
+  plus run-state §38–49), tmuxp smoke, CLI contract smoke, `package.sh --check`,
+  and `bash -n` all green.
+- Review: detached snapshot tag `review/run-state-v0.4` (commit `2b2a5f3`)
+  re-verified green; PR #2 merged into `main` (fast-forward `2b2a5f3`), branch
+  deleted after merge.
+- Release: `v0.4.0` tag on `main` (`e3656a8` release commit);
+  https://github.com/Jackallink/agent-arena/releases/tag/v0.4.0 with
+  `dist/agent-arena-0.4.0.tar.gz` (sha256
+  `0731bedec86c068387267e57ca007f87f381ffee99a7d50654b3d8f1b51cbfa5`) and the
+  checksum file attached.
+- Conclusion: source publication and archive release gates complete for v0.4.0.
