@@ -3795,4 +3795,69 @@ fi
 require_match 'terminal' "${tmp_root}/mode-terminal.out"
 
 
+printf '%s\n' '52. resolve and escalate audit pass-through (--actor, approve reason)'
+# full loop to approval_pending with a system-actor approve
+ap_run='ap-audit'
+run_arena start "$ap_run" --repo "$project" --no-attach >/dev/null
+ap_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -name manifest.tsv -path "*/${ap_run}/manifest.tsv" -exec dirname {} \;)"
+ap_writer="$(manifest_value "${ap_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' a >"${ap_writer}/a.txt"
+git -C "$ap_writer" add a.txt
+git -C "$ap_writer" commit -qm 'feat: a'
+run_arena submit "$ap_run" >/dev/null
+run_arena validate "$ap_run" >/dev/null
+run_arena decision "$ap_run" --verdict APPROVE --summary ok --next done --no-relay >/dev/null
+# system actor + reason preserved into reason_detail
+run_arena resolve "$ap_run" --action approve --actor system --reason 'autopilot smoke-token' >/dev/null
+require_match $'run_status\tcompleted' <(cat "${ap_dir}/run-state.tsv")
+require_match $'last_transition_actor\tsystem' <(cat "${ap_dir}/run-state.tsv")
+require_match $'last_transition_action\tresolve-approve' <(cat "${ap_dir}/run-state.tsv")
+require_match $'reason_detail\tautopilot smoke-token' <(cat "${ap_dir}/run-state.tsv")
+# default actor stays human and approve without reason clears detail
+ap2_run='ap-audit-human'
+run_arena start "$ap2_run" --repo "$project" --no-attach >/dev/null
+ap2_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -name manifest.tsv -path "*/${ap2_run}/manifest.tsv" -exec dirname {} \;)"
+ap2_writer="$(manifest_value "${ap2_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' a2 >"${ap2_writer}/a2.txt"
+git -C "$ap2_writer" add a2.txt
+git -C "$ap2_writer" commit -qm 'feat: a2'
+run_arena submit "$ap2_run" >/dev/null
+run_arena validate "$ap2_run" >/dev/null
+run_arena decision "$ap2_run" --verdict APPROVE --summary ok --next done --no-relay >/dev/null
+run_arena resolve "$ap2_run" --action approve >/dev/null
+require_match $'last_transition_actor\thuman' <(cat "${ap2_dir}/run-state.tsv")
+[[ "$(awk -F $'\t' '$1 == "reason_detail" { print $2 }' "${ap2_dir}/run-state.tsv")" == '' ]] || \
+    fail 'approve without reason kept reason_detail'
+# invalid actor dies
+if run_arena resolve "$ap2_run" --action approve --actor robot >"${tmp_root}/ap-bad.out" 2>&1; then
+    fail 'resolve --actor robot succeeded'
+fi
+require_match '--actor' "${tmp_root}/ap-bad.out"
+# escalate with --actor system records system (T9 on a fresh run)
+es_run='ap-escalate'
+run_arena start "$es_run" --repo "$project" --no-attach >/dev/null
+es_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -name manifest.tsv -path "*/${es_run}/manifest.tsv" -exec dirname {} \;)"
+es_writer="$(manifest_value "${es_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' e >"${es_writer}/e.txt"
+git -C "$es_writer" add e.txt
+git -C "$es_writer" commit -qm 'feat: e'
+run_arena submit "$es_run" >/dev/null
+run_arena escalate "$es_run" --reason-code reviewer_unreachable --reason 'pane dead' --actor system >/dev/null
+require_match $'run_status\tblocked' <(cat "${es_dir}/run-state.tsv")
+require_match $'last_transition_actor\tsystem' <(cat "${es_dir}/run-state.tsv")
+require_match $'last_transition_action\tescalate' <(cat "${es_dir}/run-state.tsv")
+require_match $'reason_detail\tpane dead' <(cat "${es_dir}/run-state.tsv")
+# default escalate actor stays human
+es2_run='ap-escalate-human'
+run_arena start "$es2_run" --repo "$project" --no-attach >/dev/null
+es2_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -name manifest.tsv -path "*/${es2_run}/manifest.tsv" -exec dirname {} \;)"
+es2_writer="$(manifest_value "${es2_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' e2 >"${es2_writer}/e2.txt"
+git -C "$es2_writer" add e2.txt
+git -C "$es2_writer" commit -qm 'feat: e2'
+run_arena submit "$es2_run" >/dev/null
+run_arena escalate "$es2_run" --reason-code reviewer_unreachable --reason 'pane dead 2' >/dev/null
+require_match $'last_transition_actor\thuman' <(cat "${es2_dir}/run-state.tsv")
+
+
 printf '%s\n' 'tests: ok'

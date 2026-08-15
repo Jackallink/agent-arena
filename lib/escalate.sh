@@ -23,6 +23,7 @@ EOF
 run_id=''
 reason_code=''
 reason=''
+actor='human'
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --reason-code)
@@ -33,6 +34,15 @@ while [[ $# -gt 0 ]]; do
         --reason)
             [[ $# -ge 2 ]] || arena_die '--reason requires a value'
             reason="$2"
+            shift 2
+            ;;
+        --actor)
+            [[ $# -ge 2 ]] || arena_die '--actor requires a value'
+            case "$2" in
+                human|system) ;;
+                *) arena_die "invalid --actor: $2 (legal values: human, system)" ;;
+            esac
+            actor="$2"
             shift 2
             ;;
         --state-root)
@@ -111,7 +121,7 @@ if [[ -f "${run_dir}/run-state.tsv" ]]; then
     ARENA_STATE_WAITING_SINCE="$(date +%s)"
     ARENA_STATE_REVISION=$((ARENA_STATE_REVISION + 1))
     ARENA_STATE_LAST_TRANSITION_AT="${ARENA_STATE_WAITING_SINCE}"
-    ARENA_STATE_LAST_TRANSITION_ACTOR='human'
+    ARENA_STATE_LAST_TRANSITION_ACTOR="$actor"
     ARENA_STATE_LAST_TRANSITION_ACTION='escalate'
     arena_state_write "$run_dir"
 else
@@ -139,7 +149,7 @@ else
     ARENA_STATE_VALIDATION_DIGEST="$ARENA_PROJECTED_VD"
     ARENA_STATE_WAITING_SINCE="$(date +%s)"
     ARENA_STATE_LAST_TRANSITION_AT="${ARENA_STATE_WAITING_SINCE}"
-    ARENA_STATE_LAST_TRANSITION_ACTOR='human'
+    ARENA_STATE_LAST_TRANSITION_ACTOR="$actor"
     ARENA_STATE_LAST_TRANSITION_ACTION='escalate'
     arena_state_write "$run_dir"
 fi

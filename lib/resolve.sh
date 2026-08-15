@@ -24,6 +24,7 @@ EOF
 run_id=''
 action=''
 reason=''
+actor='human'
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --action)
@@ -34,6 +35,15 @@ while [[ $# -gt 0 ]]; do
         --reason)
             [[ $# -ge 2 ]] || arena_die '--reason requires a value'
             reason="$2"
+            shift 2
+            ;;
+        --actor)
+            [[ $# -ge 2 ]] || arena_die '--actor requires a value'
+            case "$2" in
+                human|system) ;;
+                *) arena_die "invalid --actor: $2 (legal values: human, system)" ;;
+            esac
+            actor="$2"
             shift 2
             ;;
         --state-root)
@@ -105,7 +115,7 @@ arena_resolve_apply() {
             ARENA_STATE_RUN_STATUS='completed'
             ARENA_STATE_RESPONSIBLE_PARTY='none'
             ARENA_STATE_REASON_CODE='none'
-            ARENA_STATE_REASON_DETAIL=''
+            ARENA_STATE_REASON_DETAIL="$reason"
             ARENA_STATE_WAITING_SINCE=''
             ;;
         reject)
@@ -199,7 +209,7 @@ else
     arena_resolve_apply
 fi
 ARENA_STATE_LAST_TRANSITION_AT="$(date +%s)"
-ARENA_STATE_LAST_TRANSITION_ACTOR='human'
+ARENA_STATE_LAST_TRANSITION_ACTOR="$actor"
 ARENA_STATE_LAST_TRANSITION_ACTION="resolve-${action}"
 arena_state_write "$run_dir"
 arena_lock_release "$lock_path" "resolve-$$"
