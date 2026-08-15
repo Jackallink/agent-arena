@@ -41,7 +41,7 @@ observable alert.
 
 - Gate 4 evidence: credential/tracked-file scan clean before this release
   (recorded in `docs/superpowers/plans/2026-08-13-agent-arena-v1.md`).
-- Archive checksum: `dist/agent-arena-0.5.0.tar.gz.sha256`.
+- Archive checksum: `dist/agent-arena-0.5.0.tar.gz.sha256` (5e1c04f57a7c1ddf3908dba7bb489046f44d8640c3409924a60c4c127db2413c; regenerated after the help-usage fix `70c28ce`).
 
 ## v0.4.0 — Run state authority (2026-08-15)
 

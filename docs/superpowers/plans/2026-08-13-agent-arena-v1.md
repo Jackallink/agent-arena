@@ -120,5 +120,5 @@
 - Release: `v0.5.0` tag on `main` (`a52d4d9` release commit);
   https://github.com/Jackallink/agent-arena/releases/tag/v0.5.0 with
   `dist/agent-arena-0.5.0.tar.gz` (sha256
-  `000793d5d0c5ecb1437217e119f76233d69ad35bcdcc75de2ecead63653aaa44`) and the checksum file attached.
+  `5e1c04f57a7c1ddf3908dba7bb489046f44d8640c3409924a60c4c127db2413c`) and the checksum file attached.
 - Conclusion: source publication and archive release gates complete for v0.5.0.
