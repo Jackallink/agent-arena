@@ -37,6 +37,15 @@ single source of truth for the current responsible party and waiting state.
   tmuxp smoke, CLI contract smoke, and package check green.
 - Review: detached snapshot tag `review/run-state-v0.4` re-verified green;
   PR #2 merged into `main` at `2b2a5f3` (fast-forward).
+- Real-Cursor gate smoke (2026-08-15): full T-matrix lifecycle in a real
+  Git/tmuxp environment (start → submit → validate → decision → resolve
+  approve → completed; escalate → recover with the reviewer-pane protection
+  observed), then the authenticated Cursor headless run executed the gate
+  wrapper `validate` end-to-end (`RESULT: PASS`, SHA-bound report published).
+  One drift (D5): shell redirection writes bypassed the sandbox denials in
+  this agent build; the post-run snapshot integrity check detected the
+  pollution and `status` failed closed — audit chain closed (details in
+  `docs/superpowers/plans/2026-08-13-agent-arena-v1.md`).
 
 ### Release gate
 

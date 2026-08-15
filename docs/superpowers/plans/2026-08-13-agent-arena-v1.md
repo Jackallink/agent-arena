@@ -73,3 +73,27 @@
   `0731bedec86c068387267e57ca007f87f381ffee99a7d50654b3d8f1b51cbfa5`) and the
   checksum file attached.
 - Conclusion: source publication and archive release gates complete for v0.4.0.
+- Real-Cursor gate smoke (2026-08-15, authenticated `agent` 2026.08.11-e8db854,
+  evidence archived under the state directory):
+  1. Full T-matrix lifecycle in a real Git/tmuxp environment with the writer
+     adapter stubbed: `start` (intake/writer/none) → writer checkpoint →
+     `submit` (submitted/reviewer/review_pending, detached review snapshot
+     created) → `status` oracle one-sentence diagnosis → `validate`
+     (validated/decision_pending, `RESULT: PASS` published) → `decision
+     APPROVE` (decided/human/approval_pending) → `resolve approve`
+     (completed/none/none). A second run exercised `escalate`
+     (blocked/human/reviewer_unreachable); `resolve recover` correctly
+     refused while the reviewer pane was unreachable and succeeded after
+     `resume` (active/submitted/reviewer/review_pending). `list` printed the
+     fixed oracle columns with `AUTHORITY=state` for both runs.
+  2. In the detached review snapshot, the real Cursor headless run executed
+     `./.agent-arena-gate validate er-run` → exit 0, `RESULT: PASS`, with the
+     SHA-bound validation report published and the pointer updated.
+  3. Drift D5 (new): `echo blocked > policy-test.txt` executed and created the
+     file under `--sandbox enabled` despite the deny list (v0.3's D2 fix does
+     not hold on this agent build — redirection writes bypass the Shell
+     denials). The post-run snapshot integrity check reported
+     `Integrity: FAILED` and `status` failed closed, so the audit chain
+     stayed closed; README documents the non-guarantee. No code change is
+     needed for the hermetic contract; a future adapter pass may add
+     sandbox-level write blocks.

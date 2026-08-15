@@ -12,10 +12,15 @@ Pi, Codex, OpenCode, and Agy remain writers only. A direct relay is useful
 feedback, but the SHA-bound validation report and decision record remain the
 audit truth.
 
-> **Validation status:** v0.2 has hermetic adapter tests, tmuxp smoke coverage,
-> and no-model local CLI contract checks. It has not run a live model, used a
-> credential, or performed a provider-network/end-to-end permission smoke test.
-> `doctor` confirms local prerequisites, not provider-side behavior.
+> **Validation status:** v0.4 has hermetic adapter tests (50 sections),
+> tmuxp smoke, no-model CLI contract checks, and a real-Cursor gate smoke
+> (2026-08-15, agent 2026.08.11-e8db854, authenticated): the gate wrapper
+> `validate` ran end-to-end through the real CLI and recorded `RESULT: PASS`
+> with the SHA-bound report published. One drift was observed (D5): shell
+> redirection writes (`echo x > file`) bypassed the sandbox denials in this
+> agent build; the post-run snapshot integrity check detected the pollution
+> and kept the audit chain closed. `doctor` confirms local prerequisites, not
+> provider-side behavior.
 
 ## Location model
 
@@ -177,8 +182,13 @@ Select another gate with `--gate` or a `WRITER-GATE` profile; `cursor` and
 checkpoint that tracks `.cursor/cli.json` or `.agent-arena-gate`: Cursor's array
 layering cannot be proven to preserve both a project policy and Arena's deny-first
 gate. Keep those paths untracked for an Arena run, or use a future adapter that
-supports a verified policy merge. Before relying on the gate, complete the manual
-authenticated Cursor smoke recorded in the implementation plan.
+supports a verified policy merge. Before relying on the gate, review the manual authenticated Cursor smoke
+recorded in the implementation plan. As of 2026-08-15 (Cursor agent
+2026.08.11) the deny-first policy blocks listed Shell commands in the
+interactive path, but shell redirection writes (`echo x > file`) can bypass
+`Write(**)`/`Shell(echo *)` denials under `--sandbox enabled` (drift D5); the
+post-run snapshot integrity check detects such pollution and closes the
+validation/decision audit chain.
 
 Codex and Agy must not be substituted as gates: Codex exposes no project-level
 policy file and Agy's policy is global rather than per project, so each needs
