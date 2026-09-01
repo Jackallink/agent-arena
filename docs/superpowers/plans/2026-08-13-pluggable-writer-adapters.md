@@ -9,13 +9,16 @@
   added before adapter handoff and passed on 2026-08-13.
 - Gate 3 — drift check: **complete**. Code, test, and documentation names agree:
   writers are Pi/Codex/OpenCode/Agy and Cursor remains the sole formal gate.
-- Gate 4 — release gate: **pending manual authenticated smoke evidence**. The
-  hermetic, tmuxp, packaging, and no-model CLI checks passed; no live
-  model/provider-network test has been run or claimed by this plan.
+- Gate 4 — release gate: **complete (2026-08-13)**. The hermetic, tmuxp,
+  packaging, and no-model CLI checks passed; the authenticated live smokes
+  below (writer live smoke evidence, interactive-mode and end-to-end evidence,
+  and the two-checkpoint/D4/version-drift third pass) were recorded by an
+  authorized operator on 2026-08-13 without placing credentials or transcripts
+  in Git.
 
-This plan is review-ready for code review. It must not move to `complete` merely
-because adapters are locally detected; an operator must record the manual smoke
-evidence below first.
+This plan is complete: every step below is done, and the manual smoke evidence
+is recorded in the evidence sections. The spec may move to `complete` after
+owner sign-off.
 
 ## Steps
 
@@ -34,8 +37,8 @@ evidence below first.
 5. **Complete:** update README, adapter contract, doctor,
    and validation evidence to distinguish detected, enabled, and live-tested
    states.
-6. **Pending:** record the authenticated validation matrix evidence below before
-   moving this plan or its spec to `complete`.
+6. **Complete:** the authenticated validation matrix evidence is recorded in
+   the evidence sections below (all live smokes completed 2026-08-13).
 
 ## Writer implementation matrix
 
