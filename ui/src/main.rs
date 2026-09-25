@@ -10,7 +10,7 @@ mod model;
 use agent::Arena;
 use model::{parse_list, sort_runs};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 struct Options {
@@ -59,7 +59,7 @@ fn print_usage() {
 
 /// Non-interactive probe: prove the oracle chain end-to-end and print the
 /// needs-human-first digests (tests/run.sh §61 asserts `run-one` shows up).
-fn run_selftest(arena: &Arena, state_root: &PathBuf) -> ExitCode {
+fn run_selftest(arena: &Arena, state_root: &Path) -> ExitCode {
     let raw = match arena.list_json(state_root) {
         Ok(raw) => raw,
         Err(e) => {
@@ -150,7 +150,7 @@ impl PromptKind {
 /// status digest / writer-pane jump, keymap actions through the confirm
 /// line, q quits. Terminal discipline: raw mode only inside this function,
 /// the alternate screen is left around every child spawn.
-fn run_tui(arena: &Arena, state_root: &PathBuf) -> ExitCode {
+fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
     // Interactive guard: without a tty the event loop would block forever
     // (tests, cron, pipes). Fail fast with the dispatch hint instead.
     use crossterm::tty::IsTty;
@@ -393,8 +393,8 @@ fn run_tui(arena: &Arena, state_root: &PathBuf) -> ExitCode {
                     Err(e) => notice = e,
                 }
             }
-            KeyCode::Char(c) => match model::keymap_action(c) {
-                Some(action) => {
+            KeyCode::Char(c) => {
+                if let Some(action) = model::keymap_action(c) {
                     let Some(run) = runs.get(selected) else {
                         notice = "no run selected".to_string();
                         continue;
@@ -463,8 +463,7 @@ fn run_tui(arena: &Arena, state_root: &PathBuf) -> ExitCode {
                         model::Action::JumpWriterPane => { /* handled by Enter */ }
                     }
                 }
-                None => {}
-            },
+            }
             _ => {}
         }
     }

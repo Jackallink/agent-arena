@@ -160,6 +160,29 @@ model is mid-turn. Writers can send progress or a question to Cursor; Cursor can
 send review feedback and the next step back to the writer. The decision record,
 not a pane message, is the audit truth.
 
+## Dashboard (ui/)
+
+The `ui/` directory holds a standalone Rust + Ratatui TUI. It is a **thin
+client**: every byte of run data comes from `agent-arena list --json` /
+`status RUN --json`, every action is a verbatim CLI spawn shown on a confirm
+line, and destructive subcommands are never mapped.
+
+```bash
+agent-arena dashboard        # execs the built binary, or dies with the hint
+(cd ui && cargo build)       # build it yourself; stable Rust toolchain
+```
+
+Keys: `j`/`k` move · `Enter` status digest + writer-pane jump · `a` approve ·
+`r` request changes (`decision --verdict CHANGES_REQUESTED`) · `d` decision
+approve · `l` relay writer · `m` toggle approval mode · `v` validate · `q`
+quit. Non-interactive probe: `agent-arena-ui --selftest --state-root PATH`
+prints the needs-human-first digest and exits 0/1 — this is how the hermetic
+suite (§61) covers the UI data path without a pty.
+
+Prebuilt binaries: `packaging/build-ui.sh` stages release archives for the
+host and a static `x86_64-unknown-linux-musl` target into `dist/` (pure Rust,
+no cross toolchain needed).
+
 ## Run state
 
 Since v0.4 every run carries a per-run `run-state.tsv` as the single source of

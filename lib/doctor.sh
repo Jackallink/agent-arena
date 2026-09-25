@@ -78,6 +78,16 @@ for gate in $(arena_gate_list); do
 done
 [[ "$gate_count" -gt 0 ]] || arena_die 'doctor found no available gate adapter'
 
+# Dashboard status is advisory: it never fails doctor, it only tells the
+# operator what `agent-arena dashboard` will do right now.
+if [[ -x "${source_root}/ui/target/debug/agent-arena-ui" || -x "${source_root}/ui/target/release/agent-arena-ui" ]]; then
+    printf '%-20s %-12s %s\n' 'dashboard' ready 'run agent-arena dashboard'
+elif command -v cargo >/dev/null 2>&1; then
+    printf '%-20s %-12s %s\n' 'dashboard' 'buildable' 'run (cd ui && cargo build)'
+else
+    printf '%-20s %-12s %s\n' 'dashboard' 'absent' 'install Rust stable, then (cd ui && cargo build)'
+fi
+
 [[ "$writer_count" -gt 0 ]] || {
     printf '%s\n' 'agent-arena: no supported writer CLI is available' >&2
     failed=1

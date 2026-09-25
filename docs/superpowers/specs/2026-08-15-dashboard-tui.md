@@ -9,8 +9,9 @@ drift: none (spec precedes implementation; §61 tests written first per the plan
 
 ## Summary and scope
 
-A standalone TUI companion in a new `ui/` subdirectory (Zig, own `build.zig`)
-that gives an operator a multi-run monitoring and action surface. The bash
+A standalone TUI companion in a new `ui/` subdirectory (Rust + Ratatui,
+cargo workspace of its own) that gives an operator a multi-run monitoring
+and action surface. The bash
 core gains machine-readable oracle exits (`list --json`, `status RUN --json`)
 that the TUI — and any future UI — consumes. The UI is a **thin client**: it
 reads only the JSON oracles and acts only by spawning existing CLI subcommands.
@@ -19,8 +20,8 @@ In scope: JSON oracle contract (v1), `ui/` skeleton (build, model, selftest,
 interactive v0), `agent-arena dashboard` dispatch, `ui/AGENTS.md` local rules.
 
 Out of scope: Web UI (rejected — see decisions), remote/multi-host aggregation,
-packaging integration of the UI binary (follow-up), libvaxis adoption (follow-up
-once a stable Zig toolchain is pinned), destructive ops in the UI (cancel,
+libvaxis (withdrawn 2026-09-25 — Ratatui landed and needs nothing it offers;
+no follow-up spec will be written), destructive ops in the UI (cancel,
 repair-state, reset are never offered).
 
 ## Decisions
@@ -37,9 +38,9 @@ repair-state, reset are never offered).
   standard and ships the exact widgets this dashboard needs (Table, List,
   layout constraints, event loop, diff rendering, resize); (c) serde
   (deny_unknown_fields) doubles as the strictest JSON-contract validator;
-  (d) distribution via a static musl single binary (cargo-zigbuild reuses the
-  local zig as the cross linker). zell remains the proof that Zig works here;
-  Ratatui is simply the better fit for a thin-client dashboard.
+  (d) distribution via a static musl single binary — ratatui/crossterm are
+  pure Rust, so `rustup target add x86_64-unknown-linux-musl` with the
+  self-contained musl linker suffices; no zig/cargo-zigbuild involved.
 - **One UI only**: no parallel bash tmux dashboard. `--json` is the contract
   layer either way.
 - **JSON on stdout, humans on stderr**: for both oracle commands, `--json`
@@ -82,8 +83,9 @@ repair-state, reset are never offered).
   | Enter | jump pane | `tmux select-window -t SESSION` (writer pane focus) |
   | q | quit | — |
 - Never offered: cancel, repair-state, reset, merge, push, bypass flags.
-- The keymap table is the tested contract: Zig unit tests assert the argv each
-  key produces; bash tests assert the CLI accepts those argv forms.
+- The keymap table is the tested contract: Rust unit tests (`cargo test`)
+  assert the argv each key produces; bash tests assert the CLI accepts those
+  argv forms.
 
 ## ui/ skeleton
 
@@ -102,11 +104,11 @@ repair-state, reset are never offered).
 
 ## ui/AGENTS.md local rules
 
-- Zig pinned to a stable release (never `-dev`); `zig fmt` clean; `zig build
-  test` green before handoff.
-- stdlib-only until libvaxis is adopted by a follow-up spec.
+- Stable Rust channel pinned in `rust-toolchain.toml`; `cargo fmt` clean,
+  `cargo clippy -- -D warnings` and `cargo test` green before handoff.
+- No async runtime; the loop is crossterm-event-driven.
 - No direct reads of state roots: every byte of data enters through the CLI
-  subprocess. No `std.process` spawns other than `bin/agent-arena` and `tmux`
+  subprocess. No process spawns other than `bin/agent-arena` and `tmux`
   (jump-in).
 
 ## Acceptance criteria and test mapping
