@@ -1,0 +1,4 @@
+# Keep the toolchain pinned to a stable channel: the TUI is a long-lived
+# companion binary, not a nightly experiment.
+[toolchain]
+channel = "stable"

@@ -15,11 +15,18 @@ arena_load_project_config() {
     ARENA_PROJECT_NAME=''
     ARENA_PROJECT_VALIDATION_SCRIPT=''
     ARENA_CONFIG_APPROVAL_MODE='human'
+    # Held in a variable so bash parses it as POSIX ERE verbatim: the
+    # value is either plain characters (no quote/backslash) or escape
+    # pairs like \" and \\ written by init.sh.
+    config_line_re='^(project_name|validation_script|approval_mode)="(([^"\\]|\\.)*)"$'
     while IFS= read -r line || [[ -n "$line" ]]; do
         [[ -z "$line" || "$line" == \#* ]] && continue
-        if [[ "$line" =~ ^(project_name|validation_script|approval_mode)=\"([^\"]*)\"$ ]]; then
+        if [[ "$line" =~ $config_line_re ]]; then
             key="${BASH_REMATCH[1]}"
             value="${BASH_REMATCH[2]}"
+            # Unescape the conf value: quotes first, then backslashes.
+            value="${value//\\\"/\"}"
+            value="${value//\\\\/\\}"
             case "$key" in
                 project_name) ARENA_PROJECT_NAME="$value" ;;
                 validation_script) ARENA_PROJECT_VALIDATION_SCRIPT="$value" ;;

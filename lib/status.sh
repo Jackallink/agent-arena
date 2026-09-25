@@ -3,17 +3,21 @@ set -euo pipefail
 
 source_root="${ARENA_SOURCE_ROOT:-$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)}"
 source "${source_root}/lib/common.sh"
+source "${source_root}/lib/json.sh"
 
 usage() {
     cat <<'EOF'
-Usage: agent-arena status RUN_ID [--state-root PATH]
+Usage: agent-arena status RUN_ID [--json] [--state-root PATH]
 
 Show the run manifest plus the latest submitted checkpoint, validation report, and
 decision record, then the one-sentence diagnosis and any transition anomaly.
+With --json, print the JSON contract document to stdout on every exit path
+(stderr keeps the human diagnostics; exit codes are unchanged).
 This command makes no changes.
 EOF
 }
 
+status_json=0
 run_id=''
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -21,6 +25,10 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || arena_die '--state-root requires a path'
             ARENA_STATE_ROOT="$2"
             shift 2
+            ;;
+        --json)
+            status_json=1
+            shift
             ;;
         -h|--help)
             usage
@@ -35,6 +43,67 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# --- JSON contract emission (docs/superpowers/specs/2026-08-15-dashboard-tui.md) ---
+# Human output is byte-identical without --json. With --json, field lines are
+# buffered into the fields object, the error path is tracked by the current
+# stage marker, and every exit emits the document from the EXIT trap (so any
+# die() anywhere below still yields valid JSON with the right exit code).
+ARENA_STATUS_ERROR='unknown'
+ARENA_STATUS_FIELDS=''
+ARENA_STATUS_PANES=''
+ARENA_STATUS_FINISHED=0
+status_kvs=()
+
+arena_status_kv() {  # KEY_JSON KEY_HUMAN VALUE
+    if [[ "$status_json" == 1 ]]; then
+        status_kvs+=("\"$1\":$(arena_json_string "$3")")
+    else
+        printf '%s: %s\n' "$2" "$3"
+    fi
+}
+
+arena_status_finish() {  # EXIT_CODE  (error name comes from ARENA_STATUS_ERROR)
+    if [[ "$status_json" == 1 ]]; then
+        ARENA_STATUS_FINISHED=1
+        local fields="" kv panes_out status_err
+        [[ "$1" == 0 ]] && status_err='null' || status_err="$ARENA_STATUS_ERROR"
+        for kv in "${status_kvs[@]}"; do
+            fields="${fields:+$fields,}$kv"
+        done
+        panes_out="$ARENA_STATUS_PANES"
+        [[ -n "$panes_out" ]] || panes_out='{}'
+        if [[ "$status_err" == 'null' ]]; then
+            printf '{"schema":1,"run_id":%s,"fields":{%s},"panes":%s,"error":null}\n' \
+                "$(arena_json_string "$run_id")" "$fields" "$panes_out"
+        else
+            printf '{"schema":1,"run_id":%s,"fields":{%s},"panes":%s,"error":%s}\n' \
+                "$(arena_json_string "$run_id")" "$fields" "$panes_out" \
+                "$(arena_json_string "$status_err")"
+        fi
+    fi
+    exit "$1"
+}
+
+arena_status_fail() {  # EXIT_CODE  — emit JSON (or nothing for humans) and exit
+    if [[ "$status_json" == 1 ]]; then
+        arena_status_finish "$1"
+    fi
+    exit "$1"
+}
+
+if [[ "$status_json" == 1 ]]; then
+    arena_status_trap_exit() {
+        local code=$?
+        if [[ "$ARENA_STATUS_FINISHED" == 0 ]]; then
+            ARENA_STATUS_FINISHED=1
+            printf '{"schema":1,"run_id":%s,"fields":{},"panes":{},"error":%s}\n' \
+                "$(arena_json_string "$run_id")" "$(arena_json_string "$ARENA_STATUS_ERROR")"
+        fi
+        exit "$code"
+    }
+    trap arena_status_trap_exit EXIT
+fi
+
 [[ -n "$run_id" ]] || arena_die 'status requires RUN_ID'
 arena_validate_run_id "$run_id"
 run_dir="$(arena_find_run_dir "$run_id")"
@@ -48,23 +117,43 @@ repo_id="$(basename "$(dirname "$run_dir")")"
 
 # Priority check (1): LIVE LOCK (run or parent creation lock with a live
 # owner) always wins: 'transition in progress', exit 4.
+ARENA_STATUS_ERROR='locked'
 if arena_state_precheck_lock_live "${run_dir}/.run-lock"; then
-    printf 'transition in progress\n'
-    exit 4
+    [[ "$status_json" == 1 ]] && printf 'transition in progress\n' >&2 || printf 'transition in progress\n'
+    arena_status_fail 4
 fi
 if arena_state_precheck_lock_live "${runs_root}/${repo_id}/.parent-lock"; then
-    printf 'transition in progress\n'
-    exit 4
+    [[ "$status_json" == 1 ]] && printf 'transition in progress\n' >&2 || printf 'transition in progress\n'
+    arena_status_fail 4
 fi
 # Priority check (2): creation intent with no live owner. S1/S2/S5/S6 are
 # owned by start (exit 5, retry: start); S3/S4 take the manual abort
 # protocol (exit 2) for status.
-arena_state_precheck_intents "$runs_root" "$repo_id" "$run_id" status
+if [[ "$status_json" == 1 ]]; then
+    # The precheck prints its human diagnostics to stderr and exits
+    # 4/5/2; capture and re-emit them, then finish with the mapped error.
+    precheck_rc=0
+    precheck_err="$(arena_state_precheck_intents "$runs_root" "$repo_id" "$run_id" status 2>&1)" || precheck_rc=$?
+    if [[ "$precheck_rc" != 0 ]]; then
+        [[ -n "$precheck_err" ]] && printf '%s\n' "$precheck_err" >&2
+        case "$precheck_rc" in
+            4) ARENA_STATUS_ERROR='locked' ;;
+            5) ARENA_STATUS_ERROR='incomplete' ;;
+            *) ARENA_STATUS_ERROR='conflict' ;;
+        esac
+        arena_status_fail "$precheck_rc"
+    fi
+else
+    arena_state_precheck_intents "$runs_root" "$repo_id" "$run_id" status
+fi
 # Priority check (3): repair intent with no live lock, before any ordinary
 # state parse.
 if [[ -f "${run_dir}/.repair.intent" ]]; then
-    printf 'incomplete transition; retry: agent-arena repair-state %s --candidate <token> --reason "..."\n' "$run_id"
-    exit 5
+    [[ "$status_json" == 1 ]] && \
+        printf 'incomplete transition; retry: agent-arena repair-state %s --candidate <token> --reason "..."\n' "$run_id" >&2 || \
+        printf 'incomplete transition; retry: agent-arena repair-state %s --candidate <token> --reason "..."\n' "$run_id"
+    ARENA_STATUS_ERROR='incomplete'
+    arena_status_fail 5
 fi
 
 # Observation-only reviewer-pane liveness: never dies; status reports the
@@ -129,86 +218,115 @@ arena_status_diagnosis() {
     fi
 }
 
-printf 'Run: %s\n' "$ARENA_MANIFEST_RUN_ID"
-printf 'Repository: %s\n' "$ARENA_MANIFEST_REPOSITORY"
-printf 'Base: %s\n' "$ARENA_MANIFEST_BASE_SHA"
-printf 'Profile: %s\n' "$ARENA_MANIFEST_PROFILE"
-printf 'Writer adapter: %s\n' "$ARENA_MANIFEST_WRITER_ADAPTER"
-printf 'Gate: %s\n' "$ARENA_MANIFEST_GATE_ADAPTER"
-printf 'Writer: %s\n' "$ARENA_MANIFEST_WRITER_LABEL"
-printf 'Writer worktree: %s\n' "$ARENA_MANIFEST_WRITER_WORKTREE"
-printf 'Branch: %s\n' "$ARENA_MANIFEST_BRANCH"
-printf 'Tmux session: %s\n' "$ARENA_MANIFEST_SESSION_NAME"
+arena_status_kv 'run_id' 'Run' "$ARENA_MANIFEST_RUN_ID"
+arena_status_kv 'repository' 'Repository' "$ARENA_MANIFEST_REPOSITORY"
+arena_status_kv 'base' 'Base' "$ARENA_MANIFEST_BASE_SHA"
+arena_status_kv 'profile' 'Profile' "$ARENA_MANIFEST_PROFILE"
+arena_status_kv 'writer_adapter' 'Writer adapter' "$ARENA_MANIFEST_WRITER_ADAPTER"
+arena_status_kv 'gate' 'Gate' "$ARENA_MANIFEST_GATE_ADAPTER"
+arena_status_kv 'writer' 'Writer' "$ARENA_MANIFEST_WRITER_LABEL"
+arena_status_kv 'writer_worktree' 'Writer worktree' "$ARENA_MANIFEST_WRITER_WORKTREE"
+arena_status_kv 'branch' 'Branch' "$ARENA_MANIFEST_BRANCH"
+arena_status_kv 'tmux_session' 'Tmux session' "$ARENA_MANIFEST_SESSION_NAME"
 # Approval mode from the manifest snapshot; drift against project.conf shows
 # a warning marker. A missing/unreadable config never dies status.
 config_mode="$(source "${source_root}/lib/config.sh" 2>/dev/null && \
     arena_load_project_config "$ARENA_MANIFEST_REPOSITORY" >/dev/null 2>&1 && \
     printf '%s' "${ARENA_CONFIG_APPROVAL_MODE:-human}")"
 if [[ -n "$config_mode" && "$ARENA_MANIFEST_MODE" != "$config_mode" ]]; then
-    printf 'Mode: %s (config: %s) ⚠\n' "$ARENA_MANIFEST_MODE" "$config_mode"
+    if [[ "$status_json" == 1 ]]; then
+        status_kvs+=("\"mode\":$(arena_json_string "$ARENA_MANIFEST_MODE")")
+        status_kvs+=("\"config_mode\":$(arena_json_string "$config_mode")")
+    else
+        printf 'Mode: %s (config: %s) ⚠\n' "$ARENA_MANIFEST_MODE" "$config_mode"
+    fi
 else
-    printf 'Mode: %s\n' "$ARENA_MANIFEST_MODE"
+    arena_status_kv 'mode' 'Mode' "$ARENA_MANIFEST_MODE"
 fi
 
 if [[ -f "${run_dir}/run-state.tsv" ]]; then
     # Priority check (4): ordinary parse of the authoritative state.
     # Corrupted or illegal state fails closed (exit 2).
+    ARENA_STATUS_ERROR='corrupt'
     arena_state_read "$run_dir"
-    printf 'State: %s\n' "$run_dir"
-    printf 'Verdict: %s\n' "${ARENA_STATE_VERDICT:-not recorded}"
-    printf 'Validation result: %s\n' "${ARENA_STATE_VALIDATION_RESULT:-not run}"
-    printf 'Last transition at: %s\n' "$ARENA_STATE_LAST_TRANSITION_AT"
+    arena_status_kv 'state_dir' 'State' "$run_dir"
+    arena_status_kv 'verdict' 'Verdict' "${ARENA_STATE_VERDICT:-not recorded}"
+    arena_status_kv 'validation_result' 'Validation result' "${ARENA_STATE_VALIDATION_RESULT:-not run}"
+    arena_status_kv 'last_transition_at' 'Last transition at' "$ARENA_STATE_LAST_TRANSITION_AT"
     integrity_status=0
     if [[ -f "${run_dir}/review.tsv" ]]; then
         arena_read_review_manifest "$run_dir"
-        printf 'Review HEAD: %s\n' "$ARENA_REVIEW_HEAD"
-        printf 'Review worktree: %s\n' "$ARENA_REVIEW_WORKTREE"
+        arena_status_kv 'review_head' 'Review HEAD' "$ARENA_REVIEW_HEAD"
+        arena_status_kv 'review_worktree' 'Review worktree' "$ARENA_REVIEW_WORKTREE"
+        ARENA_STATUS_ERROR='integrity_failed'
         if arena_review_snapshot_is_intact "$ARENA_REVIEW_WORKTREE" "$ARENA_REVIEW_HEAD" \
             "$ARENA_REVIEW_CURSOR_POLICY_HASH" "$ARENA_REVIEW_GATE_WRAPPER_HASH" \
             "$ARENA_REVIEW_GATE_POLICY_PATH" "$ARENA_REVIEW_GATE_WRAPPER_PATH"; then
-            printf 'Integrity: OK\n'
+            arena_status_kv 'integrity' 'Integrity' 'OK'
         else
-            printf 'Integrity: FAILED (review snapshot is missing, dirty, or tampered)\n'
+            arena_status_kv 'integrity' 'Integrity' 'FAILED (review snapshot is missing, dirty, or tampered)'
             integrity_status=1
         fi
+        ARENA_STATUS_ERROR='unknown'
         expected_short="$(arena_short_sha "$ARENA_REVIEW_HEAD")"
         if [[ -f "${run_dir}/validation.md" ]]; then
             pointer="$(<"${run_dir}/validation.md")"
             if [[ "$pointer" == "Latest validation report: validation-${expected_short}.md" ]]; then
-                printf 'Validation: %s\n' "$pointer"
+                arena_status_kv 'validation' 'Validation' "$pointer"
             else
-                printf 'Validation: not run for current checkpoint\n'
+                arena_status_kv 'validation' 'Validation' 'not run for current checkpoint'
             fi
         else
-            printf 'Validation: not run\n'
+            arena_status_kv 'validation' 'Validation' 'not run'
         fi
         if [[ -f "${run_dir}/decision.md" ]]; then
             if grep -Fqx "Review HEAD: ${ARENA_REVIEW_HEAD}" "${run_dir}/decision.md"; then
-                printf 'Decision: %s\n' "${run_dir}/decision.md"
+                arena_status_kv 'decision' 'Decision' "${run_dir}/decision.md"
             else
-                printf 'Decision: not recorded for current checkpoint\n'
+                arena_status_kv 'decision' 'Decision' 'not recorded for current checkpoint'
             fi
         else
-            printf 'Decision: not recorded\n'
+            arena_status_kv 'decision' 'Decision' 'not recorded'
         fi
     else
-        printf 'Review: no checkpoint submitted\n'
-        printf 'Validation: not run\n'
-        printf 'Decision: not recorded\n'
+        arena_status_kv 'review' 'Review' 'no checkpoint submitted'
+        arena_status_kv 'validation' 'Validation' 'not run'
+        arena_status_kv 'decision' 'Decision' 'not recorded'
     fi
     if [[ "$integrity_status" != 0 ]]; then
         # Tampered evidence fails closed (exit 2): status is an oracle, and
         # a dirty review snapshot is an evidence conflict, not a usage error.
-        exit 2
+        arena_status_fail 2
     fi
     if [[ "$ARENA_STATE_RESPONSIBLE_PARTY" == none ]]; then
         # Terminal per-scenario line: no pane check, no release command.
-        printf 'state: %s; verdict: %s\n' "$ARENA_STATE_RUN_STATUS" "${ARENA_STATE_VERDICT:-none}"
+        if [[ "$status_json" == 1 ]]; then
+            status_kvs+=("\"terminal\":$(arena_json_string "state: ${ARENA_STATE_RUN_STATUS}; verdict: ${ARENA_STATE_VERDICT:-none}")")
+        else
+            printf 'state: %s; verdict: %s\n' "$ARENA_STATE_RUN_STATUS" "${ARENA_STATE_VERDICT:-none}"
+        fi
     else
-        arena_status_diagnosis "$ARENA_STATE_RESPONSIBLE_PARTY" "$ARENA_STATE_REASON_CODE" \
-            "$ARENA_STATE_WAITING_SINCE" "$ARENA_MANIFEST_SESSION_NAME" "$ARENA_MANIFEST_RUN_ID"
+        if [[ "$status_json" == 1 ]]; then
+            diag="$(arena_status_diagnosis "$ARENA_STATE_RESPONSIBLE_PARTY" "$ARENA_STATE_REASON_CODE" \
+                "$ARENA_STATE_WAITING_SINCE" "$ARENA_MANIFEST_SESSION_NAME" "$ARENA_MANIFEST_RUN_ID" 2>/dev/null)"
+            status_kvs+=("\"diagnosis\":$(arena_json_string "$diag")")
+        else
+            arena_status_diagnosis "$ARENA_STATE_RESPONSIBLE_PARTY" "$ARENA_STATE_REASON_CODE" \
+                "$ARENA_STATE_WAITING_SINCE" "$ARENA_MANIFEST_SESSION_NAME" "$ARENA_MANIFEST_RUN_ID"
+        fi
     fi
-    exit 0
+    # Pane liveness for the JSON contract (the human lines stay inside the
+    # diagnosis text, as before).
+    if [[ "$status_json" == 1 ]]; then
+        reviewer_alive=false
+        writer_alive=false
+        if command -v tmux >/dev/null 2>&1 && tmux has-session -t "=${ARENA_MANIFEST_SESSION_NAME}" 2>/dev/null; then
+            arena_status_reviewer_pane_alive "$ARENA_MANIFEST_SESSION_NAME" && reviewer_alive=true
+            arena_status_writer_pane_alive "$ARENA_MANIFEST_SESSION_NAME" && writer_alive=true
+        fi
+        ARENA_STATUS_PANES="{\"reviewer\":${reviewer_alive},\"writer\":${writer_alive}}"
+    fi
+    arena_status_finish 0
 fi
 
 # Legacy run: read-only projection (zero writes, lock-free). Exit codes:
@@ -249,7 +367,7 @@ case "$projection_status" in
                 printf '  - %s\n' "$discarded_file"
             done
         fi
-        exit 2
+        arena_status_fail 2
         ;;
     5)
         case "$ARENA_PROJECTED_RESIDUE" in
@@ -263,6 +381,7 @@ case "$projection_status" in
                 printf 'incomplete transition; retry: agent-arena repair-state %s --candidate <token> --reason "..."\n' "$run_id"
                 ;;
         esac
-        exit 5
+        ARENA_STATUS_ERROR='incomplete'
+        arena_status_fail 5
         ;;
 esac

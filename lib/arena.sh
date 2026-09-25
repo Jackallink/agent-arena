@@ -22,8 +22,9 @@ Commands:
   repair-state RUN_ID [options]  Accept a status-printed repair candidate
   mode RUN_ID human|auto         Switch a live run's approval mode
   autopilot [options]            Auto-approve and alert; --once for cron
-  status RUN_ID                  Show manifest, validation, and decision state
-  list                           List all recorded runs with their state
+  status RUN_ID [--json]         Show manifest, validation, and decision state
+  list [--json]                  List all recorded runs with their state
+  dashboard                      Launch the ui/ Rust TUI (built on demand)
   version                        Print the Agent Arena version
   help                           Show this help
 
@@ -39,6 +40,17 @@ fi
 case "$command_name" in
     doctor|init|start|submit|validate|decision|escalate|resolve|relay|repair-state|mode|autopilot|status|list)
         exec "${source_root}/lib/${command_name}.sh" "$@"
+        ;;
+    dashboard)
+        # The TUI lives in ui/ as a standalone Rust binary; it is a pure
+        # consumer of the --json oracle layer and never bypasses the
+        # subcommand surface (docs/superpowers/specs/2026-08-15-dashboard-tui.md).
+        dashboard_bin="${source_root}/ui/target/debug/agent-arena-ui"
+        [[ -x "$dashboard_bin" ]] || dashboard_bin="${source_root}/ui/target/release/agent-arena-ui"
+        if [[ ! -x "$dashboard_bin" ]]; then
+            arena_die "dashboard binary missing; build it first: (cd ui && cargo build)"
+        fi
+        exec "$dashboard_bin" "$@"
         ;;
     resume)
         [[ $# -ge 1 ]] || arena_die 'resume requires RUN_ID'

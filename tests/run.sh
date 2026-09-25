@@ -4265,4 +4265,115 @@ if compgen -G "${e2_dir}/validation-*diagnostic.md" >/dev/null; then
 fi
 
 
+printf '%s\n' '61. dashboard tui: json oracles, escaping, dashboard dispatch'
+# j1: list --json — schema marker, known run, controlled fields, and the
+#     same aggregated exit as the human rendering (the JSON layer is a
+#     projection, never a divergent oracle)
+set +e
+run_arena list --state-root "$state_base" >"${tmp_root}/list-human.out" 2>&1
+list_human_exit=$?
+run_arena list --json --state-root "$state_base" >"${tmp_root}/list-json.out" 2>&1
+list_json_exit=$?
+set -e
+[[ "$list_json_exit" == "$list_human_exit" ]] || \
+    fail "list --json exited $list_json_exit, human list exited $list_human_exit"
+require_match '"schema":1' "${tmp_root}/list-json.out"
+require_match '"runs":[' "${tmp_root}/list-json.out"
+require_match '"run_id":"run-one"' "${tmp_root}/list-json.out"
+require_match '"anomaly":"corrupt"' "${tmp_root}/list-json.out"
+# j1: empty state root renders an empty array (not an error)
+mkdir -p "${tmp_root}/empty-state"
+set +e
+run_arena list --json --state-root "${tmp_root}/empty-state" >"${tmp_root}/list-json-empty.out" 2>&1
+list_json_empty_exit=$?
+set -e
+[[ "$list_json_empty_exit" == 0 ]] || fail "empty list --json exited $list_json_empty_exit"
+require_match '"runs":[]' "${tmp_root}/list-json-empty.out"
+# j2: status --json ok path — JSON on stdout, exit 0, error null.
+# The dual-project fixture created a second run with id run-one under
+# project-two, so disambiguate via the inherited run dir (a supported
+# calling form), and lock the ambiguous-lookup JSON behavior too.
+run_one_dir="$(find "${state_base}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/run-one/manifest.tsv' | grep -v '/project-two-' | head -1)"
+[[ -n "$run_one_dir" ]] || fail 'run-one manifest missing'
+set +e
+ARENA_RUN_DIR="$(dirname "$run_one_dir")" run_arena status run-one --json --state-root "$state_base" >"${tmp_root}/status-json.out" 2>&1
+status_json_exit=$?
+set -e
+if [[ "$status_json_exit" != 0 ]]; then
+    cat "${tmp_root}/status-json.out" >&2
+    fail "status --json exited $status_json_exit"
+fi
+require_match '"schema":1' "${tmp_root}/status-json.out"
+require_match '"run_id":"run-one"' "${tmp_root}/status-json.out"
+require_match '"error":null' "${tmp_root}/status-json.out"
+require_match '"panes":{' "${tmp_root}/status-json.out"
+# j2: ambiguous run id (two runs share the id) still emits JSON with the
+#     usage error on the documented exit 1
+set +e
+run_arena status run-one --json --state-root "$state_base" >"${tmp_root}/status-json-ambig.out" 2>/dev/null
+status_ambig_exit=$?
+set -e
+[[ "$status_ambig_exit" == 1 ]] || fail "ambiguous status --json exited $status_ambig_exit"
+require_match '"error":"unknown"' "${tmp_root}/status-json-ambig.out"
+# j2: corrupt state → exit 2 with JSON carrying the error field (stdout),
+#     human diagnostic stays on stderr
+corrupt_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -name manifest.tsv -path '*/ap-corrupt/manifest.tsv' -exec dirname {} \;)"
+[[ -n "$corrupt_dir" ]] || fail 'ap-corrupt fixture missing'
+set +e
+run_arena status ap-corrupt --json --state-root "$state_base" >"${tmp_root}/status-json-corrupt.out" 2>"${tmp_root}/status-json-corrupt.err"
+status_corrupt_exit=$?
+set -e
+[[ "$status_corrupt_exit" == 2 ]] || fail "corrupt status --json exited $status_corrupt_exit"
+require_match '"error":"corrupt"' "${tmp_root}/status-json-corrupt.out"
+require_match 'corrupt' "${tmp_root}/status-json-corrupt.err"
+# j3: escaping — a repository path containing a double quote round-trips
+#     as \" in the JSON document. list reads the manifest read-only, so a
+#     hand-built fixture exercises the escape layer directly (start
+#     legitimately refuses tmuxp-bound paths containing quotes).
+esc_root="${tmp_root}/esc-state"
+esc_repo="${tmp_root}/weird\"repo"
+esc_dir="${esc_root}/runs/esc-repo/esc-run"
+mkdir -p "$esc_dir"
+{
+    printf 'run_id\tesc-run\n'
+    printf 'repository\t%s\n' "$esc_repo"
+    printf 'mode\thuman\n'
+} >"${esc_dir}/manifest.tsv"
+set +e
+run_arena list --json --state-root "$esc_root" >"${tmp_root}/list-json-weird.out" 2>&1
+esc_list_exit=$?
+set -e
+[[ "$esc_list_exit" == 0 ]] || fail "esc list --json exited $esc_list_exit"
+require_match 'weird\"repo' "${tmp_root}/list-json-weird.out"
+# u3: dashboard dispatch — missing binary dies with the build hint; with
+#     the binary present but no tty, the TUI itself refuses interactively
+ui_bin="${source_root}/ui/target/debug/agent-arena-ui"
+ui_bin_hidden=''
+if [[ -x "$ui_bin" ]]; then
+    ui_bin_hidden="${ui_bin}.hidden"
+    mv "$ui_bin" "$ui_bin_hidden"
+fi
+run_arena dashboard </dev/null >"${tmp_root}/dashboard.out" 2>&1 || true
+if [[ -n "$ui_bin_hidden" ]]; then mv "$ui_bin_hidden" "$ui_bin"; fi
+require_match 'cargo build' "${tmp_root}/dashboard.out"
+if [[ -x "$ui_bin" ]]; then
+    run_arena dashboard </dev/null >"${tmp_root}/dashboard-tty.out" 2>&1 || true
+    require_match 'requires a tty' "${tmp_root}/dashboard-tty.out"
+fi
+# u1/u2: with the Rust toolchain present, run cargo test and the --selftest
+# probe (strict serde parse = strongest schema check) end-to-end
+if command -v cargo >/dev/null 2>&1; then
+    (cd "${source_root}/ui" && cargo test --quiet >/dev/null 2>&1) || fail 'cargo test failed'
+    (cd "${source_root}/ui" && cargo build --quiet >/dev/null 2>&1) || fail 'cargo build failed'
+    ui_bin="${source_root}/ui/target/debug/agent-arena-ui"
+    [[ -x "$ui_bin" ]] || fail 'ui binary missing after cargo build'
+    set +e
+    "$ui_bin" --selftest --state-root "${state_base}" >"${tmp_root}/ui-selftest.out" 2>&1
+    ui_selftest_exit=$?
+    set -e
+    [[ "$ui_selftest_exit" == 0 ]] || fail "ui --selftest exited $ui_selftest_exit"
+    require_match 'run-one' "${tmp_root}/ui-selftest.out"
+fi
+
+
 printf '%s\n' 'tests: ok'

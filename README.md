@@ -150,8 +150,9 @@ agent-arena relay RUN_ID --to writer --from reviewer --message "..."
 agent-arena escalate RUN_ID --reason-code reviewer_unreachable --reason "..."
 agent-arena resolve RUN_ID --action approve|reject|recover|cancel --reason "..."
 agent-arena repair-state RUN_ID --candidate TOKEN --reason "..."
-agent-arena status RUN_ID
-agent-arena list
+agent-arena status RUN_ID [--json]
+agent-arena list [--json]
+agent-arena dashboard        # launch the ui/ TUI (builds on demand from ui/)
 ```
 
 Relay delivery is direct but best effort: tmux cannot know whether an interactive

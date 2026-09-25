@@ -44,9 +44,16 @@ validation="${adapter_dir}/validate.sh"
 
 mkdir -p "$adapter_dir"
 repository_name="$(basename "$repository")"
+# Escape for the double-quoted conf value: backslash first, then quotes.
+arena_conf_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '%s' "$s"
+}
 {
     printf '%s\n' '# Project adapter for Agent Arena.'
-    printf 'project_name="%s"\n' "$repository_name"
+    printf 'project_name="%s"\n' "$(arena_conf_escape "$repository_name")"
     printf 'validation_script=".agent-arena/validate.sh"\n'
     printf '%s\n' '# approval_mode: human (default) requires a person to approve every'
     printf '%s\n' '# reviewer APPROVE; auto lets `agent-arena autopilot` approve validated'
