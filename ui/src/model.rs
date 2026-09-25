@@ -61,6 +61,7 @@ impl RunSummary {
 #[serde(deny_unknown_fields)]
 pub struct ListDoc {
     pub schema: u32,
+    #[allow(dead_code)]
     pub generated_at: i64,
     pub runs: Vec<RunSummary>,
 }
@@ -78,10 +79,12 @@ pub struct Panes {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StatusDoc {
+    #[allow(dead_code)]
     pub schema: u32,
     pub run_id: String,
     pub fields: serde_json::Map<String, serde_json::Value>,
     pub panes: Panes,
+    #[allow(dead_code)]
     pub error: Option<String>,
 }
 
@@ -126,6 +129,7 @@ pub fn sort_runs(runs: &mut [RunSummary]) {
 /// Actions the TUI can take. Each maps to exactly one non-destructive
 /// `agent-arena` subcommand spawn (or the tmux pane jump).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // JumpWriterPane is matched in main.rs inline (Enter key)
 pub enum Action {
     Approve,
     Reject,
@@ -151,7 +155,10 @@ pub fn keymap_action(key: char) -> Option<Action> {
     }
 }
 
-/// Enter (the carriage return) jumps to the writer pane via tmux.
+/// Enter (the carriage return) jumps to the writer pane via tmux. Kept
+/// as part of the tested keymap contract even though main.rs handles
+/// Enter inline for its dual status/jump behavior.
+#[allow(dead_code)]
 pub fn keymap_enter() -> Option<Action> {
     Some(Action::JumpWriterPane)
 }
@@ -176,6 +183,57 @@ pub fn action_argv(action: Action, run_id: &str) -> Option<Vec<String>> {
         _ => return None,
     };
     Some(argv)
+}
+
+/// argv for `mode RUN auto|human` — the toggle reads the current mode from
+/// the status fields and flips it. An unknown or missing mode resolves to
+/// human: the UI never auto-promotes a run it cannot read.
+pub fn toggle_mode_argv(current_mode: Option<&str>, run_id: &str) -> Vec<String> {
+    let next = match current_mode {
+        Some("human") => "auto",
+        _ => "human",
+    };
+    vec!["mode".to_string(), run_id.to_string(), next.to_string()]
+}
+
+/// argv for the prompted decision action: approve with a one-line summary.
+pub fn decision_approve_argv(run_id: &str, summary: &str) -> Vec<String> {
+    vec![
+        "decision".to_string(),
+        run_id.to_string(),
+        "--verdict".to_string(),
+        "APPROVE".to_string(),
+        "--summary".to_string(),
+        summary.to_string(),
+    ]
+}
+
+/// argv for the prompted relay action.
+pub fn relay_writer_argv(run_id: &str, message: &str) -> Vec<String> {
+    vec![
+        "relay".to_string(),
+        run_id.to_string(),
+        "--to".to_string(),
+        "writer".to_string(),
+        "--from".to_string(),
+        "reviewer".to_string(),
+        "--message".to_string(),
+        message.to_string(),
+    ]
+}
+
+/// tmux argv to jump to the run's writer pane: focus the session window.
+pub fn jump_tmux_argv(session_name: &str) -> Vec<String> {
+    vec![
+        "select-window".to_string(),
+        "-t".to_string(),
+        session_name.to_string(),
+    ]
+}
+
+/// The confirm line shown before any spawn: verbatim CLI, no surprises.
+pub fn confirm_text(argv: &[String]) -> String {
+    format!("run: agent-arena {}  (y=confirm, n=cancel)", argv.join(" "))
 }
 
 #[cfg(test)]
@@ -240,12 +298,6 @@ mod tests {
         assert_eq!(reject, vec!["resolve", "run-one", "--action", "reject"]);
         let validate = action_argv(Action::Validate, "run-one").unwrap();
         assert_eq!(validate, vec!["validate", "run-one"]);
-        // Prompted and navigation actions build no argv from the table.
-        assert!(action_argv(Action::DecisionApprove, "r").is_none());
-        assert!(action_argv(Action::RelayWriter, "r").is_none());
-        assert!(action_argv(Action::ToggleMode, "r").is_none());
-        assert!(action_argv(Action::JumpWriterPane, "r").is_none());
-        assert!(action_argv(Action::Quit, "r").is_none());
         // Destructive subcommands never appear in any argv.
         for a in [Action::Approve, Action::Reject, Action::Validate] {
             if let Some(argv) = action_argv(a, "r") {
@@ -256,5 +308,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn mode_toggle_flips_and_defaults_safe() {
+        assert_eq!(
+            toggle_mode_argv(Some("auto"), "r"),
+            vec!["mode", "r", "human"]
+        );
+        assert_eq!(
+            toggle_mode_argv(Some("human"), "r"),
+            vec!["mode", "r", "auto"]
+        );
+        // Unknown/missing modes resolve to human: never auto-promote.
+        assert_eq!(toggle_mode_argv(None, "r"), vec!["mode", "r", "human"]);
+        assert_eq!(
+            toggle_mode_argv(Some("bogus"), "r"),
+            vec!["mode", "r", "human"]
+        );
+    }
+
+    #[test]
+    fn prompted_argvs_carry_the_payload_verbatim() {
+        assert_eq!(
+            decision_approve_argv("r", "ok"),
+            vec!["decision", "r", "--verdict", "APPROVE", "--summary", "ok"]
+        );
+        assert_eq!(
+            relay_writer_argv("r", "hello"),
+            vec!["relay", "r", "--to", "writer", "--from", "reviewer", "--message", "hello"]
+        );
+        assert_eq!(jump_tmux_argv("sess"), vec!["select-window", "-t", "sess"]);
+    }
+
+    #[test]
+    fn confirm_line_shows_verbatim_cli() {
+        let argv = action_argv(Action::Approve, "run-one").unwrap();
+        assert_eq!(
+            confirm_text(&argv),
+            "run: agent-arena resolve run-one --action approve  (y=confirm, n=cancel)"
+        );
     }
 }

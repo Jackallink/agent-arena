@@ -1,5 +1,47 @@
 # Release Notes
 
+## v0.6.1 — Dashboard TUI companion (2026-08-15)
+
+Minor feature release: Agent Arena gets a terminal dashboard and a JSON
+oracle layer that any future UI consumes.
+
+### New capabilities
+
+- **`agent-arena list --json` / `status RUN --json` (JSON contract v1)**:
+  every exit path emits a JSON document on stdout — errors carry an
+  `"error"` field, exit codes are unchanged, and human output stays
+  byte-identical without the flag. Strings are escaped per RFC 8259.
+- **`agent-arena dashboard`**: launches the `ui/` Rust TUI (builds on demand
+  with the `cargo build` hint when missing; refuses a non-tty stdin
+  instead of blocking).
+- **`ui/` Rust + Ratatui thin client**: data only via the `--json` oracles,
+  actions only via verbatim `agent-arena` subcommand spawns shown on a
+  confirm line (`a` approve, `r` reject, `d` decision, `l` relay, `m` mode
+  toggle, `v` validate, Enter writer-pane jump, `q` quit). Destructive
+  subcommands are never mapped; the keymap→argv table is unit-tested with
+  strict serde (`deny_unknown_fields`) and an unknown mode resolves
+  human-safe (never auto-promotes to `auto`).
+- **Interactive smoke (headless tmux)**: render, confirm line, prompted
+  input, staged decision argv, cancel paths, a real child spawn with
+  terminal suspend/restore, and a clean exit — all captured in a tmux
+  pane against a real state root (plan Gate 4 evidence).
+
+### Fixes
+
+- **`init`/config escape quoted project names**: a repository directory
+  containing `"` or `\\` no longer breaks `project.conf` round-trip.
+  (`start` still refuses tmuxp-bound paths containing quotes by design.)
+- **`list` corrupt rows render again**: a corrupt `run-state.tsv` used to
+  kill the whole row via die-inside-if; list now probes in a subshell and
+  reports the row with `anomaly: corrupt` (exit 2 aggregated, unchanged).
+
+### Test evidence
+
+- `tests/run.sh`: 62 sections green (§61 covers the JSON oracles, escaping,
+  dashboard dispatch, and the `--selftest` probe).
+- `cargo test` (ui/): 8 passed; zero warnings.
+- `tmuxp smoke`: ok. `packaging/package.sh --check`: OK.
+
 ## v0.6.0 — Zell writer adapter (2026-08-15)
 
 Minor feature release: Zell (0.4.0-rc.1) joins as the fifth writer, fully

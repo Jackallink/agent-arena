@@ -7,6 +7,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::model;
+
 pub struct Arena {
     bin: PathBuf,
 }
@@ -77,6 +79,20 @@ impl Arena {
                 "agent-arena {} exited with {status}",
                 argv.first().map(String::as_str).unwrap_or("?")
             ))
+        }
+    }
+
+    /// Jump to the writer pane: `tmux select-window -t SESSION`. The only
+    /// non-agent-arena spawn the thin-client rule permits.
+    pub fn jump_writer_pane(&self, session_name: &str) -> Result<(), String> {
+        let status = Command::new("tmux")
+            .args(model::jump_tmux_argv(session_name))
+            .status()
+            .map_err(|e| format!("failed to spawn tmux: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("tmux select-window exited with {status}"))
         }
     }
 }

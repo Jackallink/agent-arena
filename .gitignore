@@ -8,3 +8,5 @@ dist/
 state/
 worktrees/
 .worktrees/
+.zell/
+ui/target/

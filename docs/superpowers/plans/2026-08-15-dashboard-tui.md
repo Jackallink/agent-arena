@@ -11,7 +11,23 @@
   reached).
 - Gate 3 — drift check: **complete** (see Drift and lessons below; all
   62 sections §0–61 green, `tests: ok`).
-- Gate 4 — release gate: **pending** (interactive smoke open; v0.6.x).
+- Gate 4 — release gate: **complete**. Interactive smoke executed headless
+  via tmux (2026-09-25, `arena-tui-smoke` session, state root `/tmp/j2` with
+  a real `run-one`):
+  1. render: title `agent-arena runs` + needs-human-first digest lines;
+  2. `a` → confirm line shows the verbatim argv
+     (`run: agent-arena resolve run-one --action approve (y=confirm, n=cancel)`);
+  3. `n` → `cancelled`, no spawn;
+  4. `d` → input mode hint carries the run id, typed buffer echoed;
+  5. Enter → staged confirm for
+     `decision run-one --verdict APPROVE --summary looks good`; `q` there
+     cancels (fix: confirm mode used to swallow q — exit was unreachable);
+  6. `q` → pane exits cleanly;
+  7. `v` + `y` → real child spawn (validate failed on the intake-stage run
+     as expected), terminal suspended/restored correctly, TUI redraws, and
+     a final `q` exits cleanly.
+  Two interaction defects found and fixed by the smoke itself: confirm mode
+  swallowing `q`, and input hints missing the run id. Release notes v0.6.1.
 
 ## Tasks
 

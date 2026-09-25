@@ -128,4 +128,4 @@ repair-state, reset are never offered).
 | JSON contract | §61 (`tests: ok`, 62 sections) | done |
 | UI model/selftest | cargo test 5 passed + `--selftest` probe in §61 | done |
 | Full regression | tests/run.sh, tmuxp-smoke, package.sh --check, bash -n | done |
-| Interactive smoke | operator tmux capture (follow-up with interactive v0) | open |
+| Interactive smoke | headless tmux session `arena-tui-smoke`: render, confirm line, prompted input, staged decision argv, cancel paths, real spawn with terminal suspend/restore, clean exit (see plan Gate 4) | done |

@@ -111,6 +111,44 @@ fn main() -> ExitCode {
 /// shows its status digest; q quits. Actions confirm on the status line
 /// before spawning. This loop keeps the terminal discipline strict:
 /// raw mode only inside the guard, restore on every exit path.
+/// One input mode of the interactive loop. Actions never spawn directly:
+/// they stage a confirm line showing the verbatim argv (or a one-line
+/// input for the prompted actions d/l), and only y confirms.
+enum InputMode {
+    Normal,
+    Confirm { argv: Vec<String> },
+    Input { kind: PromptKind, buffer: String },
+}
+
+enum PromptKind {
+    DecisionSummary,
+    RelayMessage,
+}
+
+impl PromptKind {
+    fn hint(&self, run_id: &str) -> String {
+        match self {
+            PromptKind::DecisionSummary => {
+                format!("decision {} --verdict APPROVE --summary <type>, Enter submit, Esc cancel", run_id)
+            }
+            PromptKind::RelayMessage => {
+                format!("relay {} --to writer --message <type>, Enter submit, Esc cancel", run_id)
+            }
+        }
+    }
+
+    fn build_argv(&self, run_id: &str, buffer: &str) -> Vec<String> {
+        match self {
+            PromptKind::DecisionSummary => model::decision_approve_argv(run_id, buffer),
+            PromptKind::RelayMessage => model::relay_writer_argv(run_id, buffer),
+        }
+    }
+}
+
+/// Interactive v0: alternate-screen list, j/k selection, Enter for the
+/// status digest / writer-pane jump, keymap actions through the confirm
+/// line, q quits. Terminal discipline: raw mode only inside this function,
+/// the alternate screen is left around every child spawn.
 fn run_tui(arena: &Arena, state_root: &PathBuf) -> ExitCode {
     // Interactive guard: without a tty the event loop would block forever
     // (tests, cron, pipes). Fail fast with the dispatch hint instead.
@@ -119,9 +157,12 @@ fn run_tui(arena: &Arena, state_root: &PathBuf) -> ExitCode {
         eprintln!("agent-arena-ui: interactive mode requires a tty");
         return ExitCode::FAILURE;
     }
-    use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-    use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+    use crossterm::terminal::{
+        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    };
     use ratatui::backend::CrosstermBackend;
+    use ratatui::layout::{Constraint, Layout, Rect};
     use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
     use ratatui::Terminal;
 
@@ -131,8 +172,7 @@ fn run_tui(arena: &Arena, state_root: &PathBuf) -> ExitCode {
     }
     let _ = crossterm::execute!(std::io::stdout(), EnterAlternateScreen);
     let backend = CrosstermBackend::new(std::io::stdout());
-    let terminal = Terminal::new(backend);
-    let mut terminal = match terminal {
+    let mut terminal = match Terminal::new(backend) {
         Ok(t) => t,
         Err(_) => {
             let _ = disable_raw_mode();
@@ -141,15 +181,35 @@ fn run_tui(arena: &Arena, state_root: &PathBuf) -> ExitCode {
         }
     };
 
-    let mut runs = Vec::new();
-    let mut notice = String::from("q quit · Enter status · j/k move · r refresh");
+    // Leave the alternate screen so a spawned child gets a clean terminal,
+    // then restore it. Every spawn path goes through this pair.
+    fn with_suspended_terminal<T>(
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+        f: impl FnOnce() -> T,
+    ) -> T {
+        let _ = disable_raw_mode();
+        let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
+        let out = f();
+        let _ = enable_raw_mode();
+        let _ = crossterm::execute!(std::io::stdout(), EnterAlternateScreen);
+        let _ = terminal.clear();
+        out
+    }
+
+    let mut runs: Vec<model::RunSummary> = Vec::new();
+    let mut notice = String::from("q quit · Enter status/jump · j/k move · a approve · r reject · d decision · l relay · m mode · v validate");
     let mut selected: usize = 0;
     let mut list_state = ListState::default();
-    let mut result = ExitCode::SUCCESS;
+    let mut input_mode = InputMode::Normal;
+    let mut status_cache: Option<model::StatusDoc> = None;
+    let result = ExitCode::SUCCESS;
 
     loop {
-        let raw = arena.list_json(state_root);
-        let doc = raw.as_deref().map_err(Clone::clone).and_then(parse_list);
+        let doc = arena
+            .list_json(state_root)
+            .as_deref()
+            .map_err(Clone::clone)
+            .and_then(model::parse_list);
         match doc {
             Ok(mut d) => {
                 sort_runs(&mut d.runs);
@@ -160,72 +220,212 @@ fn run_tui(arena: &Arena, state_root: &PathBuf) -> ExitCode {
                 runs.clear();
             }
         }
-
-        let _ = terminal.draw(|f| {
-            let items: Vec<ListItem> = runs
-                .iter()
-                .map(|r| ListItem::new(r.digest()))
-                .collect();
-            let list = List::new(items)
-                .block(Block::default().title("agent-arena runs").borders(Borders::ALL))
-                .highlight_symbol("> ");
-            f.render_stateful_widget(list, f.size(), &mut list_state);
-            let area = f.size();
-            let hint = Paragraph::new(notice.as_str()).block(Block::default().borders(Borders::TOP));
-            use ratatui::layout::Rect;
-            let hint_area = Rect::new(area.x, area.bottom().saturating_sub(2), area.width, 2);
-            f.render_widget(hint, hint_area);
-        });
         if selected >= runs.len() {
             selected = runs.len().saturating_sub(1);
         }
         list_state.select(Some(selected));
 
-        if let Ok(Event::Key(key)) = event::read() {
-            if key.kind == KeyEventKind::Press {
-                match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        selected = (selected + 1).min(runs.len().saturating_sub(1));
+        let _ = terminal.draw(|f| {
+            let chunks = Layout::vertical([
+                Constraint::Min(3),
+                Constraint::Length(2),
+                Constraint::Length(2),
+            ])
+            .split(f.area());
+            let items: Vec<ListItem> = runs.iter().map(|r| ListItem::new(r.digest())).collect();
+            let selected_id = runs
+                .get(selected)
+                .map(|r| r.run_id.as_str())
+                .unwrap_or("");
+            let title = match &input_mode {
+                InputMode::Normal => "agent-arena runs".to_string(),
+                InputMode::Confirm { argv } => model::confirm_text(argv),
+                InputMode::Input { kind, buffer } => {
+                    format!("{} > {}", kind.hint(selected_id), buffer)
+                }
+            };
+            let list = List::new(items)
+                .block(Block::default().title(title).borders(Borders::ALL))
+                .highlight_symbol("> ");
+            f.render_stateful_widget(list, chunks[0], &mut list_state);
+            let notice_area = Rect::new(chunks[1].x, chunks[1].y, chunks[1].width, 1);
+            f.render_widget(Paragraph::new(notice.as_str()), notice_area);
+            if let Some(s) = &status_cache {
+                let line = format!(
+                    "{}  mode {}  verdict {}  reviewer-pane {}  writer-pane {}",
+                    s.run_id,
+                    s.field_str("mode").unwrap_or("-"),
+                    s.field_str("verdict").unwrap_or("-"),
+                    s.panes.reviewer,
+                    s.panes.writer
+                );
+                let status_area = Rect::new(chunks[2].x, chunks[2].y, chunks[2].width, 1);
+                f.render_widget(Paragraph::new(line), status_area);
+            }
+        });
+
+        let event = match event::read() {
+            Ok(ev) => ev,
+            Err(_) => break,
+        };
+        let Event::Key(key) = event else { continue };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+
+        // Confirm mode owns y/n first: a stray y elsewhere must not spawn.
+        if let InputMode::Confirm { argv } = &input_mode {
+            let argv = argv.clone();
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    input_mode = InputMode::Normal;
+                    let outcome = with_suspended_terminal(&mut terminal, || {
+                        arena.spawn_interactive(&argv, state_root)
+                    });
+                    notice = match outcome {
+                        Ok(()) => format!("ok: agent-arena {}", argv.join(" ")),
+                        Err(e) => e,
+                    };
+                    status_cache = None;
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
+                    input_mode = InputMode::Normal;
+                    notice = "cancelled".to_string();
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        // Prompted input mode: editable buffer, Enter stages the confirm.
+        if let InputMode::Input { kind, buffer } = &mut input_mode {
+            match key.code {
+                KeyCode::Esc => {
+                    input_mode = InputMode::Normal;
+                    notice = "cancelled".to_string();
+                }
+                KeyCode::Enter => {
+                    let kind = match kind {
+                        PromptKind::DecisionSummary => PromptKind::DecisionSummary,
+                        PromptKind::RelayMessage => PromptKind::RelayMessage,
+                    };
+                    let run_id = runs
+                        .get(selected)
+                        .map(|r| r.run_id.clone())
+                        .unwrap_or_default();
+                    if buffer.trim().is_empty() {
+                        notice = "empty input; Esc to cancel".to_string();
+                        continue;
                     }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        selected = selected.saturating_sub(1);
+                    let argv = kind.build_argv(&run_id, buffer.trim());
+                    input_mode = InputMode::Confirm { argv };
+                }
+                KeyCode::Backspace => {
+                    buffer.pop();
+                }
+                KeyCode::Char(c) => {
+                    if key.modifiers.contains(KeyModifiers::CONTROL) {
+                        continue;
                     }
-                    KeyCode::Char('r') => { /* refresh: the loop re-reads */ }
-                    KeyCode::Enter => {
-                        if let Some(run) = runs.get(selected) {
-                            match arena
-                                .status_json(&run.run_id, state_root)
-                                .as_deref()
-                                .map_err(Clone::clone)
-                                .and_then(model::parse_status)
-                            {
-                                Ok(status) => {
-                                    let verdict = status
-                                        .field_str("verdict")
-                                        .unwrap_or("-")
-                                        .to_string();
-                                    notice = format!(
-                                        "{}: {} (reviewer pane: {}, writer pane: {})",
-                                        status.run_id, verdict, status.panes.reviewer, status.panes.writer
-                                    );
-                                }
-                                Err(e) => notice = e,
+                    buffer.push(c);
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        // Normal mode: navigation, staged actions, quit.
+        match key.code {
+            KeyCode::Char('q') => break,
+            KeyCode::Char('j') | KeyCode::Down => {
+                selected = (selected + 1).min(runs.len().saturating_sub(1));
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                selected = selected.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                let Some(run) = runs.get(selected) else { continue };
+                let fetched = arena
+                    .status_json(&run.run_id, state_root)
+                    .as_deref()
+                    .map_err(Clone::clone)
+                    .and_then(model::parse_status);
+                match fetched {
+                    Ok(status) => {
+                        let session = status
+                            .field_str("tmux_session")
+                            .unwrap_or("")
+                            .to_string();
+                        notice = format!(
+                            "{}: mode {} verdict {} (reviewer {}, writer {})",
+                            status.run_id,
+                            status.field_str("mode").unwrap_or("-"),
+                            status.field_str("verdict").unwrap_or("-"),
+                            status.panes.reviewer,
+                            status.panes.writer
+                        );
+                        // The jump is the only non-arena spawn; it is
+                        // inert (window focus) and needs no confirm.
+                        if !session.is_empty() {
+                            let jumped =
+                                with_suspended_terminal(&mut terminal, || {
+                                    arena.jump_writer_pane(&session)
+                                });
+                            if let Err(e) = jumped {
+                                notice = e;
                             }
                         }
+                        status_cache = Some(status);
                     }
-                    other => {
-                        if let Some(action) = model::keymap_action(
-                            match other {
-                                KeyCode::Char(c) => c,
-                                _ => ' ',
-                            },
-                        ) {
-                            notice = format!("action {action:?} needs the selected run flow (v0: read-only)");
-                        }
-                    }
+                    Err(e) => notice = e,
                 }
             }
+            KeyCode::Char(c) => match model::keymap_action(c) {
+                Some(action) => {
+                    let Some(run) = runs.get(selected) else {
+                        notice = "no run selected".to_string();
+                        continue;
+                    };
+                    match action {
+                        model::Action::Quit => break,
+                        model::Action::Approve | model::Action::Reject | model::Action::Validate => {
+                            match model::action_argv(action, &run.run_id) {
+                                Some(argv) => input_mode = InputMode::Confirm { argv },
+                                None => notice = "cannot build argv".to_string(),
+                            }
+                        }
+                        model::Action::ToggleMode => {
+                            let current = match &status_cache {
+                                Some(s) if s.run_id == run.run_id => {
+                                    s.field_str("mode").map(str::to_string)
+                                }
+                                _ => None,
+                            };
+                            input_mode = InputMode::Confirm {
+                                argv: model::toggle_mode_argv(
+                                    current.as_deref(),
+                                    &run.run_id,
+                                ),
+                            };
+                        }
+                        model::Action::DecisionApprove => {
+                            input_mode = InputMode::Input {
+                                kind: PromptKind::DecisionSummary,
+                                buffer: String::new(),
+                            };
+                        }
+                        model::Action::RelayWriter => {
+                            input_mode = InputMode::Input {
+                                kind: PromptKind::RelayMessage,
+                                buffer: String::new(),
+                            };
+                        }
+                        model::Action::JumpWriterPane => { /* handled by Enter */ }
+                    }
+                }
+                None => {}
+            },
+            _ => {}
         }
     }
 
