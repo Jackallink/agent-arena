@@ -66,11 +66,16 @@ pub struct ListDoc {
     pub runs: Vec<RunSummary>,
 }
 
-/// The `panes` block of `agent-arena status RUN --json`.
+/// The `panes` block of `agent-arena status RUN --json`. Error-path
+/// documents emit `"panes":{}` (pane liveness is unknown there), so both
+/// fields default to false instead of failing the strict parse — the
+/// contract stays parseable on every exit path.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Panes {
+    #[serde(default)]
     pub reviewer: bool,
+    #[serde(default)]
     pub writer: bool,
 }
 
@@ -173,12 +178,6 @@ pub fn action_argv(action: Action, run_id: &str) -> Option<Vec<String>> {
             "--action".to_string(),
             "approve".to_string(),
         ],
-        Action::Reject => vec![
-            "resolve".to_string(),
-            run_id.to_string(),
-            "--action".to_string(),
-            "reject".to_string(),
-        ],
         Action::Validate => vec!["validate".to_string(), run_id.to_string()],
         _ => return None,
     };
@@ -196,8 +195,41 @@ pub fn toggle_mode_argv(current_mode: Option<&str>, run_id: &str) -> Vec<String>
     vec!["mode".to_string(), run_id.to_string(), next.to_string()]
 }
 
-/// argv for the prompted decision action: approve with a one-line summary.
-pub fn decision_approve_argv(run_id: &str, summary: &str) -> Vec<String> {
+/// argv for the prompted reject action: the reviewer's formal gate
+/// decision (CHANGES_REQUESTED) — the CLI's legal verdicts are APPROVE,
+/// CHANGES_REQUESTED, and BLOCKED; there is no REJECT. `resolve --action
+/// reject` is human-only (escalation path) and must not be reached from
+/// the reviewer-phase dashboard. The input carries `summary | next`;
+/// `next` is the instruction handed back to the writer.
+pub fn reject_argv(run_id: &str, input: &str) -> Vec<String> {
+    let (summary, next) = split_summary_next(input);
+    vec![
+        "decision".to_string(),
+        run_id.to_string(),
+        "--verdict".to_string(),
+        "CHANGES_REQUESTED".to_string(),
+        "--summary".to_string(),
+        summary.to_string(),
+        "--next".to_string(),
+        next.to_string(),
+    ]
+}
+
+/// Split the prompted decision input at the first `|`: summary | next.
+/// Without a separator the whole input is the summary and `next` defaults
+/// to a fix-and-resubmit directive (REJECT) or "proceed" (APPROVE).
+pub fn split_summary_next(input: &str) -> (&str, &str) {
+    match input.split_once('|') {
+        Some((s, n)) => (s.trim(), n.trim()),
+        None => (input.trim(), ""),
+    }
+}
+
+/// argv for the prompted decision action: approve with a one-line summary
+/// and the optional `| next` suffix.
+pub fn decision_approve_argv(run_id: &str, input: &str) -> Vec<String> {
+    let (summary, next) = split_summary_next(input);
+    let next = if next.is_empty() { "proceed" } else { next };
     vec![
         "decision".to_string(),
         run_id.to_string(),
@@ -205,6 +237,8 @@ pub fn decision_approve_argv(run_id: &str, summary: &str) -> Vec<String> {
         "APPROVE".to_string(),
         "--summary".to_string(),
         summary.to_string(),
+        "--next".to_string(),
+        next.to_string(),
     ]
 }
 
@@ -268,6 +302,17 @@ mod tests {
     }
 
     #[test]
+    fn status_error_path_document_is_parseable() {
+        // The EXIT-trap document for locked/corrupt/usage errors carries
+        // empty fields/panes; the client must accept it (panes unknown ->
+        // false), not reject its own oracle.
+        let trap = r#"{"schema":1,"run_id":"r","fields":{},"panes":{},"error":"locked"}"#;
+        let doc = parse_status(trap).unwrap();
+        assert_eq!(doc.error.as_deref(), Some("locked"));
+        assert!(!doc.panes.reviewer && !doc.panes.writer);
+    }
+
+    #[test]
     fn status_doc_parses_null_and_string_errors() {
         let ok = r#"{"schema":1,"run_id":"r","fields":{"verdict":"APPROVE"},"panes":{"reviewer":true,"writer":false},"error":null}"#;
         let doc = parse_status(ok).unwrap();
@@ -294,18 +339,44 @@ mod tests {
     fn argv_is_non_destructive_and_exact() {
         let approve = action_argv(Action::Approve, "run-one").unwrap();
         assert_eq!(approve, vec!["resolve", "run-one", "--action", "approve"]);
-        let reject = action_argv(Action::Reject, "run-one").unwrap();
-        assert_eq!(reject, vec!["resolve", "run-one", "--action", "reject"]);
+        // reject is the prompted gate decision (REJECT), not the
+        // human-only `resolve --action reject`.
+        assert!(action_argv(Action::Reject, "run-one").is_none());
+        assert_eq!(
+            reject_argv("run-one", "fails validation | fix the gate"),
+            vec![
+                "decision",
+                "run-one",
+                "--verdict",
+                "CHANGES_REQUESTED",
+                "--summary",
+                "fails validation",
+                "--next",
+                "fix the gate",
+            ]
+        );
         let validate = action_argv(Action::Validate, "run-one").unwrap();
         assert_eq!(validate, vec!["validate", "run-one"]);
         // Destructive subcommands never appear in any argv.
-        for a in [Action::Approve, Action::Reject, Action::Validate] {
+        for a in [Action::Approve, Action::Validate] {
             if let Some(argv) = action_argv(a, "r") {
                 for banned in [
                     "cancel", "repair-state", "reset", "merge", "push", "bypass",
                 ] {
                     assert!(!argv.contains(&banned.to_string()));
                 }
+            }
+        }
+        for argv in [
+            reject_argv("r", "s"),
+            decision_approve_argv("r", "s"),
+            relay_writer_argv("r", "m"),
+            toggle_mode_argv(Some("human"), "r"),
+        ] {
+            for banned in [
+                "cancel", "repair-state", "reset", "merge", "push", "bypass",
+            ] {
+                assert!(!argv.contains(&banned.to_string()));
             }
         }
     }
@@ -332,8 +403,37 @@ mod tests {
     fn prompted_argvs_carry_the_payload_verbatim() {
         assert_eq!(
             decision_approve_argv("r", "ok"),
-            vec!["decision", "r", "--verdict", "APPROVE", "--summary", "ok"]
+            vec![
+                "decision", "r", "--verdict", "APPROVE", "--summary", "ok", "--next", "proceed",
+            ]
         );
+        assert_eq!(
+            decision_approve_argv("r", "ok | merge after release"),
+            vec![
+                "decision",
+                "r",
+                "--verdict",
+                "APPROVE",
+                "--summary",
+                "ok",
+                "--next",
+                "merge after release",
+            ]
+        );
+        assert_eq!(
+            reject_argv("r", "stub script | fix validate.sh"),
+            vec![
+                "decision",
+                "r",
+                "--verdict",
+                "CHANGES_REQUESTED",
+                "--summary",
+                "stub script",
+                "--next",
+                "fix validate.sh",
+            ]
+        );
+        assert_eq!(split_summary_next("no pipe"), ("no pipe", ""));
         assert_eq!(
             relay_writer_argv("r", "hello"),
             vec!["relay", "r", "--to", "writer", "--from", "reviewer", "--message", "hello"]

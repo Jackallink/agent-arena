@@ -51,6 +51,10 @@ verify_archive() {
         arena_die 'archive is missing the MIT license'
     tar -tzf "$archive" | grep -Fqx "${release_name}/templates/tmuxp/arena.yaml" || \
         arena_die 'archive is missing the tmuxp template'
+    tar -tzf "$archive" | grep -Fqx "${release_name}/ui/Cargo.toml" || \
+        arena_die 'archive is missing the ui/ dashboard source'
+    tar -tzf "$archive" | grep -Fqx "${release_name}/ui/src/main.rs" || \
+        arena_die 'archive is missing the ui/ dashboard source'
     if command -v shasum >/dev/null 2>&1; then
         (cd "$output_dir" && shasum -a 256 -c "$(basename "$checksum")")
     else
@@ -69,7 +73,7 @@ fi
 
 required=(
     AGENTS.md LICENSE LICENSE-STATUS.md README.md VERSION .gitignore
-    adapters bin docs examples lib packaging templates tests
+    adapters bin docs examples lib packaging templates tests ui
 )
 for path in "${required[@]}"; do
     [[ -e "${source_root}/${path}" ]] || arena_die "missing package content: $path"
@@ -79,7 +83,8 @@ stage_root="$(mktemp -d "${TMPDIR:-/tmp}/agent-arena-package.XXXXXX")"
 trap 'rm -rf "$stage_root"' EXIT
 release_dir="${stage_root}/${release_name}"
 mkdir -p "$release_dir"
-tar -C "$source_root" -cf - "${required[@]}" | tar -C "$release_dir" -xf -
+# ui/ ships as source; build artifacts (ui/target) never enter the archive.
+tar -C "$source_root" --exclude='ui/target' -cf - "${required[@]}" | tar -C "$release_dir" -xf -
 tar -C "$stage_root" -czf "$archive" "$release_name"
 
 # Relative-path checksum so `shasum -c` works from any directory after

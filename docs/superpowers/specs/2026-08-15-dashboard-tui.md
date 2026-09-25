@@ -74,7 +74,7 @@ repair-state, reset are never offered).
   CLI invocation shown on the confirm line before spawn:
   | Key | Action | CLI |
   | a | approve | `resolve RUN --action approve` |
-  | r | reject | `resolve RUN --action reject` |
+  | r | request changes | `decision RUN --verdict CHANGES_REQUESTED --summary | next ...` (prompted; the CLI verdicts are APPROVE/CHANGES_REQUESTED/BLOCKED — there is no REJECT; `resolve --action reject` is the human-only escalation path) |
   | d | decision approve | `decision RUN --verdict APPROVE --summary ...` (prompted) |
   | l | relay writer | `relay RUN --to writer --message ...` (prompted) |
   | m | toggle mode | `mode RUN auto` / `mode RUN human` |

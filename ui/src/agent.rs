@@ -54,8 +54,20 @@ impl Arena {
         )
     }
 
+    /// The dashboard is a cross-run view: it must never inherit a
+    /// single-run binding from its surrounding environment (a tmux server
+    /// global, a writer pane, etc.), or every spawned CLI would silently
+    /// rebind to some unrelated run.
+    fn isolate_env(cmd: &mut Command) {
+        cmd.env_remove("ARENA_RUN_DIR");
+        cmd.env_remove("ARENA_RUN_ID");
+        cmd.env_remove("ARENA_SESSION_NAME");
+    }
+
     fn capture_json(&self, args: &[String], state_root: &Path) -> Result<String, String> {
-        let out = Command::new(&self.bin)
+        let mut cmd = Command::new(&self.bin);
+        Self::isolate_env(&mut cmd);
+        let out = cmd
             .args(args)
             .arg("--state-root")
             .arg(state_root)
@@ -65,27 +77,44 @@ impl Arena {
     }
 
     /// Spawn an interactive action (resolve/validate/...): the child owns
-    /// the terminal, this process waits, then the TUI redraws.
+    /// the terminal, this process waits, then the TUI redraws. stderr is
+    /// captured and surfaced so a failure explains itself instead of
+    /// leaving only an exit code.
     pub fn spawn_interactive(&self, argv: &[String], state_root: &Path) -> Result<(), String> {
         let mut cmd = Command::new(&self.bin);
-        cmd.args(argv).arg("--state-root").arg(state_root);
-        let status = cmd
-            .status()
+        Self::isolate_env(&mut cmd);
+        cmd.args(argv)
+            .arg("--state-root")
+            .arg(state_root)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        let out = cmd
+            .output()
             .map_err(|e| format!("failed to spawn {}: {e}", self.bin.display()))?;
-        if status.success() {
+        if out.status.success() {
             Ok(())
         } else {
-            Err(format!(
-                "agent-arena {} exited with {status}",
-                argv.first().map(String::as_str).unwrap_or("?")
-            ))
+            let err = String::from_utf8_lossy(&out.stderr);
+            let err = err.trim();
+            if err.is_empty() {
+                Err(format!(
+                    "agent-arena {} exited with {}",
+                    argv.first().map(String::as_str).unwrap_or("?"),
+                    out.status
+                ))
+            } else {
+                Err(err.to_string())
+            }
         }
     }
 
     /// Jump to the writer pane: `tmux select-window -t SESSION`. The only
     /// non-agent-arena spawn the thin-client rule permits.
     pub fn jump_writer_pane(&self, session_name: &str) -> Result<(), String> {
-        let status = Command::new("tmux")
+        let mut cmd = Command::new("tmux");
+        Self::isolate_env(&mut cmd);
+        let status = cmd
             .args(model::jump_tmux_argv(session_name))
             .status()
             .map_err(|e| format!("failed to spawn tmux: {e}"))?;

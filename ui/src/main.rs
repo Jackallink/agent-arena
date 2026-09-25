@@ -121,6 +121,7 @@ enum InputMode {
 }
 
 enum PromptKind {
+    RejectReason,
     DecisionSummary,
     RelayMessage,
 }
@@ -128,6 +129,12 @@ enum PromptKind {
 impl PromptKind {
     fn hint(&self, run_id: &str) -> String {
         match self {
+            PromptKind::RejectReason => {
+                format!(
+                    "decision {} --verdict REJECT --summary <type>, Enter submit, Esc cancel",
+                    run_id
+                )
+            }
             PromptKind::DecisionSummary => {
                 format!("decision {} --verdict APPROVE --summary <type>, Enter submit, Esc cancel", run_id)
             }
@@ -137,12 +144,6 @@ impl PromptKind {
         }
     }
 
-    fn build_argv(&self, run_id: &str, buffer: &str) -> Vec<String> {
-        match self {
-            PromptKind::DecisionSummary => model::decision_approve_argv(run_id, buffer),
-            PromptKind::RelayMessage => model::relay_writer_argv(run_id, buffer),
-        }
-    }
 }
 
 /// Interactive v0: alternate-screen list, j/k selection, Enter for the
@@ -205,19 +206,24 @@ fn run_tui(arena: &Arena, state_root: &PathBuf) -> ExitCode {
     let result = ExitCode::SUCCESS;
 
     loop {
-        let doc = arena
-            .list_json(state_root)
-            .as_deref()
-            .map_err(Clone::clone)
-            .and_then(model::parse_list);
-        match doc {
-            Ok(mut d) => {
-                sort_runs(&mut d.runs);
-                runs = d.runs;
-            }
-            Err(e) => {
-                notice = format!("oracle error: {e}");
-                runs.clear();
+        // Re-scan only in Normal mode: typing into the input line must not
+        // pay a subprocess per keystroke, and staged confirms render the
+        // already-fetched list.
+        if matches!(input_mode, InputMode::Normal) {
+            let doc = arena
+                .list_json(state_root)
+                .as_deref()
+                .map_err(Clone::clone)
+                .and_then(model::parse_list);
+            match doc {
+                Ok(mut d) => {
+                    sort_runs(&mut d.runs);
+                    runs = d.runs;
+                }
+                Err(e) => {
+                    notice = format!("oracle error: {e}");
+                    runs.clear();
+                }
             }
         }
         if selected >= runs.len() {
@@ -305,19 +311,26 @@ fn run_tui(arena: &Arena, state_root: &PathBuf) -> ExitCode {
                     notice = "cancelled".to_string();
                 }
                 KeyCode::Enter => {
-                    let kind = match kind {
-                        PromptKind::DecisionSummary => PromptKind::DecisionSummary,
-                        PromptKind::RelayMessage => PromptKind::RelayMessage,
-                    };
                     let run_id = runs
                         .get(selected)
                         .map(|r| r.run_id.clone())
                         .unwrap_or_default();
-                    if buffer.trim().is_empty() {
+                    let text = buffer.trim().to_string();
+                    if text.is_empty() {
                         notice = "empty input; Esc to cancel".to_string();
                         continue;
                     }
-                    let argv = kind.build_argv(&run_id, buffer.trim());
+                    let argv = match kind {
+                        PromptKind::RejectReason => {
+                            model::reject_argv(&run_id, &text)
+                        }
+                        PromptKind::DecisionSummary => {
+                            model::decision_approve_argv(&run_id, &text)
+                        }
+                        PromptKind::RelayMessage => {
+                            model::relay_writer_argv(&run_id, &text)
+                        }
+                    };
                     input_mode = InputMode::Confirm { argv };
                 }
                 KeyCode::Backspace => {
@@ -388,19 +401,46 @@ fn run_tui(arena: &Arena, state_root: &PathBuf) -> ExitCode {
                     };
                     match action {
                         model::Action::Quit => break,
-                        model::Action::Approve | model::Action::Reject | model::Action::Validate => {
+                        model::Action::Approve | model::Action::Validate => {
                             match model::action_argv(action, &run.run_id) {
                                 Some(argv) => input_mode = InputMode::Confirm { argv },
                                 None => notice = "cannot build argv".to_string(),
                             }
                         }
+                        model::Action::Reject => {
+                            input_mode = InputMode::Input {
+                                kind: PromptKind::RejectReason,
+                                buffer: String::new(),
+                            };
+                        }
                         model::Action::ToggleMode => {
-                            let current = match &status_cache {
+                            // Never blind-toggle: fetch the live mode when
+                            // the cache misses, then flip what is really
+                            // there (a stale None would no-op a human run
+                            // and could downgrade an auto run).
+                            let mut current: Option<String> = match &status_cache {
                                 Some(s) if s.run_id == run.run_id => {
                                     s.field_str("mode").map(str::to_string)
                                 }
                                 _ => None,
                             };
+                            if current.is_none() {
+                                match arena
+                                    .status_json(&run.run_id, state_root)
+                                    .as_deref()
+                                    .map_err(Clone::clone)
+                                    .and_then(model::parse_status)
+                                {
+                                    Ok(s) => {
+                                        current = s.field_str("mode").map(str::to_string);
+                                        status_cache = Some(s);
+                                    }
+                                    Err(e) => {
+                                        notice = e;
+                                        continue;
+                                    }
+                                }
+                            }
                             input_mode = InputMode::Confirm {
                                 argv: model::toggle_mode_argv(
                                     current.as_deref(),

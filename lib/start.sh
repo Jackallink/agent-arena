@@ -493,6 +493,17 @@ if ! tmuxp load --yes --no-progress -d -s "$session_name" "$configuration" >"$tm
     arena_die 'tmuxp load failed; fix the reported error and retry start'
 fi
 rm -f "$tmuxp_log"
+# Scrub ARENA_* from the tmux SERVER-global environment: tmuxp inherits
+# start.sh's exports into the server (or an existing server absorbs them
+# via new-session), and every later pane in ANY session would then inherit
+# this run's ARENA_RUN_DIR/ARENA_STATE_ROOT. The run panes already carry
+# their own copy through the tmuxp session-level `environment:` block, so
+# removing the globals is safe and keeps cross-run isolation.
+if command -v tmux >/dev/null 2>&1; then
+    while IFS='=' read -r -r env_name _; do
+        tmux set-environment -g -u "$env_name" >/dev/null 2>&1 || true
+    done < <(env | grep -E '^ARENA_[A-Z0-9_]*=' || true)
+fi
 if [[ "$run_lock_held" == 1 ]]; then
     arena_lock_release "${run_dir}/.run-lock" "start-$$"
     run_lock_held=0

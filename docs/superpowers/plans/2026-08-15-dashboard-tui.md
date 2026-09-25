@@ -58,6 +58,69 @@
   `agent-arena-ui --selftest --state-root <state_base>` exit 0 printing the
   needs-human-first digests including `run-one`.
 
+## Live end-to-end verification (Gate 4, 2026-09-25, real zell writer)
+
+Headless-TUI-driven live loop against a real workspace
+(`/tmp/arena-dash-live`, state root on disk, real `zell-cursor` writer via
+tmuxp, real Cursor gate policy):
+
+1. `start dash-live2 --profile zell-cursor` → real 4-pane session; TUI list
+   shows both live runs (needs-human-first).
+2. **TUI `l` relay → real writer work**: the relayed instruction reached the
+   zell pane; the writer created `LIVE.md` (`dashboard-live-ok`), committed
+   `8d32f7f "Add LIVE.md checkpoint"`, and ran `submit` itself.
+3. **TUI `v` validate → real FAIL then real PASS**: the first run exercised
+   the generated stub (exit 10, `RESULT: FAIL` — state advanced to
+   `validated` with the failure recorded); after the writer resubmitted with
+   a real `.agent-arena/validate.sh`, `RESULT: PASS` bound to `4f43ea0`.
+4. **TUI `r` decision → contract corrections**: the live CLI rejected three
+   draft mappings in sequence (`resolve --action reject` is human-only;
+   verdicts are APPROVE/CHANGES_REQUESTED/BLOCKED — there is no REJECT;
+   `decision` requires `--next` and a validation report for the reviewed
+   checkpoint). Keymap fixed to
+   `decision RUN --verdict CHANGES_REQUESTED --summary | next`; spec keymap
+   table updated. The writer had already self-resubmitted, so the
+   CHANGES_REQUESTED success path is covered by unit tests + the shared
+   decision path (d) instead of a live approve-then-reject cycle.
+5. **TUI `d` decision APPROVE → real `decision.md`** bound to `4f43ea0`
+   (`--next proceed`).
+6. **TUI `a` resolve approve → run completed** (`completed/decided/none`).
+7. **TUI `m` mode toggle → real flips**: `human → auto → human` on the other
+   live run, each applied to the run state and visible in `status`.
+8. Enter status digests showed real pane liveness (`reviewer true, writer
+   true`) while the tmux session existed.
+
+### Defects found only by the live pass (all fixed)
+
+1. **tmux server-global env leak**: `start.sh` exports ARENA_* for tmuxp;
+   an existing tmux server absorbed them into the server-global
+   environment, so every later pane (the TUI, any user CLI) inherited a
+   stale `ARENA_RUN_DIR` and got rebound to an unrelated run. Fixed twice:
+   start.sh now scrubs ARENA_* from the server-global environment after the
+   tmuxp load (session-level `environment:` already carries the per-run
+   copy), and the TUI strips `ARENA_RUN_DIR`/`ARENA_RUN_ID`/
+   `ARENA_SESSION_NAME` from every spawned child (cross-run view must never
+   inherit a run binding).
+2. **`status --json` error documents were unparseable by their own
+   client**: the EXIT-trap document carries `"panes":{}`, which serde
+   strict mode rejected (missing `reviewer`). `Panes` fields now default to
+   false (pane liveness unknown on error paths), locked by a unit test.
+3. **Spawned CLI stderr was lost** behind the TUI redraw; `spawn_interactive`
+   now captures stderr and surfaces it in the notice line (this is how the
+   live pass saw `reject requires --reason`, `verdict must be ...`,
+   `missing validation report ...`, `resolve requires human responsibility`).
+4. **A subprocess per keystroke**: the loop re-ran `list --json` on every
+   key event, making long prompted input lag seconds behind. Re-scan now
+   happens only in Normal mode; Input/Confirm reuse the fetched list.
+5. **Mode toggle could blind-flip**: with no status cache the toggle
+   resolved to the human-safe default instead of the run's real mode (a
+   no-op on human runs, a silent downgrade on auto runs). It now fetches
+   the live mode when the cache misses, then flips what is really there.
+6. **Confirm mode swallowed `q`** (unreachable exit) — fixed earlier by the
+   headless smoke; input hints now carry the selected run id.
+7. **`packaging/package.sh` shipped without `ui/`** — the archive is now
+   required to contain the dashboard source and never `ui/target`.
+
 ## Drift and lessons (Gate 3)
 
 1. **`set -e` + command substitution + explicit exit inside `if`**: the first

@@ -35,12 +35,28 @@ oracle layer that any future UI consumes.
   kill the whole row via die-inside-if; list now probes in a subshell and
   reports the row with `anomaly: corrupt` (exit 2 aggregated, unchanged).
 
+### Live end-to-end verification (real zell writer, 2026-09-25)
+
+The dashboard drove a complete real loop — `l` relay delivered the task to a
+live zell writer (it created `LIVE.md`, committed, and self-submitted), `v`
+validate ran FAIL then PASS across checkpoints, `d` recorded a real
+APPROVE decision bound to the resubmitted checkpoint, `a` completed the run,
+and `m` toggled approval mode both ways on a second live run. The pass
+surfaced and fixed six defects that hermetic tests could not see: a tmux
+server-global `ARENA_*` environment leak that rebound spawned CLIs to an
+unrelated run (fixed in start.sh and the TUI spawn layer), unparseable
+error-path `status --json` documents, swallowed child stderr, a subprocess
+per keystroke, a blind mode toggle, and a wrong reject mapping (`decision
+--verdict CHANGES_REQUESTED` is the reviewer-phase reject; the CLI has no
+REJECT verdict). Details: plan Gate 4.
+
 ### Test evidence
 
 - `tests/run.sh`: 62 sections green (§61 covers the JSON oracles, escaping,
   dashboard dispatch, and the `--selftest` probe).
-- `cargo test` (ui/): 8 passed; zero warnings.
-- `tmuxp smoke`: ok. `packaging/package.sh --check`: OK.
+- `cargo test` (ui/): 9 passed; zero warnings.
+- `tmuxp smoke`: ok. `packaging/package.sh --check`: OK (archive now
+  verified to contain the ui/ dashboard source).
 
 ## v0.6.0 — Zell writer adapter (2026-08-15)
 
