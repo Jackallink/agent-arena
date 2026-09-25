@@ -149,6 +149,12 @@ run_gate() {
         gate_status=0
     else
         gate_status=$?
+        # The project script's exit code carries no protocol meaning here:
+        # normalize any failure to 1 so it can never collide with the 2
+        # sentinel this function returns for snapshot-integrity failures
+        # (a script exiting 2 would otherwise be misdiagnosed as an
+        # integrity failure and swallow the canonical FAIL transition).
+        gate_status=1
     fi
     if ! arena_review_snapshot_is_intact "$ARENA_REVIEW_WORKTREE" "$ARENA_REVIEW_HEAD" \
         "$ARENA_REVIEW_CURSOR_POLICY_HASH" "$ARENA_REVIEW_GATE_WRAPPER_HASH" \

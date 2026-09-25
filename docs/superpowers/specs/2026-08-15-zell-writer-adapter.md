@@ -1,8 +1,8 @@
 ---
-status: draft
+status: live-tested
 created: '2026-08-15'
 owner: 'local owner'
-drift: none (spec precedes implementation; §58 tests written first per the plan)
+drift: implementation matches the contract; live smoke (2026-08-15) added the approval=auto-execute capability claim, found an upstream zell 0.4.0-rc.1 bug (--print resume crashes, interactive resume unaffected), and exposed a pre-existing validate exit-2 sentinel collision (fixed, §60). Details in the plan's smoke record.
 ---
 
 # Agent Arena v0.5: Zell writer adapter
@@ -39,7 +39,7 @@ From `zell --help` only:
 | Working directory | No `-C` flag | `cd` to the writer worktree (agy precedent) |
 | Defense in depth | `--no-extensions`, `--no-skills`, `--no-prompt-templates`, `--no-themes` | Passed on launch; suppression of auto-discovered resources only — **not** OS/network isolation |
 | OS sandbox | none in help | `sandbox=none`; no isolation claim |
-| Approval semantics | no approval-mode flag in help | **No `approval=` capability line**; unverified abilities are not declared |
+| Approval semantics | no approval-mode flag in help | Live smoke: write/bash auto-execute in both headless and interactive modes → `approval=auto-execute` (same prompt-bound trust model as pi; not a sandbox) |
 
 ## Writer-specific rules (mirrors the writer implementation matrix)
 
@@ -72,12 +72,16 @@ From `zell --help` only:
 | Profile resolution | §58 + full suite green | pending (this change) |
 | Writer launch | Fake binary captures argv/cwd/flags for zell | pending |
 | tmuxp / packaging | `tmuxp-smoke.sh`, `package.sh --check` | pending |
-| Manual live smoke | An authorized operator records an authenticated zell headless + Arena end-to-end observation (no credentials/transcripts in Git) | **open** — support is not "live-tested" until recorded |
+| Manual live smoke | S1–S4 recorded 2026-08-15 (see the plan's smoke record) | **Passed** |
 
 ## Non-claims
 
 - No Zell gate adapter; Zell is a writer only.
 - No OS-level or network isolation claim: the suppression flags are config
-  hygiene, not a sandbox.
-- No approval-behavior claim until the live smoke records it.
-- No claim about providers or models: the operator's zell config decides.
+  hygiene, not a sandbox; tool auto-execution is prompt-bound, not gated.
+- No claim about providers or models: the operator's zell config decides
+  (smoke ran on the operator's default deepseek provider).
+- Upstream bug non-claim: `zell --print` resuming an existing `--session-id`
+  aborts (bus error in `restoreSessionSettings`, zell 0.4.0-rc.1); interactive
+  resume is unaffected, so Arena writer resumes (TUI) are safe, and the Arena
+  adapter never uses `--print` for writer launch.

@@ -20,6 +20,7 @@ session_dir=true
 resume_by_id=true
 automatic_resume=true
 sandbox=none
+approval=auto-execute
 EOF
         ;;
     launch)

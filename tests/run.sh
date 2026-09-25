@@ -4209,9 +4209,9 @@ require_match 'session_dir=true' "${tmp_root}/zell.capabilities"
 require_match 'resume_by_id=true' "${tmp_root}/zell.capabilities"
 require_match 'automatic_resume=true' "${tmp_root}/zell.capabilities"
 require_match 'sandbox=none' "${tmp_root}/zell.capabilities"
-if grep -q '^approval=' "${tmp_root}/zell.capabilities"; then
-    fail 'zell capabilities must not claim approval semantics before live smoke'
-fi
+# live smoke (2026-08-15): zell auto-executes write/bash with no approval
+# gate (same trust model as pi: prompt-bound, not a sandbox)
+require_match 'approval=auto-execute' "${tmp_root}/zell.capabilities"
 # z6: doctor lists the zell profile when the CLI is available
 run_arena doctor >"${tmp_root}/zell-doctor.out" 2>&1
 require_match 'profile:zell-cursor' "${tmp_root}/zell-doctor.out"
@@ -4232,6 +4232,37 @@ lg_line="$(awk -F $'\t' -v r="${lg_run}" '$2 == r && $5 == "mode-switch" { print
 [[ "$(printf '%s\n' "$lg_line" | awk -F $'\t' '{ print $4 }')" == '-' ]] || \
     fail "legacy mode-switch state column is '$(printf '%s\n' "$lg_line" | awk -F $'\t' '{ print $4 }')', expected '-'"
 [[ "$(printf '%s\n' "$lg_line" | awk -F $'\t' '{ print NF }')" -eq 6 ]] || fail 'legacy mode-switch log row is not 6 fields'
+
+
+printf '%s\n' '60. project validate.sh exit-2 is canonical FAIL, not the integrity sentinel'
+# a project script exiting 2 used to collide with run_gate's integrity
+# sentinel: diagnostic-only report, no transition, unpushable run. The
+# sentinel belongs to the snapshot check; any project-script failure is a
+# canonical FAIL (validate exits 10, VR=FAIL, waiting on reviewer decision).
+e2_run='val-exit2'
+run_arena start "$e2_run" --repo "$project" --no-attach >/dev/null
+e2_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path "*/${e2_run}/manifest.tsv" -exec dirname {} \;)"
+e2_writer="$(manifest_value "${e2_dir}/manifest.tsv" writer_worktree)"
+printf '%s\n' e2 >"${e2_writer}/e2.txt"
+# the project script is read from the frozen snapshot (anti-tamper), so the
+# exit-2 script must be part of the checkpoint itself
+printf '#!/usr/bin/env bash\nset -euo pipefail\nprintf missing >&2\nexit 2\n' >"${e2_writer}/.agent-arena/validate.sh"
+git -C "$e2_writer" add e2.txt .agent-arena/validate.sh
+git -C "$e2_writer" commit -qm 'feat: e2 with an exit-2 validate script'
+run_arena submit "$e2_run" >/dev/null
+set +e
+run_arena validate "$e2_run" >"${tmp_root}/e2-validate.out" 2>&1
+e2_exit=$?
+set -e
+[[ "$e2_exit" == 10 ]] || fail "exit-2 project script made validate exit $e2_exit, expected 10 (canonical FAIL)"
+require_match 'RESULT: FAIL' "${tmp_root}/e2-validate.out"
+require_no_match 'snapshot integrity check failed' "${tmp_root}/e2-validate.out"
+require_match $'validation_result\tFAIL' <(cat "${e2_dir}/run-state.tsv")
+require_match $'phase\tvalidated' <(cat "${e2_dir}/run-state.tsv")
+compgen -G "${e2_dir}/validation-*.md" >/dev/null || fail 'canonical validation report missing for exit-2 script'
+if compgen -G "${e2_dir}/validation-*diagnostic.md" >/dev/null; then
+    fail 'exit-2 script wrongly produced a diagnostic-only report'
+fi
 
 
 printf '%s\n' 'tests: ok'

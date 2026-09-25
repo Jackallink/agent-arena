@@ -13,11 +13,9 @@
   `arena_profile_branch`); capabilities contract matches the spec (no
   `approval=` line); forbidden flags (`--continue/--resume/--fork/--print`)
   asserted absent.
-- Gate 4 — release gate: **pending** the authorized live smoke (headless +
-  Arena end-to-end). Hermetic gates green: `tests/run.sh` 59 sections
-  (including §59 coverage for the legacy-manifest `-` state fallback added in
-  the cleanup pass — a coverage-only section, green on first run),
-  `tmuxp-smoke.sh`, `cli-contract-smoke.sh`, `package.sh --check`, `bash -n`.
+- Gate 4 — release gate: **complete (2026-08-15 live smoke, S1–S4)**. Hermetic
+  gates green: `tests/run.sh` 60 sections, `tmuxp-smoke.sh`,
+  `cli-contract-smoke.sh`, `package.sh --check`, `bash -n`.
 
 ## Authorized-operator live smoke checklist (Gate 4)
 
@@ -34,7 +32,10 @@ directory, never in Git (no credentials, no provider transcripts).
 
 | Writer | Command | Result | Drift notes |
 | --- | --- | --- | --- |
-| Zell (pending) | — | — | — |
+| Zell (headless, S1) | `zell --print` + adapter flag whitelist, disposable repo | exit 0; `smoke.txt` content exactly `smoke-ok`; status shows only the new file | write/bash auto-executed, no approval prompts; **upstream bug found**: a second `--print` launch with the same `--session-id` aborts (bus error in `restoreSessionSettings`, zell 0.4.0-rc.1) |
+| Zell (interactive resume, S2) | TUI in tmux with the same `--session-id` | TUI alive; exact session history replayed; new task auto-executed (`write approvals.txt ✓`, bash run) | interactive resume unaffected by the upstream bug; approval behavior = auto-execute (no gate) → capability `approval=auto-execute` added, §58 assertion updated |
+| Zell (Arena end-to-end, S3) | `start zell-live --writer zell --gate cursor --no-attach` + relay task | writer auto-created `feature.txt` (`zell-live-ok`), committed, ran `submit` itself (phase=submitted in ~50 s); real Cursor gate headless `validate` → `RESULT: PASS` | **pre-existing bug found and fixed**: a project validate.sh exiting 2 collided with run_gate's integrity sentinel → diagnostic-only report, no transition, unpushable run; fixed by normalizing project-script failures to 1 (§60, TDD). Round-1 wrinkle: the frozen snapshot carried the stub script; the writer correctly refused to touch state, reported via relay; reviewer `resolve reject` was correctly refused (not human's turn) — new run `zell-live2` from a fixed base completed cleanly |
+| Zell (unattended tail, S4) | `mode zell-live2 auto` + `autopilot --once --approve-delay 0` | reviewer `decision APPROVE` recorded; autopilot auto-approved (`acted=1`, `last_transition_actor=system`, instance-token reason); `run_status=completed` | matches the v0.5 action matrix: autopilot approves only `approval_pending`, never replaces the reviewer |
 
 ## Steps
 
