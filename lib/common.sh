@@ -666,3 +666,16 @@ arena_find_live_pane() {
         "$role pane is unavailable or ambiguous; relay only targets one live, input-enabled agent pane"
     printf '%s\n' "$candidates"
 }
+
+# Rotate an append-only observation log at 1 MB, keeping 3 generations
+# (oldest first: .3 <- .2 <- .1 <- current). Observation files are never
+# authoritative, so rotation errors are swallowed, never fatal.
+arena_log_rotate() {
+    local log_path="$1"
+    [[ -f "$log_path" ]] || return 0
+    [[ "$(wc -c <"$log_path" 2>/dev/null || printf 0)" -gt 1048576 ]] || return 0
+    mv "${log_path}.2" "${log_path}.3" 2>/dev/null || true
+    mv "${log_path}.1" "${log_path}.2" 2>/dev/null || true
+    mv "$log_path" "${log_path}.1" 2>/dev/null || true
+    : >"$log_path"
+}

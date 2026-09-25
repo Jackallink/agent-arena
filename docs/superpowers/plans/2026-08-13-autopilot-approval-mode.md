@@ -350,3 +350,43 @@ dead locals cleanup in `scan_run`/`round` (cosmetic, done in passing).
 - `bash packaging/package.sh --check` — PASS (dist artifact unchanged by
   this fix; repackaging happens at the next release).
 - `bash -n lib/*.sh adapters/*.sh` — PASS.
+
+---
+
+## Cleanup pass (2026-08-13, deferred items + full review)
+
+The fix pass deferred two items; the cleanup pass resolved both and swept the
+wider codebase. Tests §57 written first (failed on the held-lock refusal
+path), then fixed:
+
+| # | Finding | Fix | Test |
+| --- | --- | --- | --- |
+| C1 | `mode` was the only `arena_lock_acquire` caller without an EXIT trap — a terminal-refused switch exited holding `.run-lock` | resolve.sh-style cleanup trap (save `$?`, token check, release, replay exit status) | §57: refused terminal switch leaves no `.run-lock`; §51's refuse test extended implicitly |
+| C2 | mode-switch `autopilot.log` rows violated the spec schema `timestamp run_id mode state action result` (fields 2/3 swapped to literal `mode` + run_id) and bypassed rotation | Row rewritten to schema (new mode in field 3, run's `run_status` or `-` in field 4); rotation extracted to shared `arena_log_rotate` (common.sh), used by both autopilot and mode | §57: row has 6 fields with run_id/mode/state/action in place; 1 MB seed + one switch rotates to `.1` |
+
+### Full review sweep (no further findings)
+
+- `arena_lock_acquire` callers: 8/8 now carry an EXIT trap with held-flag +
+  token-check discipline (decision, escalate, mode, repair-state, resolve,
+  start, submit, validate).
+- `set -euo pipefail`: all direct command entries set it; the three sourced
+  libraries (common/config/profile) intentionally inherit it — convention,
+  not a gap.
+- No `eval` anywhere; `snake_case`; four-space indent.
+- `status` oracle lines (Verdict/Validation result/Last transition at/reviewer
+  and writer pane) match autopilot's sed readers exactly.
+- Adapter fail-closed contracts: agy.sh builds launch args whitelist-style
+  (`--new-project`, optional `--model` only — exclusion by construction);
+  gate-opencode.sh has the deny policy plus exists/symlink fail-closed checks.
+- README flag table covers every autopilot option; no undocumented flags.
+
+### Cleanup-pass validation evidence
+
+- `bash tests/run.sh` — PASS, 58 sections (§0–57; §57 written first, failed
+  on the held-lock refusal path, then passed). Test-harness drift: the
+  rotation assertion first looked for the mode-switch row in the live log;
+  under append-then-rotate semantics the row lands at the tail of the rotated
+  `.1` generation — assertion moved accordingly.
+- `bash tests/tmuxp-smoke.sh` / `tests/cli-contract-smoke.sh` — PASS.
+- `bash packaging/package.sh --check` — PASS.
+- `bash -n lib/*.sh adapters/*.sh` — PASS.

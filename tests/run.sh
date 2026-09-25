@@ -4120,4 +4120,31 @@ require_match 'MARKER-C' "${state_base}/autopilot.log.1"
 [[ "$(wc -c <"${state_base}/autopilot.log")" -lt 4096 ]] || fail 'rotated log not truncated'
 
 
+printf '%s\n' '57. mode lock release on refusal, action-log schema, rotation'
+# terminal-refused switch releases the run lock (no .run-lock residue)
+if run_arena mode mode-run human >"${tmp_root}/mode-term2.out" 2>&1; then
+    fail 'second mode switch on the terminal run succeeded'
+fi
+require_match 'terminal' "${tmp_root}/mode-term2.out"
+term_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -name manifest.tsv -path '*/mode-run/manifest.tsv' -exec dirname {} \;)"
+[[ ! -e "${term_dir}/.run-lock" ]] || fail 'refused mode switch left the run lock held'
+# legal switch writes a schema-compliant action-log row:
+# timestamp run_id mode state action result
+run_arena mode ap-stale-lock human >"${tmp_root}/mode-legal.out" 2>&1
+require_match 'Mode: human' "${tmp_root}/mode-legal.out"
+ms_line="$(awk -F $'\t' -v r='ap-stale-lock' '$2 == r { print }' "${state_base}/autopilot.log" | tail -1)"
+[[ -n "$ms_line" ]] || fail 'mode switch wrote no action-log row'
+[[ "$(printf '%s\n' "$ms_line" | awk -F $'\t' '{ print NF }')" -eq 6 ]] || fail "mode-switch log row has $(printf '%s\n' "$ms_line" | awk -F $'\t' '{ print NF }') fields, expected 6"
+[[ "$(printf '%s\n' "$ms_line" | awk -F $'\t' '{ print $3 }')" == 'human' ]] || fail 'mode-switch log row field 3 is not the new mode'
+[[ "$(printf '%s\n' "$ms_line" | awk -F $'\t' '{ print $4 }')" == 'active' ]] || fail 'mode-switch log row field 4 is not the run state'
+[[ "$(printf '%s\n' "$ms_line" | awk -F $'\t' '{ print $5 }')" == 'mode-switch' ]] || fail 'mode-switch log row field 5 is not mode-switch'
+# mode-switch rows go through rotation (1 MB seed + one switch)
+{ printf 'MARKER-M\n'; head -c 1048577 /dev/zero | tr '\0' 'y'; printf '\n'; } >"${state_base}/autopilot.log"
+run_arena mode ap-stale-lock auto >/dev/null 2>&1
+require_match 'MARKER-M' "${state_base}/autopilot.log.1"
+[[ "$(wc -c <"${state_base}/autopilot.log")" -lt 4096 ]] || fail 'mode-switch rotation did not truncate the log'
+# the switch row lands at the tail of the rotated generation (append-then-rotate)
+require_match $'ap-stale-lock\tauto\tactive\tmode-switch\tacted' "${state_base}/autopilot.log.1"
+
+
 printf '%s\n' 'tests: ok'

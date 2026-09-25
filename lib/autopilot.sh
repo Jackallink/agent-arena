@@ -78,13 +78,7 @@ AP_SCAN_ERROR=0
 arena_autopilot_log() {
     local run_id="$1" mode="$2" state="$3" action="$4" result="$5"
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(now)" "$run_id" "$mode" "$state" "$action" "$result" >>"$autopilot_log"
-    # rotate at 1 MB, keep 3 generations (oldest first: .3 <- .2 <- .1 <- current)
-    if [[ "$(wc -c <"$autopilot_log" 2>/dev/null || printf 0)" -gt 1048576 ]]; then
-        mv "${autopilot_log}.2" "${autopilot_log}.3" 2>/dev/null || true
-        mv "${autopilot_log}.1" "${autopilot_log}.2" 2>/dev/null || true
-        mv "$autopilot_log" "${autopilot_log}.1" 2>/dev/null || true
-        : >"$autopilot_log"
-    fi
+    arena_log_rotate "$autopilot_log"
 }
 
 # ---- scope ----

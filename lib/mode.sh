@@ -50,6 +50,17 @@ esac
 arena_validate_run_id "$run_id"
 run_dir="$(arena_find_run_dir "$run_id")"
 
+# release the run lock on every exit path (terminal-refuse, die, success)
+mode_lock_held=0
+arena_mode_cleanup() {
+    local status=$?
+    if [[ "$mode_lock_held" == 1 ]] && arena_lock_is_held "${run_dir}/.run-lock" && \
+        [[ "$(arena_lock_owner_token "${run_dir}/.run-lock")" == "mode-$$" ]]; then
+        arena_lock_release "${run_dir}/.run-lock" "mode-$$"
+    fi
+    exit "$status"
+}
+trap arena_mode_cleanup EXIT
 arena_lock_acquire "${run_dir}/.run-lock" "mode-$$"
 mode_lock_held=1
 
@@ -88,7 +99,12 @@ chmod 600 "$tmp_file"
 mv "$tmp_file" "${run_dir}/manifest.tsv"
 
 printf 'Mode: %s (was %s)\n' "$new_mode" "$ARENA_MANIFEST_MODE"
-printf '%s\tmode\t%s\thuman\tmode-switch\tacted\n' "$now" "$run_id" >>"$(arena_state_root)/autopilot.log" 2>/dev/null || true
+# action-log schema: timestamp run_id mode state action result; same rotation
+# as autopilot-written rows (observation files are never authoritative)
+mode_log="$(arena_state_root)/autopilot.log"
+printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$now" "$run_id" "$new_mode" \
+    "${ARENA_STATE_RUN_STATUS:--}" 'mode-switch' 'acted' >>"$mode_log" 2>/dev/null || true
+arena_log_rotate "$mode_log"
 
 arena_lock_release "${run_dir}/.run-lock" "mode-$$"
 mode_lock_held=0

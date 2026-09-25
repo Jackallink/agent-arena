@@ -2,7 +2,7 @@
 status: review-ready
 created: '2026-08-15'
 owner: 'local owner'
-drift: implementation matches the contracts in this spec (mode config/switch, status read-path extension, resolve/escalate --actor, autopilot matrix and exit codes 0/4/6, observation files). The v0.4 state machine and wire contract are unchanged; the assertion-update list (config parser, Mode:/Verdict:/Validation result:/Last transition at:/pane lines, manifest mode rows, lock reclamation) is recorded in the plan. Fix pass (2026-08-13): the round summary line was missing, per-run TSV rows leaked into watch stdout, log rotation kept one generation instead of three, and the heartbeat errors counter never incremented — all four fixed per the plan's fix-pass section and covered by tests §56.
+drift: implementation matches the contracts in this spec (mode config/switch, status read-path extension, resolve/escalate --actor, autopilot matrix and exit codes 0/4/6, observation files). The v0.4 state machine and wire contract are unchanged; the assertion-update list (config parser, Mode:/Verdict:/Validation result:/Last transition at:/pane lines, manifest mode rows, lock reclamation) is recorded in the plan. Fix pass (2026-08-13): the round summary line was missing, per-run TSV rows leaked into watch stdout, log rotation kept one generation instead of three, and the heartbeat errors counter never incremented — all four fixed per the plan's fix-pass section and covered by tests §56. Cleanup pass (2026-08-13): `mode` was the only lock acquirer without an EXIT trap (terminal-refuse exited holding the run lock); its `autopilot.log` rows violated the `timestamp run_id mode state action result` schema (fields 2/3 swapped) and bypassed rotation — fixed per the plan's cleanup-pass section, covered by tests §57.
 ---
 
 # Agent Arena v0.5: Autopilot approval modes (human/auto)
@@ -162,8 +162,13 @@ creation intent like every other derived input (v05-AC3).
 - requires the run lock (exit 4 while held by a live owner);
 - refuses on terminal runs (`completed`/`canceled`, exit 2);
 - rewrites `mode` and `mode_updated_at`, prints the new mode;
-- appends one line to `autopilot.log` (`mode` action) so human switches are
-  auditable alongside autopilot actions.
+- appends one line to `autopilot.log` (`mode-switch` action) so human switches are
+  auditable alongside autopilot actions. The row follows the action-log schema
+  (`timestamp run_id mode state action result`: run_id in field 2, the new mode
+  in field 3, the run's current `run_status` or `-` in field 4) and goes
+  through the same rotation as autopilot-written rows. Every lock acquirer
+  releases its lock on any exit path (EXIT trap): a refused mode switch on a
+  terminal run leaves no `.run-lock` residue.
 
 Drift display: `status` prints `Mode: <manifest mode>` and, when the manifest
 mode differs from the current `project.conf` `approval_mode`,
