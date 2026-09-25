@@ -2,6 +2,31 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+## Gate record
+
+- Gate 1 — spec audit: **complete**. Canonical contract in
+  `../specs/2026-08-13-pluggable-gate-adapters.md`.
+- Gate 2 — TDD kickoff: **complete**. Sections 30+ (gate selection,
+  writer-gate combination, manifest fields, integrity parameterization,
+  dispatch) precede the implementation checks in `tests/run.sh`.
+- Gate 3 — drift check: **complete (2026-08-13, back-fill pass)**. Artifacts
+  re-verified against the plan's Interfaces: `arena_gate_resolve`/
+  `arena_profile_split`/`arena_gate_list`/`arena_gate_policy_paths` in
+  `lib/profile.sh`; manifest `gate_adapter` with legacy fallback to `cursor`
+  and `arena_gate_resolve` wiring (`lib/common.sh`); verbatim
+  `cursor_policy_hash`/`gate_wrapper_hash` integrity checks (`lib/common.sh`);
+  policy generation through the manifest's gate adapter in `submit`;
+  reviewer-pane dispatch via `gate-${ARENA_GATE_NAME}.sh` (`lib/pane.sh`);
+  `adapters/gate-cursor.sh` and `adapters/gate-opencode.sh` present.
+- Gate 4 — release gate: **complete (2026-08-13)**. The gate-adapter surface
+  ships inside the v0.5.x validation matrix; the full suite (now 58 sections),
+  tmuxp smoke, CLI contract smoke, and package check are green.
+
+Note: the step checkboxes below were executed in real time during the v0.2/v0.3
+implementation but left unticked in the file; they are back-filled to `[x]` in
+this pass after the Gate-3 artifact re-verification above. The plan is
+complete and requires no further work.
+
 **Goal:** Make the review/validation/decision gate a pluggable adapter (contract + Cursor conversion + OpenCode gate), with writer-gate free combination and full v0.2 regression.
 
 **Architecture:** A gate adapter lives at `adapters/gate-<name>.sh` and answers `probe`, `capabilities` (including `policy_path=`/`wrapper_path=` lines), `launch` (reviewer pane), and `policy <worktree>` (generate policy + wrapper, print a two-line binding manifest). The run manifest and review manifest gain `gate_adapter` (+ `gate_policy_path` in review.tsv); missing fields resolve to `cursor`. `submit` generates policy through the manifest's gate adapter and binds the declared paths/hashes; the integrity check is parameterized by `gate_policy_path`; `pane.sh reviewer` dispatches via `gate_adapter`.
@@ -31,7 +56,7 @@
 - Consumes: existing `arena_profile_resolve`, `arena_profile_list`, `arena_profile_branch`.
 - Produces: `arena_gate_resolve GATE` → sets `ARENA_GATE_NAME` (die on unknown); `arena_profile_split PROFILE` → sets `ARENA_PROFILE_WRITER` and `ARENA_PROFILE_GATE`; `arena_gate_list` → prints `cursor opencode`; `arena_gate_policy_paths GATE` → prints `policy_path<TAB>wrapper_path` from capabilities.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/run.sh` before the final `tests: ok` line:
 
@@ -54,12 +79,12 @@ ocg_manifest="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name 
 expect_failure run_arena start run-opencode-gate --repo "$project" --profile pi-opencode --gate cursor --no-attach
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `bash tests/run.sh`
 Expected: FAIL at section 30 — `gate_adapter` manifest value missing (start rejects `pi-opencode` as unknown profile before recording anything).
 
-- [ ] **Step 3: Implement gate resolution and splitting**
+- [x] **Step 3: Implement gate resolution and splitting**
 
 In `lib/profile.sh`, add:
 
@@ -124,7 +149,7 @@ arena_profile_split() {
 
 (Keep the existing four case arms verbatim; they set `ARENA_PROFILE_GATE_ADAPTER=cursor` implicitly via defaulting below. Add to each existing arm: `ARENA_PROFILE_GATE_ADAPTER='cursor'`.)
 
-- [ ] **Step 4: Add `--writer`/`--gate` options to start.sh**
+- [x] **Step 4: Add `--writer`/`--gate` options to start.sh**
 
 In `lib/start.sh` option loop, add:
 
@@ -156,12 +181,12 @@ fi
 
 In both the new-run and resume branches, after `arena_profile_resolve "$profile"`, export `ARENA_GATE_ADAPTER="${ARENA_PROFILE_GATE_ADAPTER}"` and add it to the manifest write call (Task 3) and to `arena_update_live_session_environment`'s list and `refresh_live_session_environment`'s list in `lib/submit.sh`.
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `bash tests/run.sh`
 Expected: section 30 passes; sections 1–29 still pass. (Section 30's `run-opencode-gate` start probes `adapters/gate-opencode.sh`, which does not exist yet — Task 5 creates it. Until then, add a temporary stub in the test fixture: see Step 6.)
 
-- [ ] **Step 6: Add temporary gate adapter stubs for Task 1's test**
+- [x] **Step 6: Add temporary gate adapter stubs for Task 1's test**
 
 `start` probes gate adapters at their source-tree path `adapters/gate-<gate>.sh`, so the stubs must live there (Task 2 and Task 5 overwrite them with the real adapters). Create both:
 
@@ -187,7 +212,7 @@ chmod 755 "${fake_bin}/gate-opencode"
 
 The Task 1 test for `pi-opencode` only needs the profile/manifest recording, so the stubs never generate real files in this task.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add lib/profile.sh lib/start.sh tests/run.sh
@@ -207,7 +232,7 @@ git commit -m "feat: add gate resolution and writer-gate profile splitting"
 - Consumes: Task 1's `arena_gate_policy_paths`; existing `arena_file_hash`, `arena_assert_worktree`, `ARENA_COMMAND`.
 - Produces: `arena_prepare_gate_policy WORKTREE GATE` → sets `ARENA_GATE_POLICY_PATH`, `ARENA_GATE_POLICY_HASH`, `ARENA_GATE_WRAPPER_HASH` by invoking `adapters/gate-<GATE>.sh policy "$WORKTREE"`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `tests/run.sh` section 5, replace the direct policy-content assertions block with:
 
@@ -222,12 +247,12 @@ review_worktree="$(awk -F $'\t' '$1 == "review_worktree" { print $2 }' "${run_di
 
 Keep all existing `require_match` assertions on policy content unchanged (they prove byte-identical generation).
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `bash tests/run.sh`
 Expected: FAIL at section 5 — `gate_adapter` missing from review.tsv.
 
-- [ ] **Step 3: Move policy generation into gate-cursor.sh**
+- [x] **Step 3: Move policy generation into gate-cursor.sh**
 
 Create `adapters/gate-cursor.sh`:
 
@@ -374,7 +399,7 @@ EOF
 esac
 ```
 
-- [ ] **Step 4: Generalize the preparation function in common.sh**
+- [x] **Step 4: Generalize the preparation function in common.sh**
 
 Replace `arena_prepare_cursor_gate_policy` with:
 
@@ -404,7 +429,7 @@ arena_prepare_gate_policy() {
 
 (The exact binding format: the adapter prints two lines `policy<TAB>REL_PATH<TAB>SHA256` and `wrapper<TAB>REL_PATH<TAB>SHA256`. Adjust the adapter output above accordingly — `printf 'policy\t.cursor/cli.json\t%s\n' ...` and `printf 'wrapper\t.agent-arena-gate\t%s\n' ...`. The function validates three-column TSV, both hashes as `^[0-9a-f]{64}$`, sets `ARENA_GATE_POLICY_PATH`, `ARENA_GATE_POLICY_HASH`, `ARENA_GATE_WRAPPER_HASH`.)
 
-- [ ] **Step 5: Update submit.sh and the tracked-path check**
+- [x] **Step 5: Update submit.sh and the tracked-path check**
 
 In `lib/submit.sh`:
 - Replace `arena_prepare_cursor_gate_policy "$review_worktree"` with `arena_prepare_gate_policy "$review_worktree" "$ARENA_MANIFEST_GATE_ADAPTER"`.
@@ -423,12 +448,12 @@ while IFS=$'\t' read -r key value; do
 done < <(arena_gate_policy_paths "$ARENA_MANIFEST_GATE_ADAPTER")
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [x] **Step 6: Run tests to verify they pass**
 
 Run: `bash tests/run.sh`
 Expected: sections 1–29 green with identical policy content assertions; section 30 green.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add adapters/gate-cursor.sh lib/common.sh lib/submit.sh tests/run.sh
@@ -448,7 +473,7 @@ git commit -m "refactor: convert Cursor gate into gate adapter contract"
 - Consumes: Task 2's `arena_prepare_gate_policy` outputs (`ARENA_GATE_POLICY_PATH/HASH`, `ARENA_GATE_WRAPPER_HASH`).
 - Produces: manifest field `gate_adapter`; review.tsv fields `gate_adapter`, `gate_policy_path`; legacy defaults.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 In `tests/run.sh` section 18 (legacy manifest), after the existing legacy assertions, add:
 
@@ -463,12 +488,12 @@ In section 29 (status), after the existing `Integrity: OK` assertion, add:
 require_match 'Gate: cursor' "${tmp_root}/pane-dead-status.out"
 ```
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `bash tests/run.sh`
 Expected: FAIL at section 18 — `gate_adapter` not in the legacy-stripped manifest read.
 
-- [ ] **Step 3: Extend manifest write/read**
+- [x] **Step 3: Extend manifest write/read**
 
 In `arena_write_manifest`, add a `gate_adapter` positional argument (after `writer_session_dir`) and write `printf 'gate_adapter\t%s\n' "$gate_adapter"`. Update the single caller in `lib/start.sh` to pass `"$ARENA_PROFILE_GATE_ADAPTER"`.
 
@@ -479,7 +504,7 @@ In `arena_read_manifest`, add `ARENA_MANIFEST_GATE_ADAPTER=''` and a `gate_adapt
 arena_gate_resolve "$ARENA_MANIFEST_GATE_ADAPTER"
 ```
 
-- [ ] **Step 4: Extend review manifest write/read**
+- [x] **Step 4: Extend review manifest write/read**
 
 In `arena_write_review_manifest`, add parameters `gate_adapter`, `gate_policy_path` and write:
 
@@ -504,20 +529,20 @@ arena_gate_resolve "$ARENA_REVIEW_GATE_ADAPTER"
     arena_die 'review gate adapter differs from the run manifest'
 ```
 
-- [ ] **Step 5: Parameterize the integrity check**
+- [x] **Step 5: Parameterize the integrity check**
 
 In `arena_review_snapshot_is_intact`, replace the hard-coded `policy_file="${worktree}/.cursor/cli.json"` with `policy_file="${worktree}/${ARENA_REVIEW_GATE_POLICY_PATH}"` (the caller already passes the hashes; add `gate_policy_path` as a new parameter, defaulting to `.cursor/cli.json`). Update the two status checks in the function that reference `.cursor/cli.json`/`gate_wrapper` paths and the `'?? .cursor/cli.json'` allowlist entries to use the declared path basename/dirname. Update all callers: `lib/validate.sh`, `lib/decision.sh`, `lib/status.sh`, `lib/preflight.sh`, `lib/pane.sh`, `lib/submit.sh` (reuse path), passing `"$ARENA_REVIEW_GATE_POLICY_PATH"` where they already pass hashes.
 
-- [ ] **Step 6: Status output**
+- [x] **Step 6: Status output**
 
 In `lib/status.sh`, after `printf 'Writer adapter: %s\n'`, add `printf 'Gate: %s\n' "$ARENA_MANIFEST_GATE_ADAPTER"`.
 
-- [ ] **Step 7: Run tests to verify they pass**
+- [x] **Step 7: Run tests to verify they pass**
 
 Run: `bash tests/run.sh`
 Expected: all sections green including 18 and 29 with the new assertions.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add lib/common.sh lib/start.sh lib/status.sh lib/validate.sh lib/decision.sh lib/preflight.sh lib/pane.sh tests/run.sh
@@ -538,7 +563,7 @@ git commit -m "feat: record gate adapter in run and review manifests with legacy
 - Consumes: Task 1's `ARENA_GATE_ADAPTER`, Task 3's `ARENA_MANIFEST_GATE_ADAPTER`/`ARENA_REVIEW_GATE_ADAPTER`.
 - Produces: pane env `ARENA_GATE_WORKSPACE`/`ARENA_GATE_PHASE` consumed by `gate-<name>.sh launch`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `tests/run.sh` section 24 (writer pane dispatch), add a gate dispatch check after the existing codex assertions:
 
@@ -564,12 +589,12 @@ PATH="${fake_bin}:${PATH}" \
 require_match 'gate-launch' "$fake_gate_log"
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `bash tests/run.sh`
 Expected: FAIL at section 31 — pane.sh reviewer still execs `adapters/cursor.sh`.
 
-- [ ] **Step 3: Implement dispatch**
+- [x] **Step 3: Implement dispatch**
 
 In `lib/pane.sh` reviewer branch, replace `exec "${source_root}/adapters/cursor.sh" launch` with:
 
@@ -582,19 +607,19 @@ In `lib/pane.sh` reviewer branch, replace `exec "${source_root}/adapters/cursor.
 
 Rename the two workspace/phase exports in the same branch from `ARENA_CURSOR_WORKSPACE`/`ARENA_CURSOR_PHASE` to `ARENA_GATE_WORKSPACE`/`ARENA_GATE_PHASE`. Keep `adapters/cursor.sh` as a thin legacy shim that execs `gate-cursor.sh` (so the old file path still works during transition; delete the shim in Task 6).
 
-- [ ] **Step 4: Update environment lists**
+- [x] **Step 4: Update environment lists**
 
 In `lib/start.sh` and `lib/submit.sh`:
 - Add `ARENA_GATE_ADAPTER` to the exported variables and to both `set-environment` loops.
 - Add `ARENA_GATE_WORKSPACE`/`ARENA_GATE_PHASE` are pane-local (set by pane.sh), so only `ARENA_GATE_ADAPTER` goes into the session env lists.
 - Update `tests/run.sh` section 6 (cursor launch contract): the fake `agent` log assertions remain, but the env used by the test harness for `cursor.sh launch` is now `ARENA_GATE_WORKSPACE`/`ARENA_GATE_PHASE`; keep the old names working in the shim by having the shim map `ARENA_CURSOR_*` → `ARENA_GATE_*` before exec.
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `bash tests/run.sh`
 Expected: sections 6, 24, 30, 31 green; all others unchanged.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add lib/pane.sh lib/start.sh lib/submit.sh adapters/cursor.sh tests/run.sh
@@ -613,7 +638,7 @@ git commit -m "feat: dispatch reviewer pane via manifest gate adapter"
 - Consumes: Task 2's contract (`probe/capabilities/launch/policy`), `ARENA_GATE_WORKSPACE`/`ARENA_GATE_PHASE`, `ARENA_COMMAND`, `ARENA_RUN_ID`, `ARENA_RUN_DIR`, `ARENA_WRITER_LABEL`.
 - Produces: `<worktree>/opencode.json` gate agent `arena_gate`; wrapper `.agent-arena-gate`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append before the final `tests: ok` line:
 
@@ -641,12 +666,12 @@ require_match '"external_directory":"deny"' "${ocg_review}/opencode.json"
 expect_failure "${ocg_review}/.agent-arena-gate" start run-opencode-gate
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `bash tests/run.sh`
 Expected: FAIL at section 32 — `opencode.json` missing (the Task 1 stub wrote `{"agents":{}}`; replace the stub entirely in Step 3).
 
-- [ ] **Step 3: Implement the adapter**
+- [x] **Step 3: Implement the adapter**
 
 Create `adapters/gate-opencode.sh` (policy generation mirrors the writer policy schema):
 
@@ -776,16 +801,16 @@ esac
 
 Task 1's temporary source-tree stub is overwritten by this task's real adapter file; nothing else to remove. (`rm "${fake_bin}/gate-opencode"` is not needed — the real adapter is used by path `adapters/gate-opencode.sh`; remove the stub from the test fixture in Step 4).
 
-- [ ] **Step 4: Remove the hermetic stub**
+- [x] **Step 4: Remove the hermetic stub**
 
 In `tests/run.sh`, delete the `gate-opencode` fake created in Task 1 Step 6. The test now exercises the real adapter with the fake `opencode` CLI (probe passes because `fake_bin/opencode` exists).
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `bash tests/run.sh`
 Expected: section 32 green; sections 1–31 green.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add adapters/gate-opencode.sh tests/run.sh
@@ -807,7 +832,7 @@ git commit -m "feat: add opencode gate adapter with deny-first project policy"
 - Consumes: Task 1's `arena_gate_list`, Task 4's dispatch.
 - Produces: doctor gate matrix; README gate section.
 
-- [ ] **Step 1: Extend doctor**
+- [x] **Step 1: Extend doctor**
 
 In `lib/doctor.sh`, after the writer profile loop, add:
 
@@ -827,22 +852,22 @@ done
 
 Adjust the final `failed` logic so cursor absence alone no longer fails doctor when another gate is available (keep cursor required for `pi-cursor`-style profiles implicitly through profile probes).
 
-- [ ] **Step 2: Update docs**
+- [x] **Step 2: Update docs**
 
 - `README.md`: in "Writer profiles and limitations", add a "Gates" subsection documenting `--gate`/`--writer`, the `WRITER-GATE` profile form, the gate adapter contract, and the OpenCode gate's deny-first policy with the wrapper-only bash caveat. Update the "Cursor-only formal gate" heading to "Formal gate adapters" and note that Cursor is the default gate.
 - `adapters/README.md`: add the gate adapter contract (probe/capabilities/launch/policy, policy_path/wrapper_path, binding manifest format).
 - Spec: set `status: review-ready` in the frontmatter after the suite is green.
 
-- [ ] **Step 3: Delete the cursor.sh shim**
+- [x] **Step 3: Delete the cursor.sh shim**
 
 Verify no references: `grep -rn 'adapters/cursor.sh' lib/ tests/ docs/ | grep -v gate-cursor` — then `git rm adapters/cursor.sh`. Update `tests/cli-contract-smoke.sh` if it probes `adapters/cursor.sh` capabilities (switch to `adapters/gate-cursor.sh`).
 
-- [ ] **Step 4: Full regression**
+- [x] **Step 4: Full regression**
 
 Run: `bash tests/run.sh && bash tests/tmuxp-smoke.sh && bash tests/cli-contract-smoke.sh && bash packaging/package.sh --check && bash -n adapters/gate-cursor.sh adapters/gate-opencode.sh lib/*.sh`
 Expected: all green.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add lib/doctor.sh README.md adapters/README.md docs tests/run.sh tests/cli-contract-smoke.sh
