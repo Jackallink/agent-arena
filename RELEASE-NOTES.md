@@ -1,5 +1,56 @@
 # Release Notes
 
+## v0.6.0 — Zell writer adapter (2026-08-15)
+
+Minor feature release: Zell (0.4.0-rc.1) joins as the fifth writer, fully
+live-tested, plus one validation-pipeline fix the live smoke exposed.
+
+### New capabilities
+
+- **`zell-cursor` writer profile** (plus generic `zell-opencode` through the
+  existing WRITER-GATE fallback): launch binds an exact `--session-id`
+  (`agent-arena-<run>`), an Arena session directory, a named session, the
+  policy prompt via `--append-system-prompt`, and defense-in-depth
+  auto-discovery suppression (`--no-extensions`, `--no-skills`,
+  `--no-prompt-templates`, `--no-themes`). Resume rebinds the exact session ID
+  only — never `--continue`, `--resume`, or `--fork`.
+- **Live-tested evidence (S1–S4, 2026-08-15)**: headless smoke; interactive
+  exact-session resume; full Arena loop where the real Zell writer
+  auto-created a feature, committed, and ran `submit` itself (~50 s), the real
+  authenticated Cursor gate headless-validated `RESULT: PASS`, and
+  `autopilot --once` auto-approved the run to `completed` (actor=system,
+  instance-token reason).
+- **Trust model, stated plainly**: Zell auto-executes write/bash with no
+  approval gate (`approval=auto-execute`) — the same prompt-bound model as Pi;
+  `sandbox=none`. The suppression flags are config hygiene, not an OS or
+  network sandbox.
+- Doctor, README (en/zh), and the adapter contract list the new profile.
+
+### Fixes
+
+- **Validation exit-2 sentinel collision** (found by the live smoke): a
+  project `validate.sh` exiting 2 collided with `run_gate`'s
+  snapshot-integrity sentinel — the run got a diagnostic-only report, no
+  state transition, and could not be pushed forward by any reviewer action.
+  Project-script failures are now normalized to a canonical FAIL (validate
+  exits 10, `VR=FAIL`); the sentinel stays exclusive to real integrity
+  failures. Covered by a failing-first test (§60).
+
+### Known upstream issue (recorded, non-blocking)
+
+- `zell --print` resuming an existing `--session-id` aborts (bus error in
+  `restoreSessionSettings`, zell 0.4.0-rc.1). Interactive resume — the only
+  path Arena writers use — is unaffected and was verified live.
+
+### Verification (2026-08-15)
+
+- Hermetic suite: 60 sections green (§58 zell adapter, §59 legacy
+  mode-switch state fallback, §60 exit-2 canonical FAIL), tmuxp smoke, CLI
+  contract smoke, package check, and `bash -n` all green.
+- Live smoke S1–S4 as above; evidence recorded in
+  `docs/superpowers/plans/2026-08-15-zell-writer-adapter.md` (no credentials
+  or transcripts in Git).
+
 ## v0.5.2 — Patch (2026-08-15)
 
 Patch release after v0.5.1: observation-contract and lock-hygiene fixes found
