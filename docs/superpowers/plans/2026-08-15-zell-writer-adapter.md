@@ -14,8 +14,27 @@
   `approval=` line); forbidden flags (`--continue/--resume/--fork/--print`)
   asserted absent.
 - Gate 4 — release gate: **pending** the authorized live smoke (headless +
-  Arena end-to-end). Hermetic gates green: `tests/run.sh` 59 sections,
+  Arena end-to-end). Hermetic gates green: `tests/run.sh` 59 sections
+  (including §59 coverage for the legacy-manifest `-` state fallback added in
+  the cleanup pass — a coverage-only section, green on first run),
   `tmuxp-smoke.sh`, `cli-contract-smoke.sh`, `package.sh --check`, `bash -n`.
+
+## Authorized-operator live smoke checklist (Gate 4)
+
+Recorded by an authorized operator; store output in the private state
+directory, never in Git (no credentials, no provider transcripts).
+
+| # | Step | Command sketch | Record |
+| --- | --- | --- | --- |
+| S1 | Headless zell sanity, disposable repo | `zell --print --no-extensions --no-skills --no-prompt-templates --no-themes --session-dir <tmp> --session-id agent-arena-smoke 'create smoke.txt containing exactly smoke-ok, then run git status --porcelain'` | exit code; exact file content; status shows only the new file; nothing outside the cwd touched |
+| S2 | Interactive approval behavior | same task in the TUI inside a tmux pane; answer prompts as they appear | how edit/shell approvals present (this decides whether an `approval=` capability line may be added later); whether `--session-id` rebind resumes the exact session on a second launch |
+| S3 | Arena end-to-end | isolated repo + state root; `agent-arena start zell-live --repo ... --writer zell --gate cursor --no-attach`; drive the writer to a checkpoint, then `submit` → `validate` → `decision` | adapter argv as seen by the provider; worktree isolation respected; relay labels correct; snapshot/decision integrity OK |
+| S4 | Unattended tail (optional) | same run with `--mode auto`, `autopilot --once --approve-delay 0` | auto-approve with actor=system, run reaches `completed` |
+| S5 | Record | fill the table below; set Gate 4; only then claim `live-tested` | drift notes + rollback note (uninstall/ignore the profile) |
+
+| Writer | Command | Result | Drift notes |
+| --- | --- | --- | --- |
+| Zell (pending) | — | — | — |
 
 ## Steps
 

@@ -390,3 +390,7 @@ path), then fixed:
 - `bash tests/tmuxp-smoke.sh` / `tests/cli-contract-smoke.sh` — PASS.
 - `bash packaging/package.sh --check` — PASS.
 - `bash -n lib/*.sh adapters/*.sh` — PASS.
+- Post-pass coverage add: §59 (legacy manifest without `run-state.tsv` logs
+  the `-` state fallback in the mode-switch action-log row). Coverage-only:
+  the branch shipped in this pass (`${ARENA_STATE_RUN_STATUS:--}`), so §59
+  was green on first run, not written as a failing-first test.

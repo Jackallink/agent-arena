@@ -4217,4 +4217,21 @@ run_arena doctor >"${tmp_root}/zell-doctor.out" 2>&1
 require_match 'profile:zell-cursor' "${tmp_root}/zell-doctor.out"
 
 
+printf '%s\n' '59. mode-switch action-log state fallback for legacy manifests'
+# a run without run-state.tsv (legacy v0.2-style manifest) skips the terminal
+# check and logs '-' in the state column (mode.sh ${ARENA_STATE_RUN_STATUS:--})
+lg_run='lg-mode'
+run_arena start "$lg_run" --repo "$project" --no-attach >/dev/null
+lg_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path "*/${lg_run}/manifest.tsv" -exec dirname {} \;)"
+[[ -f "${lg_dir}/run-state.tsv" ]] || fail 'fixture run unexpectedly has no run-state.tsv'
+rm "${lg_dir}/run-state.tsv"
+run_arena mode "$lg_run" auto >"${tmp_root}/lg-mode.out" 2>&1
+require_match 'Mode: auto' "${tmp_root}/lg-mode.out"
+lg_line="$(awk -F $'\t' -v r="${lg_run}" '$2 == r && $5 == "mode-switch" { print }' "${state_base}/autopilot.log" | tail -1)"
+[[ -n "$lg_line" ]] || fail 'legacy mode switch wrote no action-log row'
+[[ "$(printf '%s\n' "$lg_line" | awk -F $'\t' '{ print $4 }')" == '-' ]] || \
+    fail "legacy mode-switch state column is '$(printf '%s\n' "$lg_line" | awk -F $'\t' '{ print $4 }')', expected '-'"
+[[ "$(printf '%s\n' "$lg_line" | awk -F $'\t' '{ print NF }')" -eq 6 ]] || fail 'legacy mode-switch log row is not 6 fields'
+
+
 printf '%s\n' 'tests: ok'
