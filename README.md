@@ -19,7 +19,7 @@ between the agents.
 
 ## Why Agent Arena
 
-- **Bring your own agents** — any writer (Pi, Codex, OpenCode, Agy) pairs with
+- **Bring your own agents** — any writer (Pi, Codex, OpenCode, Agy, Zell) pairs with
   any formal gate (Cursor, OpenCode); verified live end-to-end with a real Pi
   writer and a real Cursor reviewer (2026-08-15).
 - **Isolation by construction** — each run gets its own Git worktree and tmux
@@ -39,7 +39,7 @@ between the agents.
 Every profile pairs one writer with one gate. **Cursor Agent** is the default
 formal review, validation, and decision gate; `--gate opencode` or a
 `WRITER-GATE` profile such as `pi-opencode` selects the OpenCode gate instead.
-Pi, Codex, OpenCode, and Agy remain writers only. A direct relay is useful
+Pi, Codex, OpenCode, Agy, and Zell remain writers only. A direct relay is useful
 feedback, but the SHA-bound validation report and decision record remain the
 audit truth.
 
@@ -79,7 +79,8 @@ From a clean Git project:
 /Users/jakeliu/Workspace/agent-arena/bin/agent-arena start tui-sink --repo . --profile pi-cursor
 ```
 
-Replace `pi-cursor` with `codex-cursor`, `opencode-cursor`, or `agy-cursor`
+Replace `pi-cursor` with `codex-cursor`, `opencode-cursor`, `agy-cursor`, or
+`zell-cursor`
 after its local prerequisites pass `doctor`.
 `start` refuses a dirty integration worktree and creates one writable writer
 worktree. The writer commits a checkpoint and runs `agent-arena submit RUN_ID`.
@@ -94,6 +95,7 @@ gate, writes a SHA-bound decision, and relays the next step to the writer.
 | `codex-cursor` | Codex is targeted at the writer worktree with `workspace-write` sandboxing and on-request approval. | Codex can resume a known session, but does not expose creation-time naming or a session directory; Arena must not promise automatic resume. No `--search`, `--add-dir`, or dangerous bypass flag. |
 | `opencode-cursor` | OpenCode starts in the Arena writer worktree with a dedicated writer-agent policy; project configuration and external skills are disabled where supported. | Never use `--auto`. Its CLI exposes session commands but no documented Arena-owned session creation/directory contract, so automatic resume remains unverified. Its permissions are not an OS or network sandbox. |
 | `agy-cursor` | Agy (Antigravity CLI) starts after `cd` into the writer worktree with `--prompt-interactive`, `--new-project`, `--sandbox`, and `--mode accept-edits`; the human confirms the interactive trust prompt. | Agy exposes no creation-time session ID or session directory, and its CLI sessions bind to a project workspace, so Arena never promises automatic resume. Never use `--continue`, `--conversation`, or `--dangerously-skip-permissions`. Its terminal-restrictions sandbox is not a no-network guarantee. |
+| `zell-cursor` | Zell starts after `cd` into the writer worktree with `--session-dir`, an exact `--session-id` (`agent-arena-<run>`), `--name`, `--append-system-prompt`, and auto-discovery suppression (`--no-extensions`, `--no-skills`, `--no-prompt-templates`, `--no-themes`). | Resume rebinds the exact session ID only (never `--continue`, `--resume`, or `--fork`); the suppression flags are config hygiene, not an OS or network sandbox (`sandbox=none`), and approval behavior is unclaimed until the live smoke is recorded. Provider/model choice stays with the operator's zell config/auth. |
 
 All writer prompts prohibit editing the integration worktree, merging, pushing,
 resetting, and dangerous permission bypasses. Git worktrees separate code

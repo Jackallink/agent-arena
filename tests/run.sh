@@ -88,6 +88,7 @@ fake_pi_log="${tmp_root}/pi.log"
 fake_codex_log="${tmp_root}/codex.log"
 fake_opencode_log="${tmp_root}/opencode.log"
 fake_agy_log="${tmp_root}/agy.log"
+fake_zell_log="${tmp_root}/zell.log"
 cat >"${fake_bin}/pi" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -153,6 +154,20 @@ set -euo pipefail
     printf '%s\n' '--'
 } >>"${FAKE_AGY_LOG:?}"
 exit "${FAKE_AGY_EXIT:-0}"
+EOF
+cat >"${fake_bin}/zell" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+{
+    printf 'cwd=%s\n' "$PWD"
+    printf 'profile=%s\n' "${ARENA_PROFILE:-}"
+    printf 'writer_adapter=%s\n' "${ARENA_WRITER_ADAPTER:-}"
+    printf 'writer_session_dir=%s\n' "${ARENA_WRITER_SESSION_DIR:-}"
+    for argument in "$@"; do
+        printf 'arg=%q\n' "$argument"
+    done
+    printf '%s\n' '--'
+} >>"${FAKE_ZELL_LOG:?}"
 EOF
 cat >"${fake_bin}/tmuxp" <<'EOF'
 #!/usr/bin/env bash
@@ -820,10 +835,12 @@ run_writer_adapter() {
         FAKE_CODEX_LOG="$fake_codex_log" \
         FAKE_OPENCODE_LOG="$fake_opencode_log" \
         FAKE_AGY_LOG="$fake_agy_log" \
+        FAKE_ZELL_LOG="$fake_zell_log" \
         ARENA_PI_BIN=pi \
         ARENA_CODEX_BIN=codex \
         ARENA_OPENCODE_BIN=opencode \
         ARENA_AGY_BIN=agy \
+        ARENA_ZELL_BIN=zell \
         ARENA_REPOSITORY="$project" \
         ARENA_RUN_ID="$run_id" \
         ARENA_RUN_DIR="$run_dir" \
@@ -4145,6 +4162,59 @@ require_match 'MARKER-M' "${state_base}/autopilot.log.1"
 [[ "$(wc -c <"${state_base}/autopilot.log")" -lt 4096 ]] || fail 'mode-switch rotation did not truncate the log'
 # the switch row lands at the tail of the rotated generation (append-then-rotate)
 require_match $'ap-stale-lock\tauto\tactive\tmode-switch\tacted' "${state_base}/autopilot.log.1"
+
+
+printf '%s\n' '58. zell writer adapter: profile, launch, flags, capabilities, doctor'
+# z1: zell-cursor resolves end-to-end through start (closed profile)
+zell_run='zell-e2e'
+run_arena start "$zell_run" --repo "$project" --writer zell --gate cursor --no-attach >/dev/null
+zell_run_dir="$(find "${state_root}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path "*/${zell_run}/manifest.tsv" -exec dirname {} \;)"
+[[ "$(manifest_value "${zell_run_dir}/manifest.tsv" profile)" == 'zell-cursor' ]] || fail 'zell profile not preserved in manifest'
+[[ "$(manifest_value "${zell_run_dir}/manifest.tsv" writer_adapter)" == 'zell' ]] || fail 'zell writer_adapter not preserved in manifest'
+[[ "$(manifest_value "${zell_run_dir}/manifest.tsv" writer_label)" == 'Zell' ]] || fail 'zell writer_label not preserved in manifest'
+# z2: launch binds the exact session id/dir in the isolated worktree and
+#     injects the policy prompt (submit/relay text)
+zell_writer="$(manifest_value "${zell_run_dir}/manifest.tsv" writer_worktree)"
+zell_session_dir="$(manifest_value "${zell_run_dir}/manifest.tsv" writer_session_dir)"
+: >"$fake_zell_log"
+run_writer_adapter zell zell-cursor Zell "$zell_writer" "$zell_session_dir" \
+    "$zell_run_dir" "$zell_run"
+require_match "cwd=${zell_writer}" "$fake_zell_log"
+require_match 'profile=zell-cursor' "$fake_zell_log"
+require_match "writer_session_dir=${zell_session_dir}" "$fake_zell_log"
+require_match 'arg=--session-dir' "$fake_zell_log"
+require_match "arg=${zell_session_dir}" "$fake_zell_log"
+require_match 'arg=--session-id' "$fake_zell_log"
+require_match "arg=agent-arena-${zell_run}" "$fake_zell_log"
+require_match 'arg=--name' "$fake_zell_log"
+require_match 'arg=Agent\ Arena\ Zell\ zell-e2e' "$fake_zell_log"
+require_match 'arg=--append-system-prompt' "$fake_zell_log"
+require_match 'submit' "$fake_zell_log"
+require_match 'relay' "$fake_zell_log"
+# z3: defense-in-depth suppression flags present; no resume/fork/print;
+#     shared dangerous-flag list clean
+require_match 'arg=--no-extensions' "$fake_zell_log"
+require_match 'arg=--no-skills' "$fake_zell_log"
+require_match 'arg=--no-prompt-templates' "$fake_zell_log"
+require_match 'arg=--no-themes' "$fake_zell_log"
+assert_no_dangerous_writer_flags "$fake_zell_log"
+for zell_flag in --continue --resume --fork --print; do
+    require_no_match "arg=${zell_flag}" "$fake_zell_log"
+done
+# z4: capabilities contract — exact-id resume declared, sandbox=none, and no
+#     approval claim before the authorized live smoke records it
+"${source_root}/adapters/zell.sh" capabilities >"${tmp_root}/zell.capabilities"
+require_match 'explicit_session_id=true' "${tmp_root}/zell.capabilities"
+require_match 'session_dir=true' "${tmp_root}/zell.capabilities"
+require_match 'resume_by_id=true' "${tmp_root}/zell.capabilities"
+require_match 'automatic_resume=true' "${tmp_root}/zell.capabilities"
+require_match 'sandbox=none' "${tmp_root}/zell.capabilities"
+if grep -q '^approval=' "${tmp_root}/zell.capabilities"; then
+    fail 'zell capabilities must not claim approval semantics before live smoke'
+fi
+# z6: doctor lists the zell profile when the CLI is available
+run_arena doctor >"${tmp_root}/zell-doctor.out" 2>&1
+require_match 'profile:zell-cursor' "${tmp_root}/zell-doctor.out"
 
 
 printf '%s\n' 'tests: ok'

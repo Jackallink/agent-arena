@@ -36,6 +36,12 @@ arena_profile_resolve() {
             ARENA_PROFILE_WRITER_LABEL='Agy'
             ARENA_PROFILE_GATE_ADAPTER='cursor'
             ;;
+        zell-cursor)
+            ARENA_PROFILE_NAME='zell-cursor'
+            ARENA_PROFILE_WRITER_ADAPTER='zell'
+            ARENA_PROFILE_WRITER_LABEL='Zell'
+            ARENA_PROFILE_GATE_ADAPTER='cursor'
+            ;;
         *)
             if [[ "$profile" == *-* ]]; then
                 arena_profile_split "$profile"
@@ -46,6 +52,7 @@ arena_profile_resolve() {
                     codex) ARENA_PROFILE_WRITER_LABEL='Codex' ;;
                     opencode) ARENA_PROFILE_WRITER_LABEL='OpenCode' ;;
                     agy) ARENA_PROFILE_WRITER_LABEL='Agy' ;;
+                    zell) ARENA_PROFILE_WRITER_LABEL='Zell' ;;
                 esac
                 ARENA_PROFILE_GATE_ADAPTER="$ARENA_PROFILE_GATE"
                 return
@@ -92,7 +99,7 @@ arena_profile_split() {
 }
 
 arena_profile_list() {
-    printf '%s\n' pi-cursor codex-cursor opencode-cursor agy-cursor
+    printf '%s\n' pi-cursor codex-cursor opencode-cursor agy-cursor zell-cursor
 }
 
 arena_profile_branch() {
@@ -100,7 +107,7 @@ arena_profile_branch() {
     local run_id="$2"
 
     case "$writer_adapter" in
-        pi|codex|opencode|agy) printf 'agent-arena/%s/%s' "$writer_adapter" "$run_id" ;;
+        pi|codex|opencode|agy|zell) printf 'agent-arena/%s/%s' "$writer_adapter" "$run_id" ;;
         *) arena_die "unknown writer adapter '$writer_adapter'" ;;
     esac
 }

@@ -10,7 +10,7 @@ Agent Arena 是一个本地优先、独立的终端工作流：一个编码 writ
 
 ## 核心价值
 
-- **自带模型，自由组合** —— 任意 writer（Pi / Codex / OpenCode / Agy）搭配任意
+- **自带模型，自由组合** —— 任意 writer（Pi / Codex / OpenCode / Agy / Zell）搭配任意
   正式 gate（Cursor / OpenCode）；已用真实 Pi writer + 真实 Cursor reviewer
   端到端 live 验证（2026-08-15）。
 - **隔离是设计出来的** —— 每次 run 拥有独立 Git worktree 和 tmux 会话；评审
@@ -26,7 +26,7 @@ Agent Arena 是一个本地优先、独立的终端工作流：一个编码 writ
 
 每个 profile 组合一个 writer 与一个 gate。**Cursor Agent** 是默认的正式
 评审/验证/决策 gate；`--gate opencode` 或 `WRITER-GATE` profile（如
-`pi-opencode`）选择 OpenCode gate。Pi、Codex、OpenCode、Agy 仅作 writer。
+`pi-opencode`）选择 OpenCode gate。Pi、Codex、OpenCode、Agy、Zell 仅作 writer。
 relay 消息是便利反馈，但 SHA 绑定的验证报告与决策记录才是审计真相。
 
 > **验证状态：** v0.5.1 具备 hermetic 适配器测试（56 节 —— v0.4 §0–49 零语义

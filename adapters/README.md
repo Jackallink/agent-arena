@@ -24,7 +24,7 @@ separate release smoke.
 
 ## Writer adapters
 
-Writer adapters live at `adapters/<name>.sh` (pi, codex, opencode, agy) and
+Writer adapters live at `adapters/<name>.sh` (pi, codex, opencode, agy, zell) and
 declare `writer=true` in `capabilities`. They launch the writer CLI inside the
 isolated writer worktree with the Arena session directory and a prompt that
 prohibits editing the integration worktree, merging, pushing, resetting, and
