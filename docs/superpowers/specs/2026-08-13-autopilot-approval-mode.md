@@ -2,7 +2,7 @@
 status: review-ready
 created: '2026-08-15'
 owner: 'local owner'
-drift: implementation matches the contracts in this spec (mode config/switch, status read-path extension, resolve/escalate --actor, autopilot matrix and exit codes 0/4/6, observation files). The v0.4 state machine and wire contract are unchanged; the assertion-update list (config parser, Mode:/Verdict:/Validation result:/Last transition at:/pane lines, manifest mode rows, lock reclamation) is recorded in the plan.
+drift: implementation matches the contracts in this spec (mode config/switch, status read-path extension, resolve/escalate --actor, autopilot matrix and exit codes 0/4/6, observation files). The v0.4 state machine and wire contract are unchanged; the assertion-update list (config parser, Mode:/Verdict:/Validation result:/Last transition at:/pane lines, manifest mode rows, lock reclamation) is recorded in the plan. Fix pass (2026-08-13): the round summary line was missing, per-run TSV rows leaked into watch stdout, log rotation kept one generation instead of three, and the heartbeat errors counter never incremented — all four fixed per the plan's fix-pass section and covered by tests §56.
 ---
 
 # Agent Arena v0.5: Autopilot approval modes (human/auto)
@@ -197,13 +197,16 @@ agent-arena autopilot [--once] [--interval SECONDS=30] [--approve-delay SECONDS=
 
 - `--watch` (default) loops forever; `--once` runs one scan and exits;
   `--rounds N` runs N scans then exits (hermetic-test hook for the watch loop;
-  N=1 behaves like `--once`).
+  exit code mirrors the last round).
 - Scope: `--repo PATH` (default: the repository of the current directory) or
   `--all-repos` (explicit, logged). Runs outside the scope are never touched.
   `--repo` accepts either a repository path or a repo id.
 - `--watch` prints one summary line per round to stdout (`<ts> scanned=<n>
-  acted=<n> needs-human=<n> errors=<n>`); `--once` prints the per-run TSV rows
-  plus the same summary line.
+  acted=<n> needs-human=<n> errors=<n>`) and nothing else; `--once` prints the
+  per-run TSV rows plus the same summary line. `--rounds` output follows
+  watch mode (summary lines only). `errors` counts runs whose scan logged an
+  error result (corrupt, incomplete transition, unexpected status exit,
+  guard mismatch, failed auto-approve).
 - A per-state-root autopilot lock (`.autopilot-lock` in the state root, owner
   metadata + `last_seen_at` refreshed after every scan) serializes instances.
   `last_seen_at` liveness applies only to the autopilot lock; v0.4 lock

@@ -70,15 +70,19 @@ autopilot_log="${state_root}/autopilot.log"
 throttle_file="${state_root}/autopilot-throttle.tsv"
 
 AP_ACTED=0
+# per-scan error flag: set by every branch that logs an 'error' result
+# (corrupt, incomplete transition, unexpected status exit, guard mismatch,
+# failed auto-approve); summed into the heartbeat/summary errors counter
+AP_SCAN_ERROR=0
 
 arena_autopilot_log() {
     local run_id="$1" mode="$2" state="$3" action="$4" result="$5"
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(now)" "$run_id" "$mode" "$state" "$action" "$result" >>"$autopilot_log"
-    # rotate at 1 MB, keep 3
+    # rotate at 1 MB, keep 3 generations (oldest first: .3 <- .2 <- .1 <- current)
     if [[ "$(wc -c <"$autopilot_log" 2>/dev/null || printf 0)" -gt 1048576 ]]; then
-        mv "$autopilot_log" "${autopilot_log}.1" 2>/dev/null || true
-        mv "${autopilot_log}.1" "${autopilot_log}.2" 2>/dev/null || true
         mv "${autopilot_log}.2" "${autopilot_log}.3" 2>/dev/null || true
+        mv "${autopilot_log}.1" "${autopilot_log}.2" 2>/dev/null || true
+        mv "$autopilot_log" "${autopilot_log}.1" 2>/dev/null || true
         : >"$autopilot_log"
     fi
 }
@@ -202,10 +206,11 @@ arena_autopilot_relay_record() {
 
 # ---- per-run scan: returns 0 ok / 4 defer / 6 needs-human-or-error ----
 arena_autopilot_scan_run() {
-    local run_dir="$1" run_id="$2" tuple verdict vr lta reviewer_pane writer_pane
+    local run_dir="$1" run_id="$2" tuple
     local now_ts party reason waiting
 
     now_ts="$(now)"
+    AP_SCAN_ERROR=0
     arena_autopilot_read_run "$run_dir" "$run_id"
     tuple="$(arena_autopilot_tuple "$AP_OUTPUT")"
     party="${tuple%%:*}"
@@ -218,6 +223,7 @@ arena_autopilot_scan_run() {
             return 4
             ;;
         2)
+            AP_SCAN_ERROR=1
             arena_autopilot_log "$run_id" "$AP_MODE" 'corrupt-or-conflict' 'scan' 'error'
             return 6
             ;;
@@ -225,6 +231,7 @@ arena_autopilot_scan_run() {
             # incomplete: intent stages / legacy residue skip silently;
             # repair-intent residue and other incomplete states error
             if printf '%s' "$AP_OUTPUT" | grep -q 'incomplete transition'; then
+                AP_SCAN_ERROR=1
                 arena_autopilot_log "$run_id" "$AP_MODE" 'incomplete' 'scan' 'error'
                 return 6
             fi
@@ -232,6 +239,7 @@ arena_autopilot_scan_run() {
             return 0
             ;;
         1)
+            AP_SCAN_ERROR=1
             arena_autopilot_log "$run_id" "$AP_MODE" 'unexpected' 'scan' 'error'
             return 6
             ;;
@@ -253,6 +261,7 @@ arena_autopilot_scan_run() {
                             AP_ACTED=$((AP_ACTED + 1))
                             arena_autopilot_log "$run_id" "$AP_MODE" 'approval_pending' 'resolve-approve' 'acted'
                         else
+                            AP_SCAN_ERROR=1
                             arena_autopilot_log "$run_id" "$AP_MODE" 'approval_pending' 'resolve-approve' 'error'
                             return 6
                         fi
@@ -264,6 +273,7 @@ arena_autopilot_scan_run() {
                     arena_autopilot_log "$run_id" "$AP_MODE" 'approval_pending' 'cooling' 'deferred'
                 fi
             else
+                AP_SCAN_ERROR=1
                 arena_autopilot_log "$run_id" "$AP_MODE" 'approval_pending' 'guard-mismatch' 'error'
                 return 6
             fi
@@ -338,7 +348,7 @@ arena_autopilot_heartbeat() {
 
 # ---- one scan round: returns the aggregate exit code (6 > 4 > 0) ----
 arena_autopilot_round() {
-    local scanned=0 acted=0 errors=0 needs_human=0 round_exit=0 per_run_exit row
+    local scanned=0 acted=0 errors=0 needs_human=0 round_exit=0 per_run_exit
     local scope_dirs run_dir run_id
 
     scope_dirs="$(arena_autopilot_scope_dirs)"
@@ -354,14 +364,22 @@ arena_autopilot_round() {
             case "$per_run_exit" in
                 6) needs_human=$((needs_human + 1)) ;;
             esac
-            # per-run TSV summary (--once stdout; watch keeps it in the log)
-            printf '%s\t%s\t%s\t%s\t%s\n' "$run_id" "$AP_MODE" "${AP_STATE:-?}" 'scan' "$per_run_exit"
+            errors=$((errors + AP_SCAN_ERROR))
+            # per-run TSV summary: --once stdout only (cron consumption);
+            # watch prints the round summary line below instead
+            if [[ "$once" == 1 ]]; then
+                printf '%s\t%s\t%s\t%s\t%s\n' "$run_id" "$AP_MODE" "${AP_STATE:-?}" 'scan' "$per_run_exit"
+            fi
         done < <(find "$repo_dir" -mindepth 2 -maxdepth 2 -type f -name manifest.tsv 2>/dev/null | sort)
     done <<<"$scope_dirs"
 
     acted="$AP_ACTED"
     [[ "$needs_human" -gt 0 ]] && round_exit=6
     arena_autopilot_heartbeat "$(now)" "$scanned" "$acted" "$errors" "$needs_human" "$scope_mode"
+    # round summary line (spec: --watch prints one per round; --once prints
+    # it after the per-run TSV rows)
+    printf '%s scanned=%s acted=%s needs-human=%s errors=%s\n' \
+        "$(now)" "$scanned" "$acted" "$needs_human" "$errors"
     return "$round_exit"
 }
 

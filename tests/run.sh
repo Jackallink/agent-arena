@@ -4065,4 +4065,59 @@ heartbeat_rows="$(wc -l <"${state_base}/autopilot.tsv")"
 [[ "$heartbeat_rows" -ge 1 ]] || fail 'autopilot.tsv has no rows'
 
 
+printf '%s\n' '56. autopilot round summary line, watch stdout, log rotation, error count'
+# F1+F2: --once prints the per-run TSV rows PLUS the round summary line;
+# the summary line is the last line of stdout
+set +e
+run_arena autopilot --once --state-root "$state_base" --repo "$project" >"${tmp_root}/ap-sum.out" 2>&1
+ap_sum_exit=$?
+set -e
+[[ "$ap_sum_exit" == 6 ]] || fail "summary-scan --once exited $ap_sum_exit, expected 6 (corrupt run in scope)"
+ap_sum_summary="$(tail -1 "${tmp_root}/ap-sum.out")"
+grep -Eq '^[0-9]+ scanned=[0-9]+ acted=[0-9]+ needs-human=[0-9]+ errors=[0-9]+$' "${tmp_root}/ap-sum.out" || \
+    fail "missing round summary line in --once output (last line: $ap_sum_summary)"
+require_match 'errors=1' "${tmp_root}/ap-sum.out"
+[[ "$ap_sum_summary" != *$'\t'* ]] || fail "summary line contains tabs: $ap_sum_summary"
+# per-run TSV rows precede the summary in --once output
+[[ "$(wc -l <"${tmp_root}/ap-sum.out")" -gt 1 ]] || fail '--once printed no per-run TSV rows'
+require_match $'\tscan\t' "${tmp_root}/ap-sum.out"
+# F1+F2: --watch --rounds prints ONLY summary lines (no per-run TSV rows)
+set +e
+run_arena autopilot --watch --rounds 2 --interval 1 --state-root "$state_base" --repo "$project" >"${tmp_root}/ap-watch.out" 2>&1
+ap_watch_exit=$?
+set -e
+[[ "$ap_watch_exit" == 6 ]] || fail "--rounds 2 exited $ap_watch_exit, expected 6"
+[[ "$(wc -l <"${tmp_root}/ap-watch.out")" -eq 2 ]] || fail "--rounds 2 printed $(wc -l <"${tmp_root}/ap-watch.out") lines, expected 2 summary lines"
+require_match 'scanned=' "${tmp_root}/ap-watch.out"
+if grep -q $'\t' "${tmp_root}/ap-watch.out"; then
+    fail '--rounds leaked per-run TSV rows to stdout'
+fi
+# F4: heartbeat errors column reflects the corrupt-scan error (column 5)
+ap_err_col="$(tail -1 "${state_base}/autopilot.tsv" | awk -F $'\t' '{ print $5 }')"
+[[ "$ap_err_col" -ge 1 ]] || fail "heartbeat errors column is $ap_err_col, expected >= 1"
+# F3: log rotation keeps three generations, oldest first
+seed_log() {
+    { printf '%s\n' "$1"; head -c 1048577 /dev/zero | tr '\0' 'x'; printf '\n'; } >"${state_base}/autopilot.log"
+}
+seed_log 'MARKER-A'
+set +e
+run_arena autopilot --once --state-root "$state_base" --repo "$project" >/dev/null 2>&1
+set -e
+require_match 'MARKER-A' "${state_base}/autopilot.log.1"
+seed_log 'MARKER-B'
+set +e
+run_arena autopilot --once --state-root "$state_base" --repo "$project" >/dev/null 2>&1
+set -e
+require_match 'MARKER-A' "${state_base}/autopilot.log.2"
+require_match 'MARKER-B' "${state_base}/autopilot.log.1"
+seed_log 'MARKER-C'
+set +e
+run_arena autopilot --once --state-root "$state_base" --repo "$project" >/dev/null 2>&1
+set -e
+require_match 'MARKER-A' "${state_base}/autopilot.log.3"
+require_match 'MARKER-B' "${state_base}/autopilot.log.2"
+require_match 'MARKER-C' "${state_base}/autopilot.log.1"
+[[ "$(wc -c <"${state_base}/autopilot.log")" -lt 4096 ]] || fail 'rotated log not truncated'
+
+
 printf '%s\n' 'tests: ok'

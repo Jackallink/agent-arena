@@ -317,3 +317,36 @@ parser, `Mode:` line, manifest rows) per v05-AC11.
   `arena_autopilot_*`, `arena_autopilot_log/Heartbeat` names consistent across
   tasks; exit codes 0/4/5/6 (autopilot) and 0/1/2/3/4/5/10 (v0.4) never overlap
   in meaning.
+
+---
+
+## Fix pass (2026-08-13, post-v0.5.1 code review)
+
+Review of `lib/autopilot.sh` found four drifts/bugs, all fixed spec-first
+(spec drift note + `--rounds` output contract updated) and test-first (§56
+written before the fix):
+
+| # | Finding | Fix | Test |
+| --- | --- | --- | --- |
+| F1 | Round summary line (`<ts> scanned=<n> acted=<n> needs-human=<n> errors=<n>`) required by the spec was never printed | Print one summary line per round in `arena_autopilot_round` (after heartbeat, before return), for `--once`, `--watch`, and `--rounds` | §56: `--once` output ends with the summary line; `--rounds 2` prints exactly two summary lines |
+| F2 | Per-run TSV rows leaked to stdout in watch mode (spec reserves them for `--once`) | Gate the per-run row printf on `$once == 1`; `--rounds` follows watch output (summary only) | §56: `--rounds 2` stdout contains no tab-separated per-run rows |
+| F3 | Log rotation moved `log→.1→.2→.3` (same content chained), keeping one generation and destroying older backups | Rotate oldest-first: `.2→.3`, `.1→.2`, `log→.1` | §56: three seeded >1MB rotations leave MARKER-A in `.3`, MARKER-B in `.2`, MARKER-C in `.1` |
+| F4 | Heartbeat `errors` counter never incremented (always 0 despite 'error' results) | `AP_SCAN_ERROR` flag set in every error-logging branch (corrupt, incomplete transition, unexpected exit, guard mismatch, failed auto-approve); round sums it into the heartbeat and summary | §56: corrupt-state scan reports `errors=1` in the summary and heartbeat row |
+
+Non-goals (recorded, not fixed here): `mode.sh` terminal-refuse exits while
+holding the run lock (pid-dead reclamation covers it; a trap is the proper fix
+and would need its own test), mode-switch log entries bypass rotation,
+dead locals cleanup in `scan_run`/`round` (cosmetic, done in passing).
+
+## Fix-pass validation evidence
+
+- `bash tests/run.sh` — PASS, 57 sections (§0–56; §56 written first, failed
+  against the unfixed binary on the missing summary line, then passed after
+  the fix). Test-harness drift during authoring: the summary-line assertion
+  was first written against `require_match` (grep -F, literal) with a regex
+  pattern and failed even after the fix; rewritten as `grep -Eq`. Lesson:
+  regex assertions must not go through `require_match`.
+- `bash tests/tmuxp-smoke.sh` / `tests/cli-contract-smoke.sh` — PASS.
+- `bash packaging/package.sh --check` — PASS (dist artifact unchanged by
+  this fix; repackaging happens at the next release).
+- `bash -n lib/*.sh adapters/*.sh` — PASS.
