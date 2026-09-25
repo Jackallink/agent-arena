@@ -1,5 +1,47 @@
 # Release Notes
 
+## v0.5.2 — Patch (2026-08-15)
+
+Patch release after v0.5.1: observation-contract and lock-hygiene fixes found
+by a post-release code review of `autopilot`/`mode`. The v0.4/v0.5 state
+machine, wire contract, and exit-code protocol are unchanged.
+
+### Fixes
+
+- **Round summary line** (spec contract, previously missing): every
+  `autopilot` round now prints `<ts> scanned=<n> acted=<n> needs-human=<n>
+  errors=<n>`; `--once` prints it after the per-run TSV rows.
+- **Watch stdout discipline**: per-run TSV rows are `--once`-only (cron
+  consumption); `--watch`/`--rounds` print only the round summary line.
+- **Log rotation**: rotation now keeps three generations oldest-first
+  (`.2→.3`, `.1→.2`, `log→.1`); the previous order chained the same content
+  and kept one. Shared as `arena_log_rotate` (lib/common.sh), also applied to
+  mode-switch rows that previously bypassed rotation.
+- **Heartbeat errors counter**: previously always 0; now summed from every
+  error-logged scan branch (corrupt, incomplete transition, unexpected exit,
+  guard mismatch, failed auto-approve).
+- **mode lock hygiene**: `mode` is now trap-disciplined like every other
+  `arena_lock_acquire` caller — a terminal-refused switch no longer leaves
+  the `.run-lock` behind.
+- **mode action-log schema**: mode-switch rows follow the spec schema
+  `timestamp run_id mode state action result` (fields 2/3 were swapped).
+
+### Verification (2026-08-15, hermetic, no model/network)
+
+- Hermetic suite: 58 sections green (§0–55 unchanged, §56 round summary /
+  watch stdout / rotation / error count, §57 mode lock release / action-log
+  schema / rotation), tmuxp smoke, CLI contract smoke, package check, and
+  `bash -n` all green.
+- New sections were written first and failed against the unfixed binaries
+  (TDD), per the fix-pass and cleanup-pass records in
+  `docs/superpowers/plans/2026-08-13-autopilot-approval-mode.md`.
+- No new live smoke: the changes touch stdout/observation files and lock
+  release paths only; the v0.5.1 live two-model unattended loop evidence
+  remains the authoritative behavioral validation.
+- Plan bookkeeping: `pluggable-gate-adapters` plan checkboxes back-filled to
+  complete after a Gate-3 artifact re-verification (gate resolution, manifest
+  fallback, hash checks, pane dispatch, both gate adapters present).
+
 ## v0.5.1 — Patch (2026-08-15)
 
 Patch release after v0.5.0.
