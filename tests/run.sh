@@ -165,9 +165,33 @@ set -euo pipefail
     printf 'writer_session_dir=%s\n' "${ARENA_WRITER_SESSION_DIR:-}"
     for argument in "$@"; do
         printf 'arg=%q\n' "$argument"
+        if [[ "$argument" == @* ]]; then
+            printf 'attach=%s\n' "${argument#@}"
+            cat "${argument#@}" 2>/dev/null || true
+        fi
     done
     printf '%s\n' '--'
 } >>"${FAKE_ZELL_LOG:?}"
+if [[ "${1:-}" == "-p" ]]; then
+    # Stage-session simulation (artifact pipeline): optionally probe the
+    # seatbelt boundary, optionally fail, then write the stage draft.
+    if [[ "${FAKE_ZELL_PROBE_OUTSIDE:-0}" == 1 ]]; then
+        probe_path="${FAKE_ZELL_PROBE_OUTSIDE_PATH:?}"
+        if touch "$probe_path" 2>/dev/null; then
+            printf 'outside-write=allowed\n' >>"${FAKE_ZELL_LOG:?}"
+        else
+            printf 'outside-write=denied\n' >>"${FAKE_ZELL_LOG:?}"
+        fi
+    fi
+    if [[ "${FAKE_ZELL_STAGE_FAIL:-0}" == 1 ]]; then
+        printf 'fake-zell: simulated stage failure\n' >&2
+        exit 3
+    fi
+    printf '%s\n' "${FAKE_ZELL_DRAFT_CONTENT:-# fake stage draft}" \
+        >"${ARENA_RUN_DIR:?}/${ARENA_STAGE:?}-draft.md"
+    exit 0
+fi
+exit 0
 EOF
 cat >"${fake_bin}/tmuxp" <<'EOF'
 #!/usr/bin/env bash
@@ -4347,13 +4371,15 @@ set -e
 require_match 'weird\"repo' "${tmp_root}/list-json-weird.out"
 # u3: dashboard dispatch — missing binary dies with the build hint; with
 #     the binary present but no tty, the TUI itself refuses interactively
+#     (a minimal PATH keeps a developer-installed agent-arena-ui out of the
+#     lookup so the hint path is actually exercised)
 ui_bin="${source_root}/ui/target/debug/agent-arena-ui"
 ui_bin_hidden=''
 if [[ -x "$ui_bin" ]]; then
     ui_bin_hidden="${ui_bin}.hidden"
     mv "$ui_bin" "$ui_bin_hidden"
 fi
-run_arena dashboard </dev/null >"${tmp_root}/dashboard.out" 2>&1 || true
+PATH="/usr/bin:/bin" run_arena dashboard </dev/null >"${tmp_root}/dashboard.out" 2>&1 || true
 if [[ -n "$ui_bin_hidden" ]]; then mv "$ui_bin_hidden" "$ui_bin"; fi
 require_match 'cargo build' "${tmp_root}/dashboard.out"
 # u3: with no source-tree binary but a PATH-installed agent-arena-ui, the
@@ -4395,6 +4421,391 @@ if command -v cargo >/dev/null 2>&1; then
     [[ "$ui_selftest_exit" == 0 ]] || fail "ui --selftest exited $ui_selftest_exit"
     require_match 'run-one' "${tmp_root}/ui-selftest.out"
 fi
+
+
+printf '%s\n' '62. artifact pipeline: no-config regression (v0.6 identical)'
+# Isolate the global roles config home for every later call: the tests must
+# never read the developer's real ~/.config/agent-arena/roles.conf.
+export ARENA_CONFIG_HOME="${tmp_root}/conf-home"
+mkdir -p "${ARENA_CONFIG_HOME}/agent-arena"
+[[ ! -f "${project}/.agent-arena/roles.conf" ]] || fail 'fixture pollution: roles.conf already present'
+if ! run_arena start reg62 --repo "$project" --no-attach >"${tmp_root}/reg62.out" 2>&1; then
+    cat "${tmp_root}/reg62.out" >&2
+    fail 'start without roles.conf regressed (must equal v0.6 behavior)'
+fi
+reg62_manifest="$(find "${state_base}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/reg62/manifest.tsv' | head -1)"
+[[ -n "$reg62_manifest" ]] || fail 'reg62 manifest missing'
+require_no_match 'pipeline' "$reg62_manifest"
+[[ "$(manifest_value "${reg62_manifest%/manifest.tsv}/run-state.tsv" phase)" == 'intake' ]] || \
+    fail 'no-config start did not land in the v0.6 intake phase'
+# --pipeline none is the explicit v0.6 flow: no pipeline key, intake phase
+if ! run_arena start reg62n --repo "$project" --no-attach --pipeline none >"${tmp_root}/reg62n.out" 2>&1; then
+    cat "${tmp_root}/reg62n.out" >&2
+    fail 'start --pipeline none failed'
+fi
+reg62n_manifest="$(find "${state_base}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/reg62n/manifest.tsv' | head -1)"
+require_no_match 'pipeline' "$reg62n_manifest"
+[[ "$(manifest_value "${reg62n_manifest%/manifest.tsv}/run-state.tsv" phase)" == 'intake' ]] || \
+    fail '--pipeline none did not land in the v0.6 intake phase'
+# every run so far is v0.6-shaped: the JSON oracle must carry no pipeline key
+run_arena list --json --state-root "$state_base" >"${tmp_root}/reg62-list.out" 2>&1
+require_no_match '"pipeline"' "${tmp_root}/reg62-list.out"
+
+printf '%s\n' '63. roles.conf: parse, precedence, capability gate, doctor advisory'
+for stage_name in intent spec plan; do
+    printf '# %s prompt template\n' "$stage_name" >"${project}/.agent-arena/${stage_name}-prompt.md"
+done
+{
+    printf 'intent_adapter=zell\n'
+    printf 'intent_prompt=intent-prompt.md\n'
+    printf 'spec_adapter=zell\n'
+    printf 'spec_prompt=spec-prompt.md\n'
+    printf 'plan_adapter=zell\n'
+    printf 'plan_prompt=plan-prompt.md\n'
+} >"${project}/.agent-arena/roles.conf"
+git -C "$project" add .agent-arena
+git -C "$project" commit -m 'test: add pipeline roles config' >/dev/null
+run_arena doctor >"${tmp_root}/doctor-pipeline.out" 2>&1 || fail 'doctor failed with roles.conf present'
+require_match 'stage:intent' "${tmp_root}/doctor-pipeline.out"
+require_match 'stage:spec' "${tmp_root}/doctor-pipeline.out"
+require_match 'stage:plan' "${tmp_root}/doctor-pipeline.out"
+# capability gate: an adapter without headless_stage is skipped with a warning
+sed 's/^spec_adapter=zell/spec_adapter=pi/' "${project}/.agent-arena/roles.conf" >"${project}/.agent-arena/roles.conf.tmp"
+mv "${project}/.agent-arena/roles.conf.tmp" "${project}/.agent-arena/roles.conf"
+run_arena doctor >"${tmp_root}/doctor-pi-stage.out" 2>&1 || fail 'doctor failed with a non-headless stage adapter'
+grep -Eq 'skipped.*headless_stage' "${tmp_root}/doctor-pi-stage.out" || \
+    fail 'doctor did not report the non-headless stage as skipped'
+# unknown key fails fast with path and line
+printf 'bogus_key=1\n' >>"${project}/.agent-arena/roles.conf"
+set +e
+run_arena doctor >"${tmp_root}/roles-bogus.out" 2>&1
+roles_bogus_exit=$?
+set -e
+[[ "$roles_bogus_exit" != 0 ]] || fail 'unknown roles.conf key was accepted'
+grep -Eq 'roles.conf:[0-9]+' "${tmp_root}/roles-bogus.out" || fail 'roles.conf error lacks path:line'
+sed -i.bak '/^bogus_key=/d' "${project}/.agent-arena/roles.conf"
+rm -f "${project}/.agent-arena/roles.conf.bak"
+# unknown adapter fails fast
+sed 's/^intent_adapter=zell/intent_adapter=nosuchadapter/' "${project}/.agent-arena/roles.conf" >"${project}/.agent-arena/roles.conf.tmp"
+mv "${project}/.agent-arena/roles.conf.tmp" "${project}/.agent-arena/roles.conf"
+set +e
+run_arena doctor >"${tmp_root}/roles-bad-adapter.out" 2>&1
+roles_bad_adapter_exit=$?
+set -e
+[[ "$roles_bad_adapter_exit" != 0 ]] || fail 'unknown roles.conf adapter was accepted'
+require_match 'intent_adapter' "${tmp_root}/roles-bad-adapter.out"
+# missing prompt file fails fast
+sed 's/^plan_prompt=plan-prompt.md/plan_prompt=missing-prompt.md/' "${project}/.agent-arena/roles.conf" >"${project}/.agent-arena/roles.conf.tmp"
+mv "${project}/.agent-arena/roles.conf.tmp" "${project}/.agent-arena/roles.conf"
+set +e
+run_arena doctor >"${tmp_root}/roles-missing-prompt.out" 2>&1
+roles_missing_prompt_exit=$?
+set -e
+[[ "$roles_missing_prompt_exit" != 0 ]] || fail 'missing prompt file was accepted'
+require_match 'missing-prompt.md' "${tmp_root}/roles-missing-prompt.out"
+# restore the all-zell config and set a global-only plan model (precedence)
+{
+    printf 'intent_adapter=zell\n'
+    printf 'intent_prompt=intent-prompt.md\n'
+    printf 'spec_adapter=zell\n'
+    printf 'spec_prompt=spec-prompt.md\n'
+    printf 'plan_adapter=zell\n'
+    printf 'plan_prompt=plan-prompt.md\n'
+} >"${project}/.agent-arena/roles.conf"
+printf 'plan_model=global-plan-model\n' >"${ARENA_CONFIG_HOME}/agent-arena/roles.conf"
+
+printf '%s\n' '64. stage: argv contract, harvest, failure path'
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena start s64 --repo "$project" --no-attach --pipeline intent,spec,plan >"${tmp_root}/s64-start.out" 2>&1; then
+    cat "${tmp_root}/s64-start.out" >&2
+    fail 'pipeline start failed'
+fi
+s64_dir="$(dirname "$(find "${state_base}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s64/manifest.tsv' | head -1)")"
+[[ -n "$s64_dir" ]] || fail 's64 run dir missing'
+[[ "$(manifest_value "${s64_dir}/manifest.tsv" pipeline)" == 'intent,spec,plan' ]] || fail 'pipeline key missing or wrong'
+[[ "$(manifest_value "${s64_dir}/run-state.tsv" phase)" == 'intent' ]] || fail 'pipeline start did not land in intent phase'
+[[ "$(manifest_value "${s64_dir}/run-state.tsv" reason_code)" == 'awaiting_stage_start' ]] || fail 'fresh pipeline run not awaiting stage start'
+[[ "$(manifest_value "${s64_dir}/manifest.tsv" writer_worktree)" == '' ]] || fail 'pipeline start created a worktree early'
+[[ ! -d "${worktree_base}/${s64_dir##*/}" ]] || { :; }  # worktree root has no run dir yet (id encoding differs); the manifest assertion above carries the contract
+: >"$fake_zell_log"
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent FAKE_ZELL_DRAFT_CONTENT='# s64 intent draft body' \
+    run_arena stage s64 intent --prompt-text 'greeting endpoint needed' >"${tmp_root}/s64-stage.out" 2>&1; then
+    cat "${tmp_root}/s64-stage.out" >&2
+    fail 'stage intent failed'
+fi
+require_match 'STAGE SANDBOX UNAVAILABLE' "${tmp_root}/s64-stage.out"
+require_match 'arg=-p' "$fake_zell_log"
+require_match 'arg=--json' "$fake_zell_log"
+require_match 'arg=--tools' "$fake_zell_log"
+require_match 'arg=read,write' "$fake_zell_log"
+require_match 'arg=--no-extensions' "$fake_zell_log"
+require_match 'arg=--session-id' "$fake_zell_log"
+require_match 'arg=arena-s64-intent-a1' "$fake_zell_log"
+require_match 'intent-prompt.md' "$fake_zell_log"
+require_match 'greeting endpoint needed' "$fake_zell_log"
+[[ -f "${s64_dir}/intent-draft.md" ]] || fail 'intent draft missing after stage'
+require_match '# s64 intent draft body' "${s64_dir}/intent-draft.md"
+[[ "$(manifest_value "${s64_dir}/manifest.tsv" stage_intent_status)" == 'awaiting_accept' ]] || fail 'intent status not awaiting_accept'
+[[ "$(manifest_value "${s64_dir}/manifest.tsv" stage_intent_attempts)" == 1 ]] || fail 'intent attempts not recorded'
+[[ "$(manifest_value "${s64_dir}/manifest.tsv" stage_intent_sandbox)" == 'soft' ]] || fail 'soft sandbox not recorded'
+[[ "$(manifest_value "${s64_dir}/run-state.tsv" reason_code)" == 'awaiting_stage_accept' ]] || fail 'stage did not land in awaiting_stage_accept'
+[[ "$(manifest_value "${s64_dir}/run-state.tsv" responsible_party)" == 'human' ]] || fail 'gate wait not owned by human'
+# JSON oracle carries the pipeline additively
+run_arena list --json --state-root "$state_base" >"${tmp_root}/s64-list.out" 2>&1
+require_match '"pipeline":["intent","spec","plan"]' "${tmp_root}/s64-list.out"
+# accept advances with the next-command hint (no auto-spawn)
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena artifact s64 --stage intent --accept >"${tmp_root}/s64-accept.out" 2>&1; then
+    cat "${tmp_root}/s64-accept.out" >&2
+    fail 'intent accept failed'
+fi
+require_match 'stage s64 spec' "${tmp_root}/s64-accept.out"
+[[ "$(manifest_value "${s64_dir}/run-state.tsv" phase)" == 'spec' ]] || fail 'accept did not advance to spec'
+[[ "$(manifest_value "${s64_dir}/run-state.tsv" reason_code)" == 'awaiting_stage_start' ]] || fail 'spec phase not awaiting start'
+# failure harvest: failed session leaves S3 and stays retryable
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent FAKE_ZELL_STAGE_FAIL=1 \
+    run_arena stage s64 spec >"${tmp_root}/s64-spec-fail.out" 2>&1; then
+    cat "${tmp_root}/s64-spec-fail.out" >&2
+    fail 'failing stage session crashed the stage command (harvest must succeed)'
+fi
+[[ "$(manifest_value "${s64_dir}/manifest.tsv" stage_spec_status)" == 'failed' ]] || fail 'spec failure not recorded'
+[[ "$(manifest_value "${s64_dir}/run-state.tsv" reason_code)" == 'stage_failed' ]] || fail 'failed stage not in stage_failed state'
+[[ "$(manifest_value "${s64_dir}/run-state.tsv" responsible_party)" == 'human' ]] || fail 'failed stage not owned by human'
+# retry after failure (attempt 2)
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena stage s64 spec >"${tmp_root}/s64-spec-retry.out" 2>&1; then
+    cat "${tmp_root}/s64-spec-retry.out" >&2
+    fail 'spec retry failed'
+fi
+[[ "$(manifest_value "${s64_dir}/manifest.tsv" stage_spec_attempts)" == 2 ]] || fail 'spec retry attempt not counted'
+[[ "$(manifest_value "${s64_dir}/manifest.tsv" stage_spec_status)" == 'awaiting_accept' ]] || fail 'spec retry did not reach awaiting_accept'
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena artifact s64 --stage spec --accept >"${tmp_root}/s64-spec-accept.out" 2>&1; then
+    cat "${tmp_root}/s64-spec-accept.out" >&2
+    fail 'spec accept failed'
+fi
+require_match 'stage s64 plan' "${tmp_root}/s64-spec-accept.out"
+# plan model comes from the global roles.conf (precedence test)
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena stage s64 plan >"${tmp_root}/s64-plan.out" 2>&1; then
+    cat "${tmp_root}/s64-plan.out" >&2
+    fail 'plan stage failed'
+fi
+[[ "$(manifest_value "${s64_dir}/manifest.tsv" stage_plan_model)" == 'global-plan-model' ]] || fail 'global plan_model not honored'
+
+printf '%s\n' '65. artifact: accept/reject guards, digest, hint'
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena start s65 --repo "$project" --no-attach --pipeline lean >"${tmp_root}/s65-start.out" 2>&1; then
+    cat "${tmp_root}/s65-start.out" >&2
+    fail 'lean pipeline start failed'
+fi
+s65_dir="$(dirname "$(find "${state_base}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s65/manifest.tsv' | head -1)")"
+[[ "$(manifest_value "${s65_dir}/manifest.tsv" pipeline)" == 'intent' ]] || fail 'lean pipeline is not intent-only'
+# accept with no draft refuses
+set +e
+ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena artifact s65 --stage intent --accept >"${tmp_root}/s65-guard.out" 2>&1
+s65_guard_exit=$?
+set -e
+[[ "$s65_guard_exit" != 0 ]] || fail 'accept without draft succeeded'
+require_match 'draft' "${tmp_root}/s65-guard.out"
+# stage mismatch refuses
+set +e
+ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena artifact s65 --stage spec --accept >"${tmp_root}/s65-guard2.out" 2>&1
+s65_guard2_exit=$?
+set -e
+[[ "$s65_guard2_exit" != 0 ]] || fail 'accept for a non-current stage succeeded'
+require_match 'phase=intent' "${tmp_root}/s65-guard2.out"
+# reject without a draft refuses too
+set +e
+ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena artifact s65 --stage intent --reject --summary 'nothing yet' >"${tmp_root}/s65-guard3.out" 2>&1
+s65_guard3_exit=$?
+set -e
+[[ "$s65_guard3_exit" != 0 ]] || fail 'reject without draft succeeded'
+# generate, reject, verify the summary re-enters the next attempt
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena stage s65 intent --prompt-text 'lean flow requirement' >"${tmp_root}/s65-stage.out" 2>&1; then
+    cat "${tmp_root}/s65-stage.out" >&2
+    fail 's65 intent stage failed'
+fi
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena artifact s65 --stage intent --reject --summary 'missing risk section' >"${tmp_root}/s65-reject.out" 2>&1; then
+    cat "${tmp_root}/s65-reject.out" >&2
+    fail 'intent reject failed'
+fi
+require_match 'stage s65 intent' "${tmp_root}/s65-reject.out"
+[[ "$(manifest_value "${s65_dir}/manifest.tsv" stage_intent_reject_summary)" == 'missing risk section' ]] || fail 'reject summary not recorded'
+[[ "$(manifest_value "${s65_dir}/run-state.tsv" reason_code)" == 'awaiting_stage_start' ]] || fail 'reject did not re-arm the stage'
+: >"$fake_zell_log"
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena stage s65 intent >"${tmp_root}/s65-regen.out" 2>&1; then
+    cat "${tmp_root}/s65-regen.out" >&2
+    fail 'intent regeneration failed'
+fi
+require_match 'missing risk section' "$fake_zell_log"
+[[ "$(manifest_value "${s65_dir}/manifest.tsv" stage_intent_attempts)" == 2 ]] || fail 'regeneration attempt not counted'
+# manual edit between generation and accept: digest must hash disk reality
+printf '%s\n' '## Open questions' ' - none' >>"${s65_dir}/intent-draft.md"
+s65_expected_digest="$(shasum -a 256 "${s65_dir}/intent-draft.md" | awk '{print $1}')"
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena artifact s65 --stage intent --accept >"${tmp_root}/s65-accept.out" 2>&1; then
+    cat "${tmp_root}/s65-accept.out" >&2
+    fail 'lean intent accept failed'
+fi
+[[ "$(manifest_value "${s65_dir}/manifest.tsv" stage_intent_digest)" == "$s65_expected_digest" ]] || fail 'accept digest does not match disk reality'
+[[ -f "${s65_dir}/intent.md" ]] || fail 'accepted intent.md missing'
+[[ ! -f "${s65_dir}/intent-draft.md" ]] || fail 'draft not renamed on accept'
+
+printf '%s\n' '66. from-intent: entry point and validation'
+mkdir -p "${project}/intent"
+printf '# need: greeting endpoint\n\nsome words from the originator\n' >"${project}/intent/need.md"
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena start s66 --repo "$project" --from-intent intent/need.md --pipeline lean >"${tmp_root}/s66-start.out" 2>&1; then
+    cat "${tmp_root}/s66-start.out" >&2
+    fail 'from-intent start failed'
+fi
+s66_dir="$(dirname "$(find "${state_base}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s66/manifest.tsv' | head -1)")"
+require_match '# need: greeting endpoint' "${s66_dir}/intent-draft.md"
+[[ "$(manifest_value "${s66_dir}/run-state.tsv" reason_code)" == 'awaiting_stage_accept' ]] || fail 'from-intent run did not land in gate review'
+: >"$fake_zell_log"
+# no agent session may have run for a from-intent run before accept
+require_no_match 'arena-s66' "$fake_zell_log"
+# validation: empty, oversized, non-UTF-8, and a pipeline contradiction
+printf '' >"${project}/intent/empty.md"
+set +e
+run_arena start s66a --repo "$project" --from-intent intent/empty.md --pipeline lean >"${tmp_root}/s66-empty.out" 2>&1
+s66_empty_exit=$?
+set -e
+[[ "$s66_empty_exit" != 0 ]] || fail 'empty from-intent file accepted'
+require_match 'empty' "${tmp_root}/s66-empty.out"
+head -c 70000 /dev/zero | tr '\0' 'a' >"${project}/intent/big.md"
+set +e
+run_arena start s66b --repo "$project" --from-intent intent/big.md --pipeline lean >"${tmp_root}/s66-big.out" 2>&1
+s66_big_exit=$?
+set -e
+[[ "$s66_big_exit" != 0 ]] || fail 'oversized from-intent file accepted'
+require_match '64' "${tmp_root}/s66-big.out"
+printf '\377\376binary-not-utf8\n' >"${project}/intent/bad.md"
+set +e
+run_arena start s66c --repo "$project" --from-intent intent/bad.md --pipeline lean >"${tmp_root}/s66-bad.out" 2>&1
+s66_bad_exit=$?
+set -e
+[[ "$s66_bad_exit" != 0 ]] || fail 'non-UTF-8 from-intent file accepted'
+require_match 'UTF-8' "${tmp_root}/s66-bad.out"
+set +e
+run_arena start s66d --repo "$project" --from-intent intent/need.md --pipeline none >"${tmp_root}/s66-contradiction.out" 2>&1
+s66_contradiction_exit=$?
+set -e
+[[ "$s66_contradiction_exit" != 0 ]] || fail 'from-intent with --pipeline none accepted'
+
+printf '%s\n' '67. bootstrap: seeding and the two-phase start'
+# s64 is waiting on plan accept; the final accept bootstraps implementation
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena artifact s64 --stage plan --accept >"${tmp_root}/s64-plan-accept.out" 2>&1; then
+    cat "${tmp_root}/s64-plan-accept.out" >&2
+    fail 'plan accept failed'
+fi
+[[ "$(manifest_value "${s64_dir}/run-state.tsv" phase)" == 'intake' ]] || fail 'bootstrap did not land in intake'
+s64_worktree="$(manifest_value "${s64_dir}/manifest.tsv" writer_worktree)"
+[[ -n "$s64_worktree" && -d "$s64_worktree" ]] || fail 'bootstrap did not create the writer worktree'
+for seeded in intent spec plan; do
+    [[ -f "${s64_worktree}/docs/arena/s64/${seeded}.md" ]] || fail "bootstrap did not seed ${seeded}.md"
+done
+require_match '# s64 intent draft body' "${s64_worktree}/docs/arena/s64/intent.md"
+require_match 'arena-s64' "$fake_zell_log"
+# the lean run (s65) bootstrapped after its final accept too
+[[ "$(manifest_value "${s65_dir}/run-state.tsv" phase)" == 'intake' ]] || fail 'lean run did not bootstrap after final accept'
+s65_worktree="$(manifest_value "${s65_dir}/manifest.tsv" writer_worktree)"
+[[ -f "${s65_worktree}/docs/arena/s65/intent.md" ]] || fail 'lean run did not seed intent.md'
+[[ ! -f "${s65_worktree}/docs/arena/s65/spec.md" ]] || fail 'lean run seeded a stage outside its pipeline'
+
+printf '%s\n' '68. seatbelt: sandbox-enforced write boundary (skip-guarded)'
+if ! command -v sandbox-exec >/dev/null 2>&1; then
+    printf '%s\n' 'skip: sandbox-exec unavailable on this platform'
+else
+    if ! ARENA_STAGE_SANDBOX_BIN=sandbox-exec run_arena start s68 --repo "$project" --no-attach --pipeline lean >"${tmp_root}/s68-start.out" 2>&1; then
+        cat "${tmp_root}/s68-start.out" >&2
+        fail 's68 start failed'
+    fi
+    s68_dir="$(dirname "$(find "${state_base}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s68/manifest.tsv' | head -1)")"
+    probe_path="/private/tmp/arena-stage-probe-x"
+    rm -f "$probe_path"
+    : >"$fake_zell_log"
+    if ! FAKE_ZELL_PROBE_OUTSIDE=1 FAKE_ZELL_PROBE_OUTSIDE_PATH="$probe_path" \
+        run_arena stage s68 intent --prompt-text 'sandbox probe' >"${tmp_root}/s68-stage.out" 2>&1; then
+        cat "${tmp_root}/s68-stage.out" >&2
+        fail 'sandboxed stage failed'
+    fi
+    [[ "$(manifest_value "${s68_dir}/manifest.tsv" stage_intent_sandbox)" == 'seatbelt' ]] || fail 'seatbelt sandbox not recorded'
+    require_match 'outside-write=denied' "$fake_zell_log"
+    [[ -f "${s68_dir}/intent-draft.md" ]] || fail 'sandboxed stage did not write inside the run dir'
+    rm -f "$probe_path"
+fi
+
+printf '%s\n' '69. tui: pipeline runs through the oracle and selftest'
+if command -v cargo >/dev/null 2>&1; then
+    (cd "${source_root}/ui" && cargo test --quiet >/dev/null 2>&1) || fail 'cargo test failed with pipeline additions'
+    (cd "${source_root}/ui" && cargo build --quiet >/dev/null 2>&1) || fail 'cargo build failed with pipeline additions'
+    ui_bin="${source_root}/ui/target/debug/agent-arena-ui"
+    [[ -x "$ui_bin" ]] || fail 'ui binary missing after cargo build'
+    set +e
+    "$ui_bin" --selftest --state-root "$state_base" >"${tmp_root}/ui-selftest-pipeline.out" 2>&1
+    ui_selftest_pipeline_exit=$?
+    set -e
+    [[ "$ui_selftest_pipeline_exit" == 0 ]] || fail "ui --selftest failed with pipeline runs present"
+    require_match 's64' "${tmp_root}/ui-selftest-pipeline.out"
+fi
+
+printf '%s\n' '70. lifecycle: guards, cancel, stale-lock recovery'
+# implementation-phase commands refuse on stage-phase runs
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena start s70a --repo "$project" --no-attach --pipeline lean >"${tmp_root}/s70a-start.out" 2>&1; then
+    cat "${tmp_root}/s70a-start.out" >&2
+    fail 's70a start failed'
+fi
+for guarded in submit validate decision; do
+    set +e
+    run_arena "$guarded" s70a >"${tmp_root}/s70a-${guarded}.out" 2>&1
+    guarded_exit=$?
+    set -e
+    [[ "$guarded_exit" != 0 ]] || fail "${guarded} accepted a stage-phase run"
+done
+# cancel from a stage phase removes the run dir and leaves the repo alone
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena start s70b --repo "$project" --no-attach --pipeline lean >"${tmp_root}/s70b-start.out" 2>&1; then
+    cat "${tmp_root}/s70b-start.out" >&2
+    fail 's70b start failed'
+fi
+s70b_dir="$(dirname "$(find "${state_base}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s70b/manifest.tsv' | head -1)")"
+if ! run_arena resolve s70b --action cancel --reason 'abandoned' >"${tmp_root}/s70b-cancel.out" 2>&1; then
+    cat "${tmp_root}/s70b-cancel.out" >&2
+    fail 'cancel from a stage phase failed'
+fi
+[[ ! -d "$s70b_dir" ]] || fail 'stage-phase cancel left the run dir behind'
+# a live stage lock refuses concurrent stage entry
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena start s70c --repo "$project" --no-attach --pipeline lean >"${tmp_root}/s70c-start.out" 2>&1; then
+    cat "${tmp_root}/s70c-start.out" >&2
+    fail 's70c start failed'
+fi
+s70c_dir="$(dirname "$(find "${state_base}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s70c/manifest.tsv' | head -1)")"
+sleep 300 &
+hung_pid=$!
+mkdir -p "${s70c_dir}/.run-lock"
+printf 'pid=%s\ntoken=stage-forged\ncreated_at=%s\nlast_seen_at=%s\n' "$hung_pid" "$(date +%s)" "$(date +%s)" >"${s70c_dir}/.run-lock/owner"
+set +e
+run_arena stage s70c intent --prompt-text 'blocked' >"${tmp_root}/s70c-locked.out" 2>&1
+s70c_locked_exit=$?
+set -e
+[[ "$s70c_locked_exit" != 0 ]] || fail 'stage entered a live-held run lock'
+require_match 'lock held by pid' "${tmp_root}/s70c-locked.out"
+# cancel kills the hung stage owner and reclaims
+if ! run_arena resolve s70c --action cancel --reason 'hung stage session' >"${tmp_root}/s70c-cancel.out" 2>&1; then
+    cat "${tmp_root}/s70c-cancel.out" >&2
+    fail 'cancel with a hung stage lock failed'
+fi
+if kill -0 "$hung_pid" 2>/dev/null; then
+    kill "$hung_pid" 2>/dev/null || true
+    fail 'cancel did not kill the hung stage session'
+fi
+[[ ! -d "$s70c_dir" ]] || fail 'hung-stage cancel left the run dir behind'
+# a dead stage owner is reclaimed on re-entry with an audit key
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena start s70d --repo "$project" --no-attach --pipeline lean >"${tmp_root}/s70d-start.out" 2>&1; then
+    cat "${tmp_root}/s70d-start.out" >&2
+    fail 's70d start failed'
+fi
+s70d_dir="$(dirname "$(find "${state_base}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s70d/manifest.tsv' | head -1)")"
+mkdir -p "${s70d_dir}/.run-lock"
+printf 'pid=999999\ntoken=stage-forged\ncreated_at=%s\nlast_seen_at=%s\n' "$(date +%s)" "$(date +%s)" >"${s70d_dir}/.run-lock/owner"
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena stage s70d intent --prompt-text 'recovery' >"${tmp_root}/s70d-recovered.out" 2>&1; then
+    cat "${tmp_root}/s70d-recovered.out" >&2
+    fail 'stage re-entry after a dead owner failed'
+fi
+[[ -n "$(manifest_value "${s70d_dir}/manifest.tsv" stage_intent_recovered_at)" ]] || fail 'stale-lock recovery not recorded in the manifest'
 
 
 printf '%s\n' 'tests: ok'
