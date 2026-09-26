@@ -4356,7 +4356,28 @@ fi
 run_arena dashboard </dev/null >"${tmp_root}/dashboard.out" 2>&1 || true
 if [[ -n "$ui_bin_hidden" ]]; then mv "$ui_bin_hidden" "$ui_bin"; fi
 require_match 'cargo build' "${tmp_root}/dashboard.out"
-if [[ -x "$ui_bin" ]]; then
+# u3: with no source-tree binary but a PATH-installed agent-arena-ui, the
+#     dispatch execs it (this is how install.sh --with-ui / dist binaries work)
+if [[ -x "${source_root}/ui/target/debug/agent-arena-ui" || -x "${source_root}/ui/target/release/agent-arena-ui" ]]; then
+    ui_bin="${source_root}/ui/target/debug/agent-arena-ui"
+    [[ -x "$ui_bin" ]] || ui_bin="${source_root}/ui/target/release/agent-arena-ui"
+    ui_bin_hidden="${ui_bin}.hidden"
+    mv "$ui_bin" "$ui_bin_hidden"
+    path_restored=1
+else
+    path_restored=0
+fi
+printf '#!/usr/bin/env bash
+printf "installed-ui-artifact\\n"
+' >"${fake_bin}/agent-arena-ui"
+chmod 755 "${fake_bin}/agent-arena-ui"
+run_arena dashboard </dev/null >"${tmp_root}/dashboard-path.out" 2>&1 || true
+require_match 'installed-ui-artifact' "${tmp_root}/dashboard-path.out"
+if [[ "$path_restored" == 1 ]]; then mv "$ui_bin_hidden" "$ui_bin"; fi
+rm -f "${fake_bin}/agent-arena-ui"
+# u3: with the real binary restored, the dispatch prefers the source-tree
+#     build over PATH
+if [[ "$path_restored" == 1 ]]; then
     run_arena dashboard </dev/null >"${tmp_root}/dashboard-tty.out" 2>&1 || true
     require_match 'requires a tty' "${tmp_root}/dashboard-tty.out"
 fi

@@ -8,9 +8,9 @@ usage() {
     cat <<'EOF'
 Usage: bash packaging/uninstall.sh [--prefix DIR] [--alias arena] --yes
 
-Move this version's launcher, optional alias, and installed source into a dated
-backup. Nothing is permanently deleted. --yes is required because it changes an
-installed command.
+Move this version's launcher, optional alias, dashboard binary, and installed
+source into a dated backup. Nothing is permanently deleted. --yes is required
+because it changes an installed command.
 EOF
 }
 
@@ -51,7 +51,7 @@ version="$(<"${source_root}/VERSION")"
 share_dir="${prefix}/share/agent-arena"
 backup_dir="${share_dir}/backups"
 timestamp="$(date +%Y%m%d-%H%M%S)"
-targets=("${prefix}/bin/agent-arena" "${share_dir}/${version}")
+targets=("${prefix}/bin/agent-arena" "${share_dir}/${version}" "${prefix}/bin/agent-arena-ui")
 if [[ -n "$alias_name" ]]; then
     targets+=("${prefix}/bin/${alias_name}")
 fi

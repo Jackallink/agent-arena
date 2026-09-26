@@ -68,16 +68,39 @@ Only the last location is committed with an application project. The user config
 location is reserved for a later profile layer; credentials stay with the individual
 CLI's own login, Keychain, or environment configuration.
 
+## Install
+
+Install the bash core (and optionally the dashboard binary) into `~/.local`:
+
+```bash
+cd /path/to/agent-arena
+bash packaging/install.sh                     # core only
+bash packaging/build-ui.sh                    # build dist/ ui archives (host + linux-musl)
+bash packaging/install.sh --force --with-ui \
+    ui/target/<host-triple>/release/agent-arena-ui   # core + dashboard
+bash packaging/uninstall.sh                   # remove again
+```
+
+`--alias arena` adds a short alias. Installed trees live under
+`~/.local/share/agent-arena/<version>/`; upgrades re-run install with `--force`
+(older trees move to a timestamped backup). The dashboard binary is looked up
+from the source tree first (`ui/target/{debug,release}`) and then from `PATH`
+— the same lookup works for a dist tarball unpacked onto your `PATH`.
+
 ## Quick start
 
 From a clean Git project:
 
 ```bash
-/Users/jakeliu/Workspace/agent-arena/bin/agent-arena doctor
-/Users/jakeliu/Workspace/agent-arena/bin/agent-arena init --repo .
+agent-arena doctor
+agent-arena init --repo .
 # Edit .agent-arena/validate.sh to run this project's checks.
-/Users/jakeliu/Workspace/agent-arena/bin/agent-arena start tui-sink --repo . --profile pi-cursor
+agent-arena start tui-sink --repo . --profile pi-cursor
+agent-arena dashboard        # watch runs; needs the ui/ binary installed
 ```
+
+Use the full path `/path/to/agent-arena/bin/agent-arena` if you skip the
+install step.
 
 Replace `pi-cursor` with `codex-cursor`, `opencode-cursor`, `agy-cursor`, or
 `zell-cursor`

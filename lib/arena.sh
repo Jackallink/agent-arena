@@ -45,10 +45,26 @@ case "$command_name" in
         # The TUI lives in ui/ as a standalone Rust binary; it is a pure
         # consumer of the --json oracle layer and never bypasses the
         # subcommand surface (docs/superpowers/specs/2026-08-15-dashboard-tui.md).
-        dashboard_bin="${source_root}/ui/target/debug/agent-arena-ui"
-        [[ -x "$dashboard_bin" ]] || dashboard_bin="${source_root}/ui/target/release/agent-arena-ui"
-        if [[ ! -x "$dashboard_bin" ]]; then
-            arena_die "dashboard binary missing; build it first: (cd ui && cargo build)"
+        # Lookup order: the source tree's own builds first (dev loop), then
+        # a PATH-installed agent-arena-ui (install.sh --with-ui or a dist
+        # tarball unpacked onto PATH).
+        dashboard_bin=''
+        for candidate in \
+            "${source_root}/ui/target/debug/agent-arena-ui" \
+            "${source_root}/ui/target/release/agent-arena-ui"; do
+            if [[ -x "$candidate" ]]; then
+                dashboard_bin="$candidate"
+                break
+            fi
+        done
+        if [[ -z "$dashboard_bin" ]] && command -v agent-arena-ui >/dev/null 2>&1; then
+            dashboard_bin="$(command -v agent-arena-ui)"
+        fi
+        if [[ -z "$dashboard_bin" ]]; then
+            if [[ -f "${source_root}/ui/Cargo.toml" ]]; then
+                arena_die "dashboard binary missing; build it first: (cd ui && cargo build)"
+            fi
+            arena_die "dashboard binary missing; install it with: bash packaging/install.sh --with-ui <agent-arena-ui binary> (or put agent-arena-ui on PATH)"
         fi
         exec "$dashboard_bin" "$@"
         ;;
