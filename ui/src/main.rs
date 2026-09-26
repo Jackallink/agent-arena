@@ -282,6 +282,14 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
                 );
                 let status_area = Rect::new(chunks[2].x, chunks[2].y, chunks[2].width, 1);
                 f.render_widget(Paragraph::new(line), status_area);
+                // Pipeline runs also render the stage chain on the second
+                // row of the two-row status area; non-pipeline and
+                // error-path documents skip it entirely (stage_chain is
+                // None there).
+                if let Some(chain) = s.stage_chain() {
+                    let chain_area = Rect::new(chunks[2].x, chunks[2].y + 1, chunks[2].width, 1);
+                    f.render_widget(Paragraph::new(chain), chain_area);
+                }
             }
         });
 

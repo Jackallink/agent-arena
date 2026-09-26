@@ -4901,4 +4901,66 @@ fi
 [[ -n "$(manifest_value "${s70d_dir}/manifest.tsv" stage_intent_recovered_at)" ]] || fail 'stale-lock recovery not recorded in the manifest'
 
 
+printf '%s\n' '71. status --json stage chain and list --json unchanged'
+# pipeline run: the status oracle emits the stage chain in manifest order
+# with verbatim manifest statuses and integer attempts; plan carries no
+# explicit keys, so it falls back to the pending/0 defaults
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena start s2ui --repo "$project" --no-attach --pipeline intent,spec,plan >"${tmp_root}/s2ui-start.out" 2>&1; then
+    cat "${tmp_root}/s2ui-start.out" >&2
+    fail 's2ui start failed'
+fi
+s2ui_manifest="$(find "${state_base}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s2ui/manifest.tsv' | head -1)"
+[[ -n "$s2ui_manifest" ]] || fail 's2ui manifest missing'
+{
+    printf 'stage_intent_status\taccepted\n'
+    printf 'stage_intent_attempts\t3\n'
+    printf 'stage_spec_status\tawaiting_accept\n'
+    printf 'stage_spec_attempts\t1\n'
+} >>"$s2ui_manifest"
+set +e
+run_arena status s2ui --json --state-root "$state_base" >"${tmp_root}/s2ui-status.out" 2>&1
+s2ui_status_exit=$?
+set -e
+[[ "$s2ui_status_exit" == 0 ]] || { cat "${tmp_root}/s2ui-status.out" >&2; fail "s2ui status --json exited $s2ui_status_exit"; }
+require_match '"error":null' "${tmp_root}/s2ui-status.out"
+require_match '"stages":[{"name":"intent","status":"accepted","attempts":3},{"name":"spec","status":"awaiting_accept","attempts":1},{"name":"plan","status":"pending","attempts":0}]' "${tmp_root}/s2ui-status.out"
+# non-pipeline run: the stages key stays absent. Since §63 the fixture
+# project carries a committed roles.conf, so the explicit v0.6 sentinel
+# --pipeline none is the canonical non-pipeline start here (reg62n).
+if ! run_arena start s2uin --repo "$project" --no-attach --pipeline none >"${tmp_root}/s2uin-start.out" 2>&1; then
+    cat "${tmp_root}/s2uin-start.out" >&2
+    fail 's2uin start failed'
+fi
+set +e
+run_arena status s2uin --json --state-root "$state_base" >"${tmp_root}/s2uin-status.out" 2>&1
+s2uin_status_exit=$?
+set -e
+[[ "$s2uin_status_exit" == 0 ]] || fail "s2uin status --json exited $s2uin_status_exit"
+require_no_match '"stages"' "${tmp_root}/s2uin-status.out"
+# error-path document: corrupting the state (duplicate phase) exits 2 and
+# emits no stages key
+s2ui_dir="$(dirname "$s2ui_manifest")"
+{ cat "${s2ui_dir}/run-state.tsv"; printf 'phase\tintake\n'; } >"${s2ui_dir}/run-state.tsv.next"
+mv "${s2ui_dir}/run-state.tsv.next" "${s2ui_dir}/run-state.tsv"
+set +e
+run_arena status s2ui --json --state-root "$state_base" >"${tmp_root}/s2ui-corrupt.out" 2>&1
+s2ui_corrupt_exit=$?
+set -e
+[[ "$s2ui_corrupt_exit" == 2 ]] || fail "corrupt s2ui status --json exited $s2ui_corrupt_exit"
+require_match '"error":"corrupt"' "${tmp_root}/s2ui-corrupt.out"
+require_no_match '"stages"' "${tmp_root}/s2ui-corrupt.out"
+# list --json is untouched: no stages key, even with a pipeline run and a
+# corrupt run in scope. The aggregate exit code is NOT zero by design:
+# since §59 a legacy run without run-state.tsv (lg-mode) legitimately
+# projects an incomplete-transition anomaly, so list exits 5 exactly like
+# the human rendering (the j1 invariant: human/json parity, never 0).
+set +e
+run_arena list --state-root "$state_base" >"${tmp_root}/s2ui-list-human.out" 2>&1
+s2ui_list_human_exit=$?
+run_arena list --json --state-root "$state_base" >"${tmp_root}/s2ui-list.out" 2>&1
+s2ui_list_exit=$?
+set -e
+[[ "$s2ui_list_exit" == "$s2ui_list_human_exit" ]] || fail "s2ui list --json exited $s2ui_list_exit, human list exited $s2ui_list_human_exit"
+require_no_match '"stages"' "${tmp_root}/s2ui-list.out"
+
 printf '%s\n' 'tests: ok'

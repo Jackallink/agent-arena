@@ -51,6 +51,7 @@ done
 ARENA_STATUS_ERROR='unknown'
 ARENA_STATUS_FIELDS=''
 ARENA_STATUS_PANES=''
+ARENA_STATUS_STAGES=''
 ARENA_STATUS_FINISHED=0
 status_kvs=()
 
@@ -65,16 +66,20 @@ arena_status_kv() {  # KEY_JSON KEY_HUMAN VALUE
 arena_status_finish() {  # EXIT_CODE  (error name comes from ARENA_STATUS_ERROR)
     if [[ "$status_json" == 1 ]]; then
         ARENA_STATUS_FINISHED=1
-        local fields="" kv panes_out status_err
+        local fields="" kv panes_out status_err stages_out=''
         [[ "$1" == 0 ]] && status_err='null' || status_err="$ARENA_STATUS_ERROR"
         for kv in "${status_kvs[@]}"; do
             fields="${fields:+$fields,}$kv"
         done
         panes_out="$ARENA_STATUS_PANES"
         [[ -n "$panes_out" ]] || panes_out='{}'
+        # The pipeline stage chain is a success-path-only additive field:
+        # it is inserted after the fields object and never appears on
+        # error documents (the EXIT-trap document stays untouched too).
+        [[ -n "$ARENA_STATUS_STAGES" ]] && stages_out=",\"stages\":${ARENA_STATUS_STAGES}"
         if [[ "$status_err" == 'null' ]]; then
-            printf '{"schema":1,"run_id":%s,"fields":{%s},"panes":%s,"error":null}\n' \
-                "$(arena_json_string "$run_id")" "$fields" "$panes_out"
+            printf '{"schema":1,"run_id":%s,"fields":{%s}%s,"panes":%s,"error":null}\n' \
+                "$(arena_json_string "$run_id")" "$fields" "$stages_out" "$panes_out"
         else
             printf '{"schema":1,"run_id":%s,"fields":{%s},"panes":%s,"error":%s}\n' \
                 "$(arena_json_string "$run_id")" "$fields" "$panes_out" \
@@ -89,6 +94,26 @@ arena_status_fail() {  # EXIT_CODE  — emit JSON (or nothing for humans) and ex
         arena_status_finish "$1"
     fi
     exit "$1"
+}
+
+# Build the pipeline stage chain JSON for the status document. No-op for
+# human output, for non-pipeline runs, and on error paths (the helper is
+# only called on the success branch), so the stages key stays absent there.
+# Stage names/statuses go through arena_json_string; a non-numeric
+# attempts value coerces to 0 (the manifest key space owns the values).
+arena_status_build_stages() {
+    [[ "$status_json" == 1 && -n "$ARENA_MANIFEST_PIPELINE" ]] || return 0
+    local stage idx status attempts stages='' sep='' IFS=','
+    for stage in $ARENA_MANIFEST_PIPELINE; do
+        idx="$(arena_manifest_stage_index "$stage")" || \
+            arena_die "unknown pipeline stage '$stage' in run manifest"
+        status="${ARENA_STAGE_STATUS[$idx]}"
+        attempts="${ARENA_STAGE_ATTEMPTS[$idx]}"
+        [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=0
+        stages="${stages}${sep}{\"name\":$(arena_json_string "$stage"),\"status\":$(arena_json_string "$status"),\"attempts\":${attempts}}"
+        sep=','
+    done
+    ARENA_STATUS_STAGES="[${stages}]"
 }
 
 if [[ "$status_json" == 1 ]]; then
@@ -326,6 +351,7 @@ if [[ -f "${run_dir}/run-state.tsv" ]]; then
         fi
         ARENA_STATUS_PANES="{\"reviewer\":${reviewer_alive},\"writer\":${writer_alive}}"
     fi
+    arena_status_build_stages
     arena_status_finish 0
 fi
 

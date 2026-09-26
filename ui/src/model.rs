@@ -83,6 +83,16 @@ pub struct Panes {
     pub writer: bool,
 }
 
+/// One element of the `stages` array in a pipeline-run status document
+/// (additive v1 JSON field; absent for non-pipeline and error-path docs).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StageStatus {
+    pub name: String,
+    pub status: String,
+    pub attempts: u64,
+}
+
 /// `agent-arena status RUN --json` document. `fields` stays open (the
 /// bash oracle owns the key set); everything else is strict.
 #[derive(Debug, Deserialize)]
@@ -92,6 +102,10 @@ pub struct StatusDoc {
     pub schema: u32,
     pub run_id: String,
     pub fields: serde_json::Map<String, serde_json::Value>,
+    /// Pipeline stage chain (additive v1 field). None for non-pipeline
+    /// runs and error-path documents; present docs stay strict.
+    #[serde(default)]
+    pub stages: Option<Vec<StageStatus>>,
     pub panes: Panes,
     #[allow(dead_code)]
     pub error: Option<String>,
@@ -101,6 +115,25 @@ impl StatusDoc {
     /// Convenience accessor for the fields the TUI renders directly.
     pub fn field_str(&self, key: &str) -> Option<&str> {
         self.fields.get(key).and_then(|v| v.as_str())
+    }
+
+    /// Render the pipeline stage chain in manifest order, e.g.
+    /// `intent accepted -> spec awaiting_accept -> plan pending`. None
+    /// when the document carries no `stages` array (non-pipeline runs,
+    /// error-path documents) or the array is empty — the renderer then
+    /// draws no chain line and does not error.
+    pub fn stage_chain(&self) -> Option<String> {
+        let stages = self.stages.as_ref()?;
+        if stages.is_empty() {
+            return None;
+        }
+        Some(
+            stages
+                .iter()
+                .map(|s| format!("{} {}", s.name, s.status))
+                .collect::<Vec<_>>()
+                .join(" -> "),
+        )
     }
 }
 
@@ -469,6 +502,58 @@ mod tests {
         assert!(!doc.panes.writer);
         let err = ok.replace("\"error\":null", "\"error\":\"corrupt\"");
         assert_eq!(parse_status(&err).unwrap().error.as_deref(), Some("corrupt"));
+    }
+
+    const STATUS_WITH_STAGES: &str = r#"{"schema":1,"run_id":"r","fields":{},"panes":{},"error":null,"stages":[
+        {"name":"intent","status":"accepted","attempts":3},
+        {"name":"spec","status":"awaiting_accept","attempts":1},
+        {"name":"plan","status":"pending","attempts":0}
+    ]}"#;
+
+    #[test]
+    fn stages_present_parse_strict_and_chain_in_manifest_order() {
+        let doc = parse_status(STATUS_WITH_STAGES).unwrap();
+        let stages = doc.stages.as_ref().unwrap();
+        assert_eq!(
+            stages,
+            &[
+                StageStatus {
+                    name: "intent".into(),
+                    status: "accepted".into(),
+                    attempts: 3,
+                },
+                StageStatus {
+                    name: "spec".into(),
+                    status: "awaiting_accept".into(),
+                    attempts: 1,
+                },
+                StageStatus {
+                    name: "plan".into(),
+                    status: "pending".into(),
+                    attempts: 0,
+                },
+            ]
+        );
+        assert_eq!(
+            doc.stage_chain().as_deref(),
+            Some("intent accepted -> spec awaiting_accept -> plan pending")
+        );
+        // unknown fields inside one stage element fail the strict parse
+        let evil = STATUS_WITH_STAGES.replace("\"attempts\":3", "\"attempts\":3,\"evil\":1");
+        assert!(parse_status(&evil).is_err(), "stage element must be strict");
+    }
+
+    #[test]
+    fn stages_absent_chain_is_none() {
+        let no_stages = r#"{"schema":1,"run_id":"r","fields":{"verdict":"APPROVE"},"panes":{},"error":null}"#;
+        let doc = parse_status(no_stages).unwrap();
+        assert!(doc.stages.is_none());
+        assert_eq!(doc.stage_chain(), None);
+        // an empty stages array is legal and also renders no chain line
+        let empty = r#"{"schema":1,"run_id":"r","fields":{},"panes":{},"error":null,"stages":[]}"#;
+        let doc = parse_status(empty).unwrap();
+        assert!(doc.stages.is_some());
+        assert_eq!(doc.stage_chain(), None);
     }
 
     #[test]
