@@ -1,7 +1,9 @@
 # Spec: Multi-Stage Artifact Pipeline (intent → spec → plan → implementation)
 
 - Date: 2026-09-26
-- Status: draft (awaiting approval) → planned for v0.7
+- Status: implemented (v0.7.0 shipped 2026-09-26; walkthrough-closed; all gates recorded in
+  `docs/superpowers/plans/2026-09-26-artifact-pipeline.md` §Outcome/§Drift; live evidence:
+  full pipeline `live8` + lean run `live7` with real zell stage sessions)
 - Reference: https://claude.com/blog/the-ai-native-sdlc-playbook (AI-Native SDLC playbook, Anthropic Applied AI)
 - Upstream: https://jihulab.com/yh/zell-ai/zell-agent-core/-/work_items/325 (`--no-builtin-tools` pi-parity bug; not blocking)
 - Walkthrough (3 rounds, validator passed 2026-09-26): `walkthrough/01-round1-user-stories.md` (18 paths, 21 ACs), `walkthrough/02-round2-technical-trace.md` (closed traces, F1-F8 resolutions), `walkthrough/03-round3-integration-check.md` (E2E + error matrix). Findings F1-F11 resolved; see §15 drift log.

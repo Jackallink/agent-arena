@@ -165,7 +165,9 @@ external skills are disabled for the gate pane.
 ```bash
 agent-arena doctor
 agent-arena init --repo /path/to/project
-agent-arena start RUN_ID --repo /path/to/project
+agent-arena start RUN_ID --repo /path/to/project [--pipeline none|lean|full|intent,spec,plan]
+agent-arena stage RUN_ID <intent|spec|plan> [--prompt-text T | --prompt-file F]
+agent-arena artifact RUN_ID --stage S (--accept | --reject --summary "...")
 agent-arena submit RUN_ID
 agent-arena validate RUN_ID
 agent-arena decision RUN_ID --verdict APPROVE --summary "..." --next "..."
@@ -182,6 +184,45 @@ Relay delivery is direct but best effort: tmux cannot know whether an interactiv
 model is mid-turn. Writers can send progress or a question to Cursor; Cursor can
 send review feedback and the next step back to the writer. The decision record,
 not a pane message, is the audit truth.
+
+## Artifact pipeline (v0.7)
+
+Pre-implementation runs can pass through three human-gated artifact stages —
+**intent → spec → plan** — before any writer session is spent:
+
+```bash
+agent-arena start v07-demo --repo . --pipeline lean   # lean = intent only; full = intent,spec,plan
+agent-arena stage v07-demo intent --prompt-text "What should change and why"
+agent-arena artifact v07-demo --stage intent --accept   # or --reject --summary "..."
+# final accept bootstraps implementation automatically: worktree on
+# agent-arena/<profile>/<run> + docs/arena/<run>/<stage>.md plan seeds
+```
+
+- **Stage sessions** are headless and fresh per attempt (`-a<N>` ids, no
+  resume), run under a macOS seatbelt write boundary with adapter-level
+  tool gating (`read,write`), and harvest to `awaiting_stage_accept` or
+  `stage_failed`. Without `sandbox-exec` the stage runs soft-constrained
+  with a visible `STAGE SANDBOX UNAVAILABLE` warning.
+- **Which adapters serve stages** is configured in `roles.conf`
+  (`~/.config/agent-arena/roles.conf`, overridden by
+  `<repo>/.agent-arena/roles.conf`): per-stage `adapter` / `model` /
+  `prompt`, gated by the adapter's `headless_stage` capability. `doctor`
+  prints an advisory `stage:<s> enabled|skipped|unset` table.
+- **`--from-intent FILE`** seeds the intent draft from an existing
+  document (validated: stage membership, ≤64 KiB, UTF-8).
+- **Human gates**: `artifact --accept` hashes the draft (sha256 in the
+  manifest) and advances; `--reject` returns the stage to pending with a
+  `reject_summary` fed into the next attempt. The final accept creates the
+  writer worktree from the committed base and seeds the accepted plans
+  under `docs/arena/<run-id>/` (untracked until the writer's first commit
+  adopts them).
+- **TUI**: press `n` in the dashboard to create a pipeline run through a
+  wizard (run id → repo → profile → depth → advisory models from
+  `roles.conf`; models never enter the argv). Esc or `q` on an empty
+  buffer cancels at every step.
+- **Cancel**: `agent-arena resolve RUN --action cancel` in a stage phase
+  kills a hung stage lock owner and removes the run directory (no
+  worktree or history exists yet).
 
 ## Dashboard (ui/)
 
