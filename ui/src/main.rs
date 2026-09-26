@@ -124,6 +124,7 @@ enum PromptKind {
     RejectReason,
     DecisionSummary,
     RelayMessage,
+    NewRun,
 }
 
 impl PromptKind {
@@ -141,9 +142,15 @@ impl PromptKind {
             PromptKind::RelayMessage => {
                 format!("relay {} --to writer --message <type>, Enter submit, Esc cancel", run_id)
             }
+            PromptKind::NewRun => String::new(),
         }
     }
 
+    /// The new-run wizard drives its own step hints from the RunWizard
+    /// state, not from the selected run.
+    fn is_wizard(&self) -> bool {
+        matches!(self, PromptKind::NewRun)
+    }
 }
 
 /// Interactive v0: alternate-screen list, j/k selection, Enter for the
@@ -202,6 +209,7 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
     let mut selected: usize = 0;
     let mut list_state = ListState::default();
     let mut input_mode = InputMode::Normal;
+    let mut wizard: Option<model::RunWizard> = None;
     let mut status_cache: Option<model::StatusDoc> = None;
     let result = ExitCode::SUCCESS;
 
@@ -247,7 +255,14 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
                 InputMode::Normal => "agent-arena runs".to_string(),
                 InputMode::Confirm { argv } => model::confirm_text(argv),
                 InputMode::Input { kind, buffer } => {
-                    format!("{} > {}", kind.hint(selected_id), buffer)
+                    if kind.is_wizard() {
+                        match &wizard {
+                            Some(w) => format!("{} {}", w.hint(), buffer),
+                            None => format!("{} > {}", kind.hint(selected_id), buffer),
+                        }
+                    } else {
+                        format!("{} > {}", kind.hint(selected_id), buffer)
+                    }
                 }
             };
             let list = List::new(items)
@@ -304,7 +319,66 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
         }
 
         // Prompted input mode: editable buffer, Enter stages the confirm.
+        // The new-run wizard owns its prompt sequence (spec §11): Enter
+        // advances the step, Esc cancels at every step, and q cancels on
+        // an empty buffer (AC8). Non-wizard prompts keep the original
+        // behavior below.
         if let InputMode::Input { kind, buffer } = &mut input_mode {
+            if kind.is_wizard() {
+                match key.code {
+                    KeyCode::Esc => {
+                        wizard = None;
+                        input_mode = InputMode::Normal;
+                        notice = "cancelled".to_string();
+                    }
+                    KeyCode::Char('q') if buffer.is_empty() => {
+                        wizard = None;
+                        input_mode = InputMode::Normal;
+                        notice = "cancelled".to_string();
+                    }
+                    KeyCode::Enter => {
+                        if let Some(w) = wizard.as_mut() {
+                            let text = buffer.trim().to_string();
+                            match w.submit(&text) {
+                                Ok(()) => {
+                                    buffer.clear();
+                                    if w.finished() {
+                                        // Take the finished wizard out and
+                                        // stage the verbatim confirm line.
+                                        if let Some(w) = wizard.take() {
+                                            match w.argv() {
+                                                Some(argv) => {
+                                                    input_mode = InputMode::Confirm { argv };
+                                                    notice =
+                                                        "note: per-stage models come from roles.conf; start does not carry model overrides in v0.7"
+                                                            .to_string();
+                                                }
+                                                None => {
+                                                    notice = "cannot build argv".to_string();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    notice = e;
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        buffer.pop();
+                    }
+                    KeyCode::Char(c) => {
+                        if key.modifiers.contains(KeyModifiers::CONTROL) {
+                            continue;
+                        }
+                        buffer.push(c);
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             match key.code {
                 KeyCode::Esc => {
                     input_mode = InputMode::Normal;
@@ -321,6 +395,9 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
                         continue;
                     }
                     let argv = match kind {
+                        // Unreachable: the wizard branch above consumed
+                        // NewRun input; kept total for exhaustiveness.
+                        PromptKind::NewRun => unreachable!(),
                         PromptKind::RejectReason => {
                             model::reject_argv(&run_id, &text)
                         }
@@ -457,6 +534,13 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
                         model::Action::RelayWriter => {
                             input_mode = InputMode::Input {
                                 kind: PromptKind::RelayMessage,
+                                buffer: String::new(),
+                            };
+                        }
+                        model::Action::NewRun => {
+                            wizard = Some(model::RunWizard::new());
+                            input_mode = InputMode::Input {
+                                kind: PromptKind::NewRun,
                                 buffer: String::new(),
                             };
                         }

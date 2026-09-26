@@ -73,7 +73,18 @@ impl Arena {
             .arg(state_root)
             .output()
             .map_err(|e| format!("failed to spawn {}: {e}", self.bin.display()))?;
-        String::from_utf8(out.stdout).map_err(|e| format!("non-utf8 oracle output: {e}"))
+        let text = String::from_utf8(out.stdout)
+            .map_err(|e| format!("non-utf8 oracle output: {e}"))?;
+        if text.trim().is_empty() && !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(format!(
+                "oracle exited {} (exit status: {}): {}",
+                out.status,
+                out.status.code().unwrap_or(-1),
+                err.trim()
+            ));
+        }
+        Ok(text)
     }
 
     /// Spawn an interactive action (resolve/validate/...): the child owns

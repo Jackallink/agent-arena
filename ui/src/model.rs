@@ -35,6 +35,10 @@ pub struct RunSummary {
     pub authority: String,
     #[serde(default)]
     pub anomaly: String,
+    /// Artifact-pipeline stages (v0.7 additive JSON field); None for
+    /// v0.6-shaped runs that carry no pipeline key.
+    #[serde(default)]
+    pub pipeline: Option<Vec<String>>,
 }
 
 impl RunSummary {
@@ -142,6 +146,7 @@ pub enum Action {
     RelayWriter,
     ToggleMode,
     Validate,
+    NewRun,
     JumpWriterPane,
     Quit,
 }
@@ -155,8 +160,152 @@ pub fn keymap_action(key: char) -> Option<Action> {
         'l' => Some(Action::RelayWriter),
         'm' => Some(Action::ToggleMode),
         'v' => Some(Action::Validate),
+        'n' => Some(Action::NewRun),
         'q' => Some(Action::Quit),
         _ => None,
+    }
+}
+
+/// New-run wizard steps (spec 2026-09-26 §11): run_id → repo → profile →
+/// pipeline depth → models (advisory only, walkthrough F8: v0.7 never
+/// carries model overrides in argv — roles.conf is the single source) →
+/// confirm. Empty input skips optional flags; the run id is required.
+pub enum WizardStep {
+    RunId,
+    Repo,
+    Profile,
+    Pipeline,
+    Models,
+    Done,
+}
+
+pub struct RunWizard {
+    pub step: WizardStep,
+    pub run_id: String,
+    pub repo: String,
+    pub profile: String,
+    pub pipeline: String,
+}
+
+impl Default for RunWizard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RunWizard {
+    pub fn new() -> Self {
+        RunWizard {
+            step: WizardStep::RunId,
+            run_id: String::new(),
+            repo: String::new(),
+            profile: String::new(),
+            pipeline: String::new(),
+        }
+    }
+
+    /// The roles.conf hint line (walkthrough F8): model overrides live in
+    /// roles.conf, not in wizard argv.
+    fn roles_hint() -> String {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let config_home = std::env::var("ARENA_CONFIG_HOME")
+            .unwrap_or_else(|_| format!("{home}/.config"));
+        format!("{config_home}/agent-arena/roles.conf (+ <repo>/.agent-arena/roles.conf)")
+    }
+
+    pub fn hint(&self) -> String {
+        match self.step {
+            WizardStep::RunId => {
+                "new run: RUN_ID > (Enter next · Esc cancel)".to_string()
+            }
+            WizardStep::Repo => format!(
+                "new run: repo path (empty = current dir) > roles.conf: {} · Esc cancel",
+                Self::roles_hint()
+            ),
+            WizardStep::Profile => {
+                "new run: writer-gate profile (empty = pi-cursor) > (Enter next · Esc cancel)"
+                    .to_string()
+            }
+            WizardStep::Pipeline => {
+                "new run: pipeline none|lean|full|intent,spec,plan (empty = roles.conf default) > (Enter next · Esc cancel)"
+                    .to_string()
+            }
+            WizardStep::Models => format!(
+                "new run: model overrides (advisory — configure {}) > (Enter next · Esc cancel)",
+                Self::roles_hint()
+            ),
+            WizardStep::Done => "new run: ready".to_string(),
+        }
+    }
+
+    /// Advance one step. A validation error keeps the step and explains
+    /// itself on the notice line.
+    pub fn submit(&mut self, text: &str) -> Result<(), String> {
+        let text = text.trim();
+        match self.step {
+            WizardStep::RunId => {
+                if text.is_empty() {
+                    return Err("new run: RUN_ID is required".to_string());
+                }
+                self.run_id = text.to_string();
+                self.step = WizardStep::Repo;
+            }
+            WizardStep::Repo => {
+                self.repo = text.to_string();
+                self.step = WizardStep::Profile;
+            }
+            WizardStep::Profile => {
+                self.profile = text.to_string();
+                self.step = WizardStep::Pipeline;
+            }
+            WizardStep::Pipeline => {
+                if !text.is_empty() && text != "none" && text != "lean" && text != "full" {
+                    let stages: Vec<&str> = text.split(',').map(str::trim).collect();
+                    if stages.is_empty() || stages.iter().any(|s| {
+                        !matches!(*s, "intent" | "spec" | "plan")
+                    }) {
+                        return Err(
+                            "new run: pipeline must be none, lean, full, or a comma list of intent/spec/plan"
+                                .to_string(),
+                        );
+                    }
+                }
+                self.pipeline = text.to_string();
+                self.step = WizardStep::Models;
+            }
+            WizardStep::Models => {
+                // Advisory free text (F8): never carried in argv.
+                self.step = WizardStep::Done;
+            }
+            WizardStep::Done => {}
+        }
+        Ok(())
+    }
+
+    pub fn finished(&self) -> bool {
+        matches!(self.step, WizardStep::Done)
+    }
+
+    /// Verbatim spawn argv (after the binary). Optional flags drop out
+    /// when their step input was empty.
+    pub fn argv(&self) -> Option<Vec<String>> {
+        if !self.finished() {
+            return None;
+        }
+        let mut argv = vec!["start".to_string(), self.run_id.clone()];
+        if !self.repo.is_empty() {
+            argv.push("--repo".to_string());
+            argv.push(self.repo.clone());
+        }
+        if !self.profile.is_empty() {
+            argv.push("--profile".to_string());
+            argv.push(self.profile.clone());
+        }
+        if !self.pipeline.is_empty() {
+            argv.push("--pipeline".to_string());
+            argv.push(self.pipeline.clone());
+        }
+        Some(argv)
     }
 }
 
@@ -330,6 +479,7 @@ mod tests {
         assert_eq!(keymap_action('l'), Some(Action::RelayWriter));
         assert_eq!(keymap_action('m'), Some(Action::ToggleMode));
         assert_eq!(keymap_action('v'), Some(Action::Validate));
+        assert_eq!(keymap_action('n'), Some(Action::NewRun));
         assert_eq!(keymap_action('q'), Some(Action::Quit));
         assert_eq!(keymap_action('x'), None);
         assert_eq!(keymap_enter(), Some(Action::JumpWriterPane));
@@ -448,5 +598,90 @@ mod tests {
             confirm_text(&argv),
             "run: agent-arena resolve run-one --action approve  (y=confirm, n=cancel)"
         );
+    }
+
+    #[test]
+    fn wizard_requires_run_id() {
+        let mut w = RunWizard::new();
+        assert!(matches!(w.step, WizardStep::RunId));
+        assert!(w.submit("").is_err());
+        assert!(w.submit("  ").is_err());
+        // still on RunId after failed submits
+        assert!(matches!(w.step, WizardStep::RunId));
+        w.submit("s66w").unwrap();
+        assert!(matches!(w.step, WizardStep::Repo));
+    }
+
+    #[test]
+    fn wizard_full_path_builds_verbatim_argv() {
+        let mut w = RunWizard::new();
+        w.submit("s66w").unwrap();
+        w.submit("/tmp/repo").unwrap();
+        w.submit("zell-cursor").unwrap();
+        w.submit("lean").unwrap();
+        w.submit("").unwrap();
+        assert!(w.finished());
+        assert_eq!(
+            w.argv(),
+            Some(vec![
+                "start".to_string(),
+                "s66w".to_string(),
+                "--repo".to_string(),
+                "/tmp/repo".to_string(),
+                "--profile".to_string(),
+                "zell-cursor".to_string(),
+                "--pipeline".to_string(),
+                "lean".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn wizard_empty_optionals_drop_flags() {
+        let mut w = RunWizard::new();
+        w.submit("r1").unwrap();
+        w.submit("").unwrap(); // repo -> cwd default
+        w.submit("").unwrap(); // profile -> start default
+        w.submit("").unwrap(); // pipeline -> roles.conf default
+        w.submit("").unwrap();
+        assert_eq!(
+            w.argv(),
+            Some(vec!["start".to_string(), "r1".to_string()])
+        );
+    }
+
+    #[test]
+    fn wizard_pipeline_validation() {
+        let mut w = RunWizard::new();
+        w.submit("r2").unwrap();
+        w.submit("").unwrap();
+        w.submit("").unwrap();
+        // legal depths
+        for depth in ["none", "lean", "full", "intent,spec,plan", "plan"] {
+            assert!(w.submit(depth).is_ok(), "depth {depth} must be legal");
+            // step moved on; step back is impossible, so rebuild each time
+            let mut w2 = RunWizard::new();
+            w2.submit("r2").unwrap();
+            w2.submit("").unwrap();
+            w2.submit("").unwrap();
+            assert!(w2.submit(depth).is_ok());
+        }
+        // illegal lists refuse and hold the step
+        let mut w3 = RunWizard::new();
+        w3.submit("r3").unwrap();
+        w3.submit("").unwrap();
+        w3.submit("").unwrap();
+        assert!(w3.submit("intent,bogus").is_err());
+        assert!(matches!(w3.step, WizardStep::Pipeline));
+        assert!(w3.submit("intent,,plan").is_err());
+        assert!(w3.argv().is_none());
+    }
+
+    #[test]
+    fn wizard_argv_unavailable_until_done() {
+        let mut w = RunWizard::new();
+        w.submit("r4").unwrap();
+        assert!(w.argv().is_none());
+        assert!(!w.finished());
     }
 }
