@@ -290,6 +290,15 @@ project="${tmp_root}/project"
 # starts into pipeline starts, which skips the dirty preflight by design).
 export ARENA_CONFIG_HOME="${tmp_root}/conf-home"
 mkdir -p "${ARENA_CONFIG_HOME}/agent-arena"
+
+# Isolate ambient run context for the WHOLE suite too: the arena harness
+# exports ARENA_RUN_DIR/ARENA_RUN_ID for writer sessions, and the CLI
+# rejects an inherited run directory that does not match the run a test
+# drives. Tests that need run context pass these variables per call.
+unset ARENA_RUN_DIR ARENA_RUN_ID ARENA_REPOSITORY ARENA_COMMAND \
+    ARENA_PROFILE ARENA_SOURCE_ROOT ARENA_WRITER_WORKTREE \
+    ARENA_REVIEW_WORKTREE ARENA_SESSION_NAME ARENA_WRITER_SESSION_DIR \
+    ARENA_WRITER_ADAPTER ARENA_WRITER_LABEL
 state_base="${tmp_root}/state"
 worktree_base="${tmp_root}/worktrees"
 mkdir -p "$project"
