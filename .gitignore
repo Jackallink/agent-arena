@@ -1,5 +1,9 @@
 .DS_Store
-/.agent-arena/
+# Runtime state stays out; tracked gate config (project.conf + validate.sh)
+# must reach the reviewer snapshot worktree.
+/.agent-arena/*
+!/.agent-arena/project.conf
+!/.agent-arena/validate.sh
 dist/
 *.tar.gz
 *.sha256
