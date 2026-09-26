@@ -3,7 +3,7 @@
 - Date: 2026-09-26
 - Status: draft (awaiting approval) → planned for v0.7
 - Reference: https://claude.com/blog/the-ai-native-sdlc-playbook (AI-Native SDLC playbook, Anthropic Applied AI)
-- Upstream: https://github.com/Jackallink/zell/issues/1 (`--no-builtin-tools` pi-parity bug; not blocking)
+- Upstream: https://jihulab.com/yh/zell-ai/zell-agent-core/-/work_items/325 (`--no-builtin-tools` pi-parity bug; not blocking)
 
 ## 1. Summary
 
