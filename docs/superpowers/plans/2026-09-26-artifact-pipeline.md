@@ -88,3 +88,42 @@ Spec §12 AC1..AC14 → §62..§70 (§63 also carries AC11/AC13; §64 AC3+AC12; 
 | state invariants get a stage hole | new combos enumerated above; state reader dies on anything else |
 | adapter stage-launch hermeticity | fake zell argv contract; sandbox bin override for determinism |
 | bootstrap called twice | manifest writer_worktree presence guard + run lock |
+
+## Outcome (2026-09-26) - all gates closed
+
+- **Gate 1** b5fbf16: sections 62-70 red on main; 61 extension included.
+- **Gate 2** 2a81f7d: full suite 0-70 green; bash 3.2-compatible
+  implementation (no ${var^^}, no ${!arr[idx]}; all stage array reads via
+  explicit case). shellcheck is not installed on this host - style enforced
+  by repo conventions plus the full suite and manual repro harness;
+  recorded as drift below.
+- **Gate 3** 97ab9c5: cargo test + clippy -D warnings clean; 69 drives the
+  n wizard headless through a real tmux session (key sequence -> verbatim
+  confirm argv -> spawn -> manifest pipeline + list refresh); non-tty
+  refusal asserted in-suite.
+- **Gate 4**: live zell pass - live8 full pipeline (intent, spec, plan with
+  real zell, human accepts via CLI, bootstrap seeded
+  docs/arena/live8/{intent,spec,plan}.md) and live7 lean run (writer first
+  commit carries docs/arena/live7/intent.md; submit produced the SHA-bound
+  checkpoint + reviewer snapshot); tmuxp smoke in-suite; package.sh --check
+  and build-ui.sh --check verified for 0.7.0; RELEASE-NOTES + VERSION 0.7.0.
+
+## Drift and lessons
+
+- Test harness landmines: unguarded `run_arena list --json` can exit 5
+  under set -e (silent harness death); restore-commit steps whose content
+  equals HEAD exit nonzero under set -e; tmux capture-pane is the only
+  reliable assertion surface for ratatui frames (raw pane streams drop
+  cells that equal the previous frame - verbatim text is unrecoverable
+  from the stream); the first TUI frame takes seconds on a large state
+  root (list is O(runs) bash), so every wizard assertion polls; tmux
+  sessions use unique per-invocation names because kill-session returns
+  before the server finishes destroying a pane.
+- Oracle stderr: capture_json now surfaces the child's stderr when a JSON
+  oracle exits nonzero on empty stdout (was: silent EOF parse error).
+- Sandbox env contract renamed during implementation: ARENA_STAGE_MODEL_ARG
+  / ARENA_STAGE_SANDBOX_MODE (the original names collided with the
+  manifest arrays inside sourced-function scope).
+- Manifest pipeline validation is opt-in relaxed: empty base_sha /
+  writer_worktree / branch are legal only while the pipeline key is
+  present; bootstrap restores strictness via upsert.
