@@ -4,6 +4,7 @@
 - Status: draft (awaiting approval) → planned for v0.7
 - Reference: https://claude.com/blog/the-ai-native-sdlc-playbook (AI-Native SDLC playbook, Anthropic Applied AI)
 - Upstream: https://jihulab.com/yh/zell-ai/zell-agent-core/-/work_items/325 (`--no-builtin-tools` pi-parity bug; not blocking)
+- Walkthrough (3 rounds, validator passed 2026-09-26): `walkthrough/01-round1-user-stories.md` (18 paths, 21 ACs), `walkthrough/02-round2-technical-trace.md` (closed traces, F1-F8 resolutions), `walkthrough/03-round3-integration-check.md` (E2E + error matrix). Findings F1-F11 resolved; see §15 drift log.
 
 ## 1. Summary
 
@@ -128,23 +129,44 @@ intake ──(start)──► intent ──accept──► spec ──accept─�
    artifact(s) and the repo (read-only), writes the draft into the run dir
    (`intent-draft.md` etc.), and its stdout JSON is retained under
    `sessions/` for audit. The prompt template plus `.agent-arena/context.md`
-   (if present) form the appended system prompt.
+   (if present) form the appended system prompt. Intent input (walkthrough
+   F1, Severe): `stage RUN intent` requires `--prompt-text T` or
+   `--prompt-file F` — the originator's request in their own words; later
+   stages take the previous artifact as input and need neither. The TUI
+   wizard collects free text and passes it via `--prompt-file` (temp file).
 2. **Human gate.** `arena artifact RUN --stage intent --accept` hashes
    `intent-draft.md` (sha256), renames it to `intent.md`, records
    `stage_intent_digest` + `stage_intent_accepted_at` + agent/model in the
    manifest, and advances the phase. `--reject --summary "..."` records the
    summary, keeps/creates the draft, and re-arms the same stage.
    Humans may edit the draft file between generation and accept; accept
-   hashes what is actually on disk.
+   hashes what is actually on disk. Guards (walkthrough F6): accept refuses
+   with exit 1 when the draft is missing or `--stage` does not match the
+   current phase (`phase=X, cannot accept Y`). Next-step hint (walkthrough
+   F2): accept never auto-spawns the next stage — every agent-spending
+   action stays human-triggered, same principle as writer-invoked submit —
+   but it prints the exact next command (`arena stage RUN spec`, or the
+   bootstrap notice after the final stage) on stdout.
 3. **Carry into the repo.** At `start` implementation time the writer
    worktree is seeded with accepted artifacts at
-   `docs/arena/<run-id>/{intent,spec,plan}.md` (unstaged). The writer's first
+   `docs/arena/<run-id>/{intent,spec,plan}.md` (unstaged; idempotent copy).
+   The writer's first
    checkpoint naturally commits them; the reviewer snapshot then contains the
-   plan against which the diff is reviewed.
+   plan against which the diff is reviewed. Two-phase start (walkthrough
+   F3): in pipeline mode `start` creates only the run dir + state (phase =
+   first stage); worktree creation, the single-writer assertion, the dirty
+   check, artifact seeding, and writer spawn are deferred to the
+   implementation bootstrap triggered when the last stage is accepted
+   (`arena_implementation_bootstrap` — the existing start.sh logic factored
+   out; the dirty check running later is more correct, since hours may pass
+   between start and plan accept). Non-pipeline (v0.6) behavior is
+   byte-identical.
 4. **Entry point.** `start RUN --repo P --from-intent intent/foo.md` copies
    the file into the run dir as the intent draft and enters the `intent`
    phase with `party=human` (the originator reviews their own intent before
-   accept, matching the playbook).
+   accept, matching the playbook). Validation (walkthrough F7): the file
+   must be non-empty, at most 64 KB, and valid UTF-8; violations exit 1
+   with the reason and path.
 
 ## 8. Configuration contract
 
@@ -204,8 +226,12 @@ sandbox-exec -f <run>/sandbox.sb \
 
 ## 10. CLI and JSON contract changes
 
-- New: `stage RUN <intent|spec|plan>` — generate the next draft (runs the
-  configured adapter headlessly; requires the run to be in that phase).
+- New: `stage RUN <intent|spec|plan> [--prompt-text T | --prompt-file F]` —
+  generate the next draft (runs the configured adapter headlessly; requires
+  the run to be in that phase). Intent requires prompt input (F1); a
+  running stage holds the run lock, and re-entry against a dead owner
+  recovers the lock (`stage_<s>_recovered_at`, walkthrough F4) while a live
+  owner is refused with the holder PID.
 - New: `artifact RUN --stage <s> --accept | --reject --summary "..."`.
 - New: `start ... [--from-intent FILE] [--pipeline LIST]` — `--pipeline`
   overrides config (`intent,spec,plan`, subsets, or `none`).
@@ -216,6 +242,11 @@ sandbox-exec -f <run>/sandbox.sb \
   `plan`. Rust model: `#[serde(default)]` additions only; existing tests
   keep passing byte-identically for v0.6-shaped runs.
 - `status RUN --json`: additive `pipeline` block in `fields`.
+- `cancel` gains one privilege (walkthrough F11): it may kill a hung stage
+  session's PID and reclaim the run lock — cancel is already the
+  destructive human-controlled operation. No hard stage timeout in v0.7
+  (external `timeout` wrappers work); sessions record stdout under
+  `sessions/` for diagnosis.
 - Exit codes: new commands follow the existing pattern (0 ok, 1 usage,
   2 state/die).
 
@@ -223,7 +254,8 @@ sandbox-exec -f <run>/sandbox.sb \
 
 - New key `n`: new-run wizard (InputMode::Input sequence: run_id → repo →
   profile → pipeline depth (none/lean/full + explicit list) → per-stage
-  model overrides defaulted from roles.conf when discoverable) → confirm
+  model overrides as free text — no prefill in v0.7, hint line shows the
+  roles.conf path, walkthrough F8) → confirm
   line with verbatim argv → spawn `bin/agent-arena start ...`. Destructive
   operations remain unmapped; the wizard only ever spawns documented
   subcommands (thin-client rule preserved).
@@ -247,6 +279,10 @@ sandbox-exec -f <run>/sandbox.sb \
 | AC8 | TUI `n` wizard argv assembly + keymap table updated; `q`/`Esc` cancels cleanly at every prompt step | cargo unit tests + §69 dispatch |
 | AC9 | JSON v1 backward compatibility for v0.6-shaped manifests; additive fields present for pipeline runs | §61 extension + Rust `#[serde(default)]` tests |
 | AC10 | cancel/escalate/resolve cover intent/spec/plan phases (including stage-generating lock) | §70 |
+| AC11 | adapter without `headless_stage` capability: stage skipped (pipeline shrinks) + doctor advisory names adapter and missing declaration | §63 |
+| AC12 | stage failure harvest: non-zero exit or missing draft ⇒ `stage_failed` + reason in manifest, lock released, retry works | §64 |
+| AC13 | accept guards (draft missing, stage≠phase) and `--from-intent` validation (empty/oversized/non-UTF-8) all exit 1 with actionable messages | §65/§66 |
+| AC14 | stale/hung stage lock: dead-owner recovery re-arms; cancel kills the holder and reclaims | §70 |
 | Live | Real zell `-p` sessions complete intent→spec→plan on a scratch repo; human gates accepted via CLI; writer (live zell) first commit carries `docs/arena/<run-id>/`; TUI wizard creates a lean-pipeline run | Gate 4 live section in the plan doc |
 
 ## 13. Risks and mitigations
@@ -259,6 +295,7 @@ sandbox-exec -f <run>/sandbox.sb \
 | State machine growth escalates recovery complexity | cancel/escalate/resolve coverage is AC10; run-dir-only artifacts keep cleanup atomic |
 | JSON consumers break on new phases | Additive-only schema change + AC9 compatibility tests |
 | zell `-nbt` bug (jihulab work item 325) slightly widens tool surface if extensions existed | Arena always passes `--no-extensions`, so no extension tools exist in stage sessions regardless |
+| Stage stuck (agent hang, no exit) blocks on a live-held lock | cancel's kill privilege (F11) + dead-owner recovery (F4); escalate stays unchanged — reason-code set documented as not covering stage hangs (F9) |
 
 ## 14. Versioning and delivery
 
@@ -268,3 +305,26 @@ sandbox-exec -f <run>/sandbox.sb \
   spec freeze → failing tests (§62–70 + cargo) → bash core (state machine,
   conf, stage/artifact commands, seeding) → TUI wizard → hermetic gates →
   tmuxp smoke → live gate → release.
+
+## 15. Walkthrough drift log (2026-09-26)
+
+Three-round walkthrough against the draft (validator passed). Resolutions
+folded into the sections above; recorded here for audit:
+
+| ID | Severity | Resolution | Where |
+|---|---|---|---|
+| F1 | Severe | intent input via `--prompt-text/--prompt-file`; TUI via temp file | §7.1, §10 |
+| F2 | Major | accept prints next-command hint; no auto-spawn (human-triggered agent spend) | §7.2 |
+| F3 | Major | two-phase start; `arena_implementation_bootstrap` at final accept; dirty check moves later | §7.3 |
+| F4 | Major | dead-owner lock recovery reuses `arena_lock_owner_alive`; audit key `stage_<s>_recovered_at` | §10 |
+| F5 | Minor | AC11 added (headless_stage skip + doctor advisory) | §12 |
+| F6 | Minor | accept guards (draft missing, stage≠phase) | §7.2, AC13 |
+| F7 | Minor | `--from-intent` validation (non-empty, ≤64KB, UTF-8) | §7.4, AC13 |
+| F8 | Minor | wizard free-text model overrides, no prefill; `config --json` oracle deferred | §11 |
+| F9 | Minor | escalate unchanged; stage-stuck → cancel/kill documented | §13 |
+| F10 | Minor | authorship deferred — digest chain suffices for replay | backlog |
+| F11 | Minor | cancel kills hung stage PID + reclaims lock | §10, AC14 |
+
+No rollback plan change: the pipeline is additive behind config absence
+(AC1 byte-identical v0.6 regression), so full rollback = remove roles.conf
+/ stop passing `--pipeline`.
