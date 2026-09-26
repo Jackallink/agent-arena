@@ -81,7 +81,7 @@ in ${ARENA_RUN_DIR} before acting on them."
         args=(
             -p
             --json
-            --tools read,write
+            --tools "read,write"
             --no-extensions
             --no-skills
             --no-prompt-templates

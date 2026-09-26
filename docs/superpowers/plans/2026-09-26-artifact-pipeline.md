@@ -127,3 +127,13 @@ Spec §12 AC1..AC14 → §62..§70 (§63 also carries AC11/AC13; §64 AC3+AC12; 
 - Manifest pipeline validation is opt-in relaxed: empty base_sha /
   writer_worktree / branch are legal only while the pipeline key is
   present; bootstrap restores strictness via upsert.
+- shellcheck 0.11.0 (installed post-Gate-2): 0 errors; 39 warnings are the
+  established dynamic-naming architecture (SC2034 cross-file ARENA_* reader
+  contract, SC2154 printf -v dynamic names) - intentional, not fixed;
+  SC2054 in zell.sh silenced by quoting the read,write tools word.
+- Suite isolation hole found and fixed post-release: ARENA_CONFIG_HOME was
+  only exported at section 62, so sections 1-61 read the developer's real
+  ~/.config/agent-arena/roles.conf; once a real roles.conf exists there,
+  every v0.6-path start silently becomes a two-phase pipeline start and
+  skips the dirty preflight (section 3 'expected failure' tripped). The
+  isolation now covers the whole suite.

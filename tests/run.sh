@@ -285,6 +285,11 @@ EOF
 chmod 755 "${fake_bin}"/*
 
 project="${tmp_root}/project"
+# Isolate the global config home for the WHOLE suite: the tests must never
+# read the developer's real ~/.config/agent-arena (roles.conf turns plain
+# starts into pipeline starts, which skips the dirty preflight by design).
+export ARENA_CONFIG_HOME="${tmp_root}/conf-home"
+mkdir -p "${ARENA_CONFIG_HOME}/agent-arena"
 state_base="${tmp_root}/state"
 worktree_base="${tmp_root}/worktrees"
 mkdir -p "$project"
@@ -4425,10 +4430,7 @@ fi
 
 
 printf '%s\n' '62. artifact pipeline: no-config regression (v0.6 identical)'
-# Isolate the global roles config home for every later call: the tests must
-# never read the developer's real ~/.config/agent-arena/roles.conf.
-export ARENA_CONFIG_HOME="${tmp_root}/conf-home"
-mkdir -p "${ARENA_CONFIG_HOME}/agent-arena"
+# ARENA_CONFIG_HOME is isolated for the whole suite at the top of this file.
 [[ ! -f "${project}/.agent-arena/roles.conf" ]] || fail 'fixture pollution: roles.conf already present'
 if ! run_arena start reg62 --repo "$project" --no-attach >"${tmp_root}/reg62.out" 2>&1; then
     cat "${tmp_root}/reg62.out" >&2
