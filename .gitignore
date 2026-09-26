@@ -14,3 +14,6 @@ worktrees/
 .worktrees/
 .zell/
 ui/target/
+
+# Fabric session state for the arena writer worktree
+/.pi/
