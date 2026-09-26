@@ -258,7 +258,7 @@ sandbox-exec -f <run>/sandbox.sb \
 | Stage generation quality depends on prompt templates | Templates live in the repo (reviewable); reject summary feeds the retry; live gate validates one full pass |
 | State machine growth escalates recovery complexity | cancel/escalate/resolve coverage is AC10; run-dir-only artifacts keep cleanup atomic |
 | JSON consumers break on new phases | Additive-only schema change + AC9 compatibility tests |
-| zell `-nbt` bug (issue #1) slightly widens tool surface if extensions existed | Arena always passes `--no-extensions`, so no extension tools exist in stage sessions regardless |
+| zell `-nbt` bug (jihulab work item 325) slightly widens tool surface if extensions existed | Arena always passes `--no-extensions`, so no extension tools exist in stage sessions regardless |
 
 ## 14. Versioning and delivery
 
