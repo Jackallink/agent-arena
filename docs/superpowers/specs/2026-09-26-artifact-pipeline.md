@@ -206,23 +206,46 @@ sandbox-exec -f <run>/sandbox.sb \
   zell -p --json \
        --tools read,write --no-extensions \
        --no-skills --no-prompt-templates --no-themes \
-       --session-dir <run>/sessions --session-id arena-<run-id>-<stage> \
+       --session-dir <run>/sessions --session-id arena-<run-id>-<stage>-a<attempt> \
        --provider <p> --model <m> \
-       --append-system-prompt <role prompt + context.md> \
-       "@<prev artifact>" "<stage instruction>"
+       --append-system-prompt "<short role text>" \
+       "@prompt-template" "@context.md (if present)" "@intent.md (prev artifact)" \
+       "<stage instruction + run-dir write target>"
 ```
 
-- seatbelt profile: default-allow reads/network; `deny file-write*` except
-  the run dir subtree and `${TMPDIR}` (session storage lives inside the run
-  dir; the cwd is the repo, enforced read-only).
-- The prompt instructs the session to write its artifact into the run dir;
-  the sandbox enforces the boundary; `artifact --accept` verifies presence
-  and scope-independent content.
+Gate 0 spike verified 2026-09-26 (live zell 0.4.0-rc.1, scratch repo):
+
+- **Composition works**: `-p` x `--json` x `--tools read,write` x
+  `--no-extensions` x fresh `--session-id` x `--session-dir` x
+  `--append-system-prompt` x `@file` attachments — session ran, draft
+  written from the attached requirement, session persisted under the run
+  dir, exit 0.
+- **Never resume an existing session id in `-p` mode** (upstream crash,
+  jihulab 327: `free(@constCast)` bus error before any model call). Every
+  attempt uses a fresh attempt-suffixed id
+  `arena-<run-id>-<stage>-a<N>`; retries never continue a prior
+  conversation (context re-enters via `@file` attachments: previous draft
+  + reject summary). This also matches the evidence model — each attempt
+  is a self-contained blob.
+- **`--append-system-prompt` is text-only in zell** (pi also accepts file
+  contents; zell does not). It carries the short role text only; the
+  prompt template, `.agent-arena/context.md`, the previous artifact, and
+  the requirement text travel as `@file` message attachments. The stage
+  adapter contract (`headless_stage=true`) therefore includes "supports
+  file attachment in the prompt message" — adapters without it fall back
+  to composing a single text argument (argv-length bounded).
+- **stdout is a JSONL event stream and is currently malformed upstream**
+  (jihulab 326: every `tool_execution_end` line carries an extra trailing
+  brace). Harvest contract stays: exit code + draft existence; stdout is
+  saved verbatim under `sessions/` as an opaque blob and is never parsed.
+- seatbelt profile: `(allow default)` + `(deny file-write*)` + allow-list
+  `subpath` for the run dir and `${TMPDIR}` (realpath'd — macOS /tmp is
+  /private/tmp). Verified live: sandboxed session completed (network,
+  repo read, run-dir write all fine) while an instructed write into the
+  repo returned `Error: PermissionDenied` from the OS layer.
 - Environment hygiene: stage sessions inherit the same ARENA_* scrubbing
   rules as writer panes; `isolate_env` in the TUI already covers spawned
   children.
-- Before implementation, a spike must confirm `zell -p` composes with
-  `--session-id`/`--session-dir` (Gate 0, §13).
 
 ## 10. CLI and JSON contract changes
 
@@ -289,22 +312,25 @@ sandbox-exec -f <run>/sandbox.sb \
 
 | Risk | Mitigation |
 |---|---|
-| `zell -p` × `--session-id` composition unverified | Gate 0 spike before any implementation; fallback: `--no-session` + Arena-side audit only |
-| seatbelt `sandbox-exec` is deprecated by Apple | Works today (verified); profile is data, not code — swappable for the container API later; absence degrades to warning + soft constraints, never silent |
+| ~~`zell -p` × `--session-id` composition unverified~~ | **Verified in Gate 0** (§9): fresh ids compose; resume crashes upstream (jihulab 327) — design avoids resume via attempt-suffixed ids |
+| seatbelt `sandbox-exec` is deprecated by Apple | Works today (Gate 0 re-verified against a real zell session, not just `touch`); profile is data, not code — swappable for the container API later; absence degrades to warning + soft constraints, never silent |
 | Stage generation quality depends on prompt templates | Templates live in the repo (reviewable); reject summary feeds the retry; live gate validates one full pass |
 | State machine growth escalates recovery complexity | cancel/escalate/resolve coverage is AC10; run-dir-only artifacts keep cleanup atomic |
 | JSON consumers break on new phases | Additive-only schema change + AC9 compatibility tests |
 | zell `-nbt` bug (jihulab work item 325) slightly widens tool surface if extensions existed | Arena always passes `--no-extensions`, so no extension tools exist in stage sessions regardless |
 | Stage stuck (agent hang, no exit) blocks on a live-held lock | cancel's kill privilege (F11) + dead-owner recovery (F4); escalate stays unchanged — reason-code set documented as not covering stage hangs (F9) |
+| Upstream jihulab 326: `tool_execution_end` JSONL lines malformed | Non-blocking by design: Arena never parses stage stdout (exit code + draft existence + opaque blob) |
+| Upstream jihulab 327: `-p` resume crashes on existing `--session-id` | Non-blocking by design: attempt-suffixed fresh ids per invocation; retry context re-enters via `@file` attachments |
 
 ## 14. Versioning and delivery
 
 - Target release: v0.7.0. Docs: README section "Artifact pipeline" +
   RELEASE-NOTES; spec/plan under docs/superpowers/ dated 2026-09-26.
-- Delivery order: Gate 0 spike (zell -p × session flags; sandbox probe) →
-  spec freeze → failing tests (§62–70 + cargo) → bash core (state machine,
-  conf, stage/artifact commands, seeding) → TUI wizard → hermetic gates →
-  tmuxp smoke → live gate → release.
+- Delivery order: ~~Gate 0 spike (zell -p × session flags; sandbox
+  probe)~~ **done 2026-09-26** (§9, upstream bugs 326/327 filed, both
+  designed around) → spec freeze → failing tests (§62–70 + cargo) → bash
+  core (state machine, conf, stage/artifact commands, seeding) → TUI
+  wizard → hermetic gates → tmuxp smoke → live gate → release.
 
 ## 15. Walkthrough drift log (2026-09-26)
 
@@ -328,3 +354,20 @@ folded into the sections above; recorded here for audit:
 No rollback plan change: the pipeline is additive behind config absence
 (AC1 byte-identical v0.6 regression), so full rollback = remove roles.conf
 / stop passing `--pipeline`.
+
+## 16. Gate 0 spike record (2026-09-26, live)
+
+Scratch repo + real zell 0.4.0-rc.1 (`/Users/jakeliu/bin/zell`), three probes:
+
+| Probe | Result | Design consequence |
+|---|---|---|
+| S1 full-argv composition | ✅ exit 0, draft from `@need.md` written, session persisted, clean stderr | Spawn protocol in §9 confirmed as-is |
+| S2 resume with existing `--session-id` | ❌ Bus error (SIGABRT) before any model call; `free(@constCast(model.*))` in `restoreSessionSettings` (main.zig:2103) — jihulab 327 | Attempt-suffixed fresh session ids; retries re-enter context via `@file`; never resume |
+| S3 seatbelt-wrapped real session | ✅ completed inside sandbox; run-dir write allowed; instructed repo write returned `Error: PermissionDenied` at OS layer | Profile shape `(allow default)+(deny file-write*)+subpath allowlist(run,TMPDIR)` locked (realpath'd) |
+
+Side finding: `--json` stdout is JSONL and every `tool_execution_end` line
+is malformed (extra `}`) — jihulab 326. Harvest already never parses
+stdout, so non-blocking.
+
+Also confirmed: `--append-system-prompt` is text-only in zell (pi accepts
+files) — long content rides `@file` attachments (§9).
