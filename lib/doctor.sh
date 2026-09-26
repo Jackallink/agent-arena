@@ -6,19 +6,34 @@ source "${source_root}/lib/common.sh"
 
 usage() {
     cat <<'EOF'
-Usage: agent-arena doctor
+Usage: agent-arena doctor [--repo PATH]
 
 Checks local prerequisites, writer-profile availability, and the gate adapter
 matrix without starting a model or modifying a project. Cursor is the default
 gate; --gate or a WRITER-GATE profile selects the reviewer.
+
+--repo PATH also reports the artifact-pipeline stage configuration resolved
+from roles.conf (global scope plus the project scope under PATH).
 EOF
 }
 
-[[ "${1:-}" != --help && "${1:-}" != -h ]] || {
-    usage
-    exit 0
-}
-[[ $# -eq 0 ]] || arena_die "unknown option: $1"
+doctor_repo=''
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        --repo)
+            [[ $# -ge 2 ]] || arena_die '--repo requires a path'
+            doctor_repo="$2"
+            shift 2
+            ;;
+        *)
+            arena_die "unknown option: $1"
+            ;;
+    esac
+done
 
 probe_command() {
     local label="$1"
@@ -77,6 +92,27 @@ for gate in $(arena_gate_list); do
     fi
 done
 [[ "$gate_count" -gt 0 ]] || arena_die 'doctor found no available gate adapter'
+
+# Artifact-pipeline advisory (spec 2026-09-26 §8): roles.conf stages and
+# their adapter capability. Configuration errors (unknown key, unknown
+# adapter, missing prompt) fail fast here with path:line context; a stage
+# whose adapter lacks the headless_stage capability is reported skipped.
+if [[ -n "$doctor_repo" ]]; then
+    source "${source_root}/lib/roles_conf.sh"
+    arena_roles_load "$doctor_repo"
+    printf '%s\n' 'Pipeline stages (roles.conf):'
+    for doctor_stage in intent spec plan; do
+        var="ARENA_ROLES_${doctor_stage}_ADAPTER"
+        doctor_adapter="${!var}"
+        if [[ -n "$doctor_adapter" ]]; then
+            printf '%-20s %-12s %s\n' "stage:${doctor_stage}" enabled "adapter ${doctor_adapter}"
+        elif [[ ",$ARENA_ROLES_SKIPPED," == *",$doctor_stage,"* ]]; then
+            printf '%-20s %-12s %s\n' "stage:${doctor_stage}" skipped "adapter lacks headless_stage capability (role prompt never runs headless)"
+        else
+            printf '%-20s %-12s %s\n' "stage:${doctor_stage}" unset 'no roles.conf entry (stage not configured)'
+        fi
+    done
+fi
 
 # Dashboard status is advisory: it never fails doctor, it only tells the
 # operator what `agent-arena dashboard` will do right now.

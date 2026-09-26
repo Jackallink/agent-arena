@@ -23,6 +23,13 @@ Options:
   --worktree-root PATH    Private worktree root override
   --log-panes             Opt in to raw terminal logs in the private run directory
   --no-attach             Create the tmux session detached
+  --pipeline MODE         Artifact pipeline before implementation: none (v0.6
+                           behavior), lean (intent only), full (intent, spec,
+                           plan), or an explicit comma list (intent,spec,plan
+                           subset). Stages are configured in roles.conf.
+  --from-intent FILE      Seed the intent stage from the originator's document
+                           instead of running a stage session (requires a
+                           pipeline containing intent)
   -h, --help              Show this help
 
 The integration tree must be clean when a new run is created. Agent Arena never
@@ -42,6 +49,8 @@ attach=1
 log_panes=0
 mode_arg=''
 mode_explicit=0
+pipeline_arg=''
+from_intent=''
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --mode)
@@ -90,6 +99,16 @@ while [[ $# -gt 0 ]]; do
         --worktree-root)
             [[ $# -ge 2 ]] || arena_die '--worktree-root requires a path'
             ARENA_WORKTREE_ROOT="$2"
+            shift 2
+            ;;
+        --pipeline)
+            [[ $# -ge 2 ]] || arena_die '--pipeline requires a value'
+            pipeline_arg="$2"
+            shift 2
+            ;;
+        --from-intent)
+            [[ $# -ge 2 ]] || arena_die '--from-intent requires a path'
+            from_intent="$2"
             shift 2
             ;;
         --log-panes)
@@ -150,6 +169,25 @@ if [[ "$mode_explicit" == 1 ]]; then
 else
     arena_load_project_config "$repository"
     effective_mode="$ARENA_CONFIG_APPROVAL_MODE"
+fi
+# Artifact pipeline resolution (spec 2026-09-26 §7): roles.conf enables
+# stages; --pipeline none|lean|full|list selects the subset. Empty result
+# means the v0.6 implementation-only flow.
+source "${source_root}/lib/roles_conf.sh"
+effective_pipeline="$(arena_roles_resolve_pipeline "$repository" "$pipeline_arg")"
+if [[ -n "$from_intent" ]]; then
+    [[ -n "$effective_pipeline" ]] || \
+        arena_die "--from-intent requires a pipeline containing the intent stage (got ${pipeline_arg:-no pipeline})"
+    [[ ",$effective_pipeline," == *,intent,* ]] || \
+        arena_die "--from-intent requires a pipeline containing the intent stage (got: $effective_pipeline)"
+    [[ "$from_intent" == /* ]] || from_intent="${repository}/${from_intent}"
+    [[ -f "$from_intent" ]] || arena_die "from-intent file not found: $from_intent"
+    [[ -s "$from_intent" ]] || arena_die "from-intent file is empty: $from_intent"
+    from_intent_bytes="$(wc -c <"$from_intent" | tr -d ' ')"
+    [[ "$from_intent_bytes" -le 65536 ]] || \
+        arena_die "from-intent file exceeds 65536 bytes (64KiB): $from_intent"
+    iconv -f UTF-8 -t UTF-8 "$from_intent" >/dev/null 2>&1 || \
+        arena_die "from-intent file is not valid UTF-8: $from_intent"
 fi
 session_name="agent-arena-${repo_id}-${run_id}"
 configuration="${source_root}/templates/tmuxp/arena.yaml"
@@ -239,6 +277,30 @@ if [[ -e "$run_dir" || -L "$run_dir" ]] && [[ "$intent_stage" != S2 ]]; then
             arena_die "existing run uses writer ${ARENA_MANIFEST_WRITER_ADAPTER} with gate ${ARENA_MANIFEST_GATE_ADAPTER}, not ${requested_writer}-${requested_gate}"
         fi
     fi
+    # A pipeline run not yet bootstrapped has no writer worktree: start
+    # reports the stage-phase hint instead of attaching a session (the
+    # gate is the human stage/artifact commands).
+    if [[ -n "$ARENA_MANIFEST_PIPELINE" && -z "$ARENA_MANIFEST_WRITER_WORKTREE" ]]; then
+        arena_state_read "$run_dir"
+        printf 'run %s is in the artifact pipeline (phase=%s, reason=%s)\n' \
+            "$run_id" "$ARENA_STATE_PHASE" "$ARENA_STATE_REASON_CODE"
+        case "$ARENA_STATE_REASON_CODE" in
+            awaiting_stage_start)
+                printf 'next: agent-arena stage %s %s\n' "$run_id" "$ARENA_STATE_PHASE"
+                ;;
+            awaiting_stage_accept)
+                printf 'next: agent-arena artifact %s --stage %s --accept | --reject --summary "..."\n' \
+                    "$run_id" "$ARENA_STATE_PHASE"
+                ;;
+            stage_generating)
+                printf 'stage session generating; wait for it to finish or resolve --action cancel\n'
+                ;;
+            stage_failed)
+                printf 'retry: agent-arena stage %s %s\n' "$run_id" "$ARENA_STATE_PHASE"
+                ;;
+        esac
+        exit 0
+    fi
     profile="$ARENA_MANIFEST_PROFILE"
     arena_profile_resolve "$profile"
     writer_adapter="$ARENA_PROFILE_WRITER_ADAPTER"
@@ -322,6 +384,70 @@ else
         arena_die "${writer_label} executable not found for profile $profile"
     "${source_root}/adapters/gate-${gate_adapter}.sh" probe || \
         arena_die "gate adapter is not available: ${gate_adapter}"
+
+    # Artifact-pipeline creation (two-phase start, phase 1 — spec §7.3):
+    # run directory + state + manifest only. The writer worktree, the
+    # dirty check, and the writer session are deferred to the
+    # implementation bootstrap at the final stage accept (walkthrough F3).
+    if [[ -n "$effective_pipeline" ]]; then
+        mkdir -p "$repo_runs_dir"
+        arena_lock_acquire "$parent_lock" "start-$$"
+        parent_lock_held=1
+        arena_make_private_dir "$run_dir"
+        arena_make_private_dir "$writer_session_dir"
+        arena_lock_acquire "${run_dir}/.run-lock" "start-$$"
+        run_lock_held=1
+        arena_state_defaults
+        first_stage="${effective_pipeline%%,*}"
+        if [[ -n "$from_intent" ]]; then
+            cp "$from_intent" "${run_dir}/intent-draft.md"
+            ARENA_STATE_PHASE='intent'
+            ARENA_STATE_REASON_CODE='awaiting_stage_accept'
+        else
+            ARENA_STATE_PHASE="$first_stage"
+            ARENA_STATE_REASON_CODE='awaiting_stage_start'
+        fi
+        arena_state_write "$run_dir" \
+            "schema_version=${ARENA_STATE_SCHEMA_VERSION}" \
+            "state_revision=${ARENA_STATE_REVISION}" \
+            "run_status=${ARENA_STATE_RUN_STATUS}" \
+            "phase=${ARENA_STATE_PHASE}" \
+            "responsible_party=human" \
+            "reason_code=${ARENA_STATE_REASON_CODE}" \
+            "reason_detail=${ARENA_STATE_REASON_DETAIL}" \
+            "verdict=${ARENA_STATE_VERDICT}" \
+            "validation_result=${ARENA_STATE_VALIDATION_RESULT}" \
+            "checkpoint_round=${ARENA_STATE_CHECKPOINT_ROUND}" \
+            "checkpoint_sha=${ARENA_STATE_CHECKPOINT_SHA}" \
+            "waiting_since=${ARENA_STATE_WAITING_SINCE}" \
+            "last_transition_at=${ARENA_STATE_LAST_TRANSITION_AT}" \
+            "last_transition_actor=human" \
+            "last_transition_action=start" \
+            "validation_digest=${ARENA_STATE_VALIDATION_DIGEST}"
+        arena_write_pipeline_manifest "$run_dir" "$run_id" "$repository" \
+            "$session_name" "$source_root" "$worktree_root" \
+            "$ARENA_PROJECT_CONFIG" "$profile" "$writer_adapter" \
+            "$writer_label" "$writer_session_dir" "$gate_adapter" \
+            "$effective_mode" "system" "$(date +%s)" "$effective_pipeline"
+        if [[ -n "$from_intent" ]]; then
+            arena_manifest_upsert "$run_dir" 'stage_intent_status' 'awaiting_accept'
+            printf 'run %s created with pipeline %s (intent seeded from %s)\n' \
+                "$run_id" "$effective_pipeline" "$from_intent"
+            printf 'next: agent-arena artifact %s --stage intent --accept | --reject --summary "..."\n' "$run_id"
+        else
+            printf 'run %s created with pipeline %s\n' "$run_id" "$effective_pipeline"
+            if [[ "$first_stage" == intent ]]; then
+                printf 'next: agent-arena stage %s intent --prompt-text "..." | --prompt-file F\n' "$run_id"
+            else
+                printf 'next: agent-arena stage %s %s\n' "$run_id" "$first_stage"
+            fi
+        fi
+        arena_lock_release "${run_dir}/.run-lock" "start-$$"
+        run_lock_held=0
+        arena_lock_release "$parent_lock" "start-$$"
+        parent_lock_held=0
+        exit 0
+    fi
 
     arena_assert_clean_worktree "$repository"
     git -C "$repository" rev-parse --verify HEAD >/dev/null 2>&1 || \

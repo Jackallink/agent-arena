@@ -88,31 +88,51 @@ arena_state_validate() {
     }
     [[ "$ARENA_STATE_REVISION" =~ ^[1-9][0-9]*$ ]] || arena_state_die 'corrupted state file: invalid state_revision'
     case "$ARENA_STATE_RUN_STATUS" in active|blocked|completed|canceled) ;; *) arena_state_die 'corrupted state file: invalid run_status' ;; esac
-    case "$ARENA_STATE_PHASE" in intake|submitted|validated|decided) ;; *) arena_state_die 'corrupted state file: invalid phase' ;; esac
+    case "$ARENA_STATE_PHASE" in intent|spec|plan|intake|submitted|validated|decided) ;; *) arena_state_die 'corrupted state file: invalid phase' ;; esac
     case "$ARENA_STATE_RESPONSIBLE_PARTY" in writer|reviewer|human|none) ;; *) arena_state_die 'corrupted state file: invalid responsible_party' ;; esac
-    case "$ARENA_STATE_REASON_CODE" in none|review_pending|decision_pending|approval_pending|changes_requested|human_changes_requested|reviewer_unreachable|block_resolution_required) ;; *) arena_state_die 'corrupted state file: invalid reason_code' ;; esac
+    case "$ARENA_STATE_REASON_CODE" in none|awaiting_stage_start|awaiting_stage_accept|stage_generating|stage_failed|review_pending|decision_pending|approval_pending|changes_requested|human_changes_requested|reviewer_unreachable|block_resolution_required) ;; *) arena_state_die 'corrupted state file: invalid reason_code' ;; esac
     case "$ARENA_STATE_VERDICT" in ''|APPROVE|CHANGES_REQUESTED|BLOCKED) ;; *) arena_state_die 'corrupted state file: invalid verdict' ;; esac
     case "$ARENA_STATE_VALIDATION_RESULT" in ''|PASS|FAIL) ;; *) arena_state_die 'corrupted state file: invalid validation_result' ;; esac
     [[ "$ARENA_STATE_CHECKPOINT_ROUND" == unknown || "$ARENA_STATE_CHECKPOINT_ROUND" =~ ^[0-9]+$ ]] || arena_state_die 'corrupted state file: invalid checkpoint_round'
-    # CR=0 only in intake; every non-intake phase is positive-or-unknown.
-    if [[ "$ARENA_STATE_PHASE" == intake ]]; then
-        [[ "$ARENA_STATE_CHECKPOINT_ROUND" == 0 ]] || arena_state_die 'corrupted state file: intake phase requires checkpoint_round 0'
-    else
+    # CR=0 only in the pre-checkpoint phases; every other phase is
+    # positive-or-unknown.
+    case "$ARENA_STATE_PHASE" in intent|spec|plan|intake)
+        [[ "$ARENA_STATE_CHECKPOINT_ROUND" == 0 ]] || arena_state_die 'corrupted state file: pre-checkpoint phase requires checkpoint_round 0'
+        ;;
+        *)
         [[ "$ARENA_STATE_CHECKPOINT_ROUND" == unknown || "$ARENA_STATE_CHECKPOINT_ROUND" =~ ^[1-9][0-9]*$ ]] || \
             arena_state_die 'corrupted state file: non-intake phase requires positive-or-unknown checkpoint_round'
-    fi
+        ;;
+    esac
     [[ "$ARENA_STATE_CHECKPOINT_SHA" == '' || "$ARENA_STATE_CHECKPOINT_SHA" =~ ^[0-9a-f]{40}$ ]] || arena_state_die 'corrupted state file: invalid checkpoint_sha'
     [[ "$ARENA_STATE_VALIDATION_DIGEST" == '' || "$ARENA_STATE_VALIDATION_DIGEST" =~ ^[0-9a-f]{64}$ ]] || arena_state_die 'corrupted state file: invalid validation_digest'
     [[ "$ARENA_STATE_WAITING_SINCE" == '' || "$ARENA_STATE_WAITING_SINCE" == unknown || "$ARENA_STATE_WAITING_SINCE" =~ ^[0-9]+$ ]] || arena_state_die 'corrupted state file: invalid waiting_since'
     [[ "$ARENA_STATE_LAST_TRANSITION_AT" =~ ^[0-9]+$ ]] || arena_state_die 'corrupted state file: invalid last_transition_at'
     case "$ARENA_STATE_LAST_TRANSITION_ACTOR" in writer|reviewer|human|system) ;; *) arena_state_die 'corrupted state file: invalid last_transition_actor' ;; esac
-    case "$ARENA_STATE_LAST_TRANSITION_ACTION" in start|submit|validate|decision|escalate|resolve-approve|resolve-reject|resolve-recover|resolve-cancel|repair-state) ;; *) arena_state_die 'corrupted state file: invalid last_transition_action' ;; esac
+    case "$ARENA_STATE_LAST_TRANSITION_ACTION" in start|submit|validate|decision|escalate|resolve-approve|resolve-reject|resolve-recover|resolve-cancel|repair-state|stage|artifact|bootstrap) ;; *) arena_state_die 'corrupted state file: invalid last_transition_action' ;; esac
     [[ "$ARENA_STATE_REASON_DETAIL" == '' || ! "$ARENA_STATE_REASON_DETAIL" =~ [[:cntrl:]] && "${#ARENA_STATE_REASON_DETAIL}" -le 256 ]] || arena_state_die 'corrupted state file: invalid reason_detail'
 
     # Legal-combination invariants (spec: layered by run_status)
     case "$ARENA_STATE_RUN_STATUS" in
         active)
             case "$ARENA_STATE_PHASE" in
+                intent|spec|plan)
+                    # Artifact stages carry no checkpoint evidence at all.
+                    [[ -z "$ARENA_STATE_VERDICT" && -z "$ARENA_STATE_VALIDATION_RESULT" && \
+                        -z "$ARENA_STATE_VALIDATION_DIGEST" && -z "$ARENA_STATE_CHECKPOINT_SHA" ]] || \
+                        arena_state_die 'corrupted state file: stage phase carries checkpoint evidence'
+                    case "$ARENA_STATE_RESPONSIBLE_PARTY:$ARENA_STATE_REASON_CODE" in
+                        human:awaiting_stage_start|human:awaiting_stage_accept|human:stage_failed)
+                            [[ -n "$ARENA_STATE_WAITING_SINCE" ]] || \
+                                arena_state_die 'corrupted state file: stage gate wait requires waiting_since'
+                            ;;
+                        none:stage_generating)
+                            [[ -z "$ARENA_STATE_WAITING_SINCE" ]] || \
+                                arena_state_die 'corrupted state file: stage generation cannot wait'
+                            ;;
+                        *) arena_state_die 'corrupted state file: illegal stage phase combination' ;;
+                    esac
+                    ;;
                 intake)
                     [[ "$ARENA_STATE_RESPONSIBLE_PARTY" == writer && "$ARENA_STATE_REASON_CODE" == none && \
                         -z "$ARENA_STATE_VERDICT" && -z "$ARENA_STATE_VALIDATION_RESULT" && \
@@ -191,6 +211,10 @@ arena_state_validate() {
             [[ "$ARENA_STATE_RESPONSIBLE_PARTY" == none && "$ARENA_STATE_REASON_CODE" == none && -z "$ARENA_STATE_WAITING_SINCE" ]] || \
                 arena_state_die 'corrupted state file: illegal canceled combination'
             case "$ARENA_STATE_PHASE" in
+                intent|spec|plan) \
+                    [[ -z "$ARENA_STATE_VERDICT" && -z "$ARENA_STATE_VALIDATION_RESULT" && \
+                        -z "$ARENA_STATE_VALIDATION_DIGEST" && -z "$ARENA_STATE_CHECKPOINT_SHA" ]] || \
+                    arena_state_die 'corrupted state file: illegal canceled stage combination' ;;
                 submitted) [[ -n "$ARENA_STATE_CHECKPOINT_SHA" && -z "$ARENA_STATE_VERDICT" && -z "$ARENA_STATE_VALIDATION_RESULT" && -z "$ARENA_STATE_VALIDATION_DIGEST" ]] || arena_state_die 'corrupted state file: illegal canceled/submitted combination' ;;
                 validated) [[ -n "$ARENA_STATE_CHECKPOINT_SHA" && -n "$ARENA_STATE_VALIDATION_RESULT" && -n "$ARENA_STATE_VALIDATION_DIGEST" && -z "$ARENA_STATE_VERDICT" ]] || arena_state_die 'corrupted state file: illegal canceled/validated combination' ;;
                 decided)

@@ -76,6 +76,46 @@ arena_validate_run_id "$run_id"
 
 run_dir="$(arena_find_run_dir "$run_id")"
 arena_read_manifest "$run_dir"
+source "${source_root}/lib/state.sh"
+
+# Artifact-pipeline stage cancel (spec 2026-09-26 §10.9, walkthrough F11):
+# a run in an artifact stage phase owns no writer worktree and no shared
+# history, so cancel removes the whole run directory. A hung stage session
+# holding the run lock is killed first — the one cancel privilege.
+if [[ "$action" == cancel && -f "${run_dir}/run-state.tsv" ]]; then
+    stage_cancel_phase=''
+    arena_state_read "$run_dir"
+    case "$ARENA_STATE_PHASE" in
+        intent|spec|plan) stage_cancel_phase="$ARENA_STATE_PHASE" ;;
+    esac
+    if [[ -n "$stage_cancel_phase" ]]; then
+        stage_lock="${run_dir}/.run-lock"
+        if arena_lock_is_held "$stage_lock"; then
+            stage_hung_pid="$(arena_lock_owner_pid "$stage_lock")"
+            if [[ "$stage_hung_pid" =~ ^[0-9]+$ ]] && kill -0 "$stage_hung_pid" 2>/dev/null; then
+                kill "$stage_hung_pid" 2>/dev/null || \
+                    arena_die "cannot kill the hung stage session (pid $stage_hung_pid)"
+                stage_kill_i=0
+                while kill -0 "$stage_hung_pid" 2>/dev/null && [[ "$stage_kill_i" -lt 10 ]]; do
+                    sleep 0.1
+                    stage_kill_i=$(( stage_kill_i + 1 ))
+                done
+                if kill -0 "$stage_hung_pid" 2>/dev/null; then
+                    kill -9 "$stage_hung_pid" 2>/dev/null || true
+                    stage_kill_i=0
+                    while kill -0 "$stage_hung_pid" 2>/dev/null && [[ "$stage_kill_i" -lt 10 ]]; do
+                        sleep 0.1
+                        stage_kill_i=$(( stage_kill_i + 1 ))
+                    done
+                fi
+                arena_note "killed hung stage session pid ${stage_hung_pid}"
+            fi
+        fi
+        rm -rf "$run_dir"
+        arena_note "canceled stage-phase run ${run_id} (phase ${stage_cancel_phase}; removed ${run_dir})"
+        exit 0
+    fi
+fi
 
 # Source state.sh after manifest resolution: the priority precheck needs its
 # lock and intent helpers.

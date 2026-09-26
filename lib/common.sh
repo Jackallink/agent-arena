@@ -430,11 +430,30 @@ arena_read_manifest() {
     ARENA_MANIFEST_MODE_ACTOR=''
     ARENA_MANIFEST_MODE_UPDATED_AT=''
     ARENA_MANIFEST_LEGACY_PROFILE=0
+    ARENA_MANIFEST_PIPELINE=''
+    # Artifact-pipeline stage state (manifest key space stage_<s>_<field>;
+    # index order intent=0 spec=1 plan=2). v0.6-shaped manifests carry none
+    # of these keys and read with the defaults below.
+    ARENA_STAGE_NAMES=('intent' 'spec' 'plan')
+    ARENA_STAGE_STATUS=('pending' 'pending' 'pending')
+    ARENA_STAGE_DRAFT=('' '' '')
+    ARENA_STAGE_DIGEST=('' '' '')
+    ARENA_STAGE_ACCEPTED_AT=('' '' '')
+    ARENA_STAGE_AGENT=('' '' '')
+    ARENA_STAGE_MODEL=('' '' '')
+    ARENA_STAGE_ATTEMPTS=(0 0 0)
+    ARENA_STAGE_REJECT_SUMMARY=('' '' '')
+    ARENA_STAGE_SANDBOX=('' '' '')
+    ARENA_STAGE_RECOVERED_AT=('' '' '')
     local profile_field_count=0
 
     while IFS=$'\t' read -r key value; do
         case "$key" in
             run_id) ARENA_MANIFEST_RUN_ID="$value" ;;
+            pipeline) ARENA_MANIFEST_PIPELINE="$value" ;;
+            stage_*)
+                arena_manifest_read_stage_key "$key" "$value" "$manifest"
+                ;;
             repository) ARENA_MANIFEST_REPOSITORY="$value" ;;
             base_sha) ARENA_MANIFEST_BASE_SHA="$value" ;;
             writer_worktree) ARENA_MANIFEST_WRITER_WORKTREE="$value" ;;
@@ -467,14 +486,33 @@ arena_read_manifest() {
         esac
     done <"$manifest"
 
+    for value in "$ARENA_MANIFEST_PIPELINE" "${ARENA_STAGE_STATUS[@]}" \
+        "${ARENA_STAGE_DRAFT[@]}" "${ARENA_STAGE_DIGEST[@]}" "${ARENA_STAGE_ACCEPTED_AT[@]}" \
+        "${ARENA_STAGE_AGENT[@]}" "${ARENA_STAGE_MODEL[@]}" "${ARENA_STAGE_ATTEMPTS[@]}" \
+        "${ARENA_STAGE_REJECT_SUMMARY[@]}" "${ARENA_STAGE_SANDBOX[@]}" "${ARENA_STAGE_RECOVERED_AT[@]}"; do
+        [[ "$value" != *$'\t'* && "$value" != *$'\n'* ]] || \
+            arena_die "corrupted run manifest (control character in stage field): $manifest"
+        arena_reject_control_characters "$value"
+    done
+
     for value in "$ARENA_MANIFEST_RUN_ID" "$ARENA_MANIFEST_REPOSITORY" \
-        "$ARENA_MANIFEST_BASE_SHA" "$ARENA_MANIFEST_WRITER_WORKTREE" \
-        "$ARENA_MANIFEST_BRANCH" "$ARENA_MANIFEST_SESSION_NAME" \
+        "$ARENA_MANIFEST_SESSION_NAME" \
         "$ARENA_MANIFEST_TOOL_ROOT" "$ARENA_MANIFEST_WORKTREE_ROOT" \
         "$ARENA_MANIFEST_PROJECT_CONFIG"; do
         [[ -n "$value" ]] || arena_die "incomplete run manifest: $manifest"
         arena_reject_control_characters "$value"
     done
+    # A pipeline-mode run defers worktree creation to the implementation
+    # bootstrap (spec §7.3): base_sha / writer_worktree / branch may be
+    # empty only while a pipeline is recorded. v0.6-shaped manifests keep
+    # the strict non-empty requirement unchanged.
+    if [[ -z "$ARENA_MANIFEST_PIPELINE" ]]; then
+        for value in "$ARENA_MANIFEST_BASE_SHA" "$ARENA_MANIFEST_WRITER_WORKTREE" \
+            "$ARENA_MANIFEST_BRANCH"; do
+            [[ -n "$value" ]] || arena_die "incomplete run manifest: $manifest"
+            arena_reject_control_characters "$value"
+        done
+    fi
     arena_validate_run_id "$ARENA_MANIFEST_RUN_ID"
 
     case "$profile_field_count" in
@@ -503,9 +541,13 @@ arena_read_manifest() {
         arena_die "writer adapter does not match profile in $manifest"
     [[ "$ARENA_PROFILE_WRITER_LABEL" == "$ARENA_MANIFEST_WRITER_LABEL" ]] || \
         arena_die "writer label does not match profile in $manifest"
-    [[ "$ARENA_MANIFEST_BRANCH" == \
-        "$(arena_profile_branch "$ARENA_MANIFEST_WRITER_ADAPTER" "$ARENA_MANIFEST_RUN_ID")" ]] || \
-        arena_die "writer branch does not match profile in $manifest"
+    # A pipeline run not yet bootstrapped carries no branch; once
+    # bootstrapped the upserted branch must match the profile.
+    if [[ -n "$ARENA_MANIFEST_BRANCH" ]]; then
+        [[ "$ARENA_MANIFEST_BRANCH" == \
+            "$(arena_profile_branch "$ARENA_MANIFEST_WRITER_ADAPTER" "$ARENA_MANIFEST_RUN_ID")" ]] || \
+            arena_die "writer branch does not match profile in $manifest"
+    fi
     ARENA_MANIFEST_WRITER_SESSION_DIR="$(arena_normalize_path "$ARENA_MANIFEST_WRITER_SESSION_DIR")"
     run_dir="$(arena_normalize_path "$run_dir")"
     if [[ "$ARENA_MANIFEST_LEGACY_PROFILE" == 1 ]]; then
@@ -515,6 +557,130 @@ arena_read_manifest() {
         [[ "$ARENA_MANIFEST_WRITER_SESSION_DIR" == "${run_dir}/writer-session" ]] || \
             arena_die "writer session directory is invalid: $manifest"
     fi
+}
+
+# Index of a pipeline stage name in the fixed stage arrays (intent=0,
+# spec=1, plan=2). Unknown names fail closed.
+arena_manifest_stage_index() {
+    case "$1" in
+        intent) printf '0\n' ;;
+        spec) printf '1\n' ;;
+        plan) printf '2\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+# Parse one stage_<s>_<field> manifest key into the indexed stage arrays.
+arena_manifest_read_stage_key() {
+    local key="$1" value="$2" manifest="$3" field stage idx
+    field="${key#stage_}"
+    stage="${field%%_*}"
+    field="${field#*_}"
+    idx="$(arena_manifest_stage_index "$stage")" || \
+        arena_die "unknown manifest key '$key' in $manifest"
+    case "$field" in
+        status) ARENA_STAGE_STATUS[idx]="$value" ;;
+        draft) ARENA_STAGE_DRAFT[idx]="$value" ;;
+        digest) ARENA_STAGE_DIGEST[idx]="$value" ;;
+        accepted_at) ARENA_STAGE_ACCEPTED_AT[idx]="$value" ;;
+        agent) ARENA_STAGE_AGENT[idx]="$value" ;;
+        model) ARENA_STAGE_MODEL[idx]="$value" ;;
+        attempts) ARENA_STAGE_ATTEMPTS[idx]="$value" ;;
+        reject_summary) ARENA_STAGE_REJECT_SUMMARY[idx]="$value" ;;
+        sandbox) ARENA_STAGE_SANDBOX[idx]="$value" ;;
+        recovered_at) ARENA_STAGE_RECOVERED_AT[idx]="$value" ;;
+        *) arena_die "unknown manifest key '$key' in $manifest" ;;
+    esac
+}
+
+# Upsert key/value pairs into a run manifest (the mode.sh mutation pattern:
+# rewrite via temp file + atomic mv). The caller holds the run lock. Values
+# must not carry tabs or newlines (tsv record format).
+arena_manifest_upsert() {
+    local run_dir="$1"
+    shift
+    local tmp_file key value exclude=''
+    local args=("$@")
+    local count=$#
+    local i
+
+    [[ $(( count % 2 )) == 0 ]] || arena_die 'manifest upsert requires key value pairs'
+    for (( i = 0; i < count; i += 2 )); do
+        key="${args[$i]}"
+        value="${args[$(( i + 1 ))]}"
+        [[ "$key" != *$'\t'* && "$value" != *$'\t'* && "$value" != *$'\n'* ]] || \
+            arena_die 'manifest upsert values may not contain tabs or newlines'
+        arena_reject_control_characters "$value"
+        exclude="${exclude} ${key}"
+    done
+    tmp_file="$(mktemp "${run_dir}/.manifest.XXXXXX")"
+    {
+        awk -v exclude="$exclude" '
+            BEGIN { n = split(exclude, ex, " ") }
+            { for (i = 1; i <= n; i++) if ($1 == ex[i]) next; print }
+        ' "${run_dir}/manifest.tsv"
+        for (( i = 0; i < count; i += 2 )); do
+            printf '%s\t%s\n' "${args[$i]}" "${args[$(( i + 1 ))]}"
+        done
+    } >"$tmp_file"
+    chmod 600 "$tmp_file"
+    mv "$tmp_file" "${run_dir}/manifest.tsv"
+}
+
+# Write the initial manifest for a pipeline-mode run: the identity subset
+# plus the pipeline key. base_sha / writer_worktree / branch are deferred
+# to the implementation bootstrap (spec §7.3) and are simply absent.
+arena_write_pipeline_manifest() {
+    local run_dir="$1"
+    local run_id="$2"
+    local repository="$3"
+    local session_name="$4"
+    local tool_root="$5"
+    local worktree_root="$6"
+    local project_config="$7"
+    local profile="$8"
+    local writer_adapter="$9"
+    local writer_label="${10}"
+    local writer_session_dir="${11}"
+    local gate_adapter="${12}"
+    local mode="${13:-human}"
+    local mode_actor="${14:-system}"
+    local mode_updated_at="${15:-$(date +%s)}"
+    local pipeline="${16}"
+    local tmp_file value
+
+    for value in "$run_id" "$repository" "$session_name" "$tool_root"         "$worktree_root" "$project_config" "$profile" "$writer_adapter"         "$writer_label" "$writer_session_dir" "$gate_adapter" "$mode" "$pipeline"; do
+        arena_reject_control_characters "$value"
+        [[ -n "$value" ]] || arena_die 'run manifest value must not be empty'
+    done
+    case "$mode" in
+        human|auto) ;;
+        *) arena_die "invalid run manifest mode: $mode" ;;
+    esac
+    writer_session_dir="$(arena_normalize_path "$writer_session_dir")"
+    run_dir="$(arena_normalize_path "$run_dir")"
+    [[ "$writer_session_dir" == "${run_dir}/writer-session" ]] || \
+        arena_die 'writer session directory must be the private generic session directory'
+    tmp_file="$(mktemp "${run_dir}/.manifest.XXXXXX")"
+    {
+        printf 'run_id\t%s\n' "$run_id"
+        printf 'repository\t%s\n' "$repository"
+        printf 'session_name\t%s\n' "$session_name"
+        printf 'tool_root\t%s\n' "$tool_root"
+        printf 'worktree_root\t%s\n' "$worktree_root"
+        printf 'project_config\t%s\n' "$project_config"
+        printf 'profile\t%s\n' "$profile"
+        printf 'writer_adapter\t%s\n' "$writer_adapter"
+        printf 'writer_label\t%s\n' "$writer_label"
+        printf 'writer_session_dir\t%s\n' "$writer_session_dir"
+        printf 'gate_adapter\t%s\n' "$gate_adapter"
+        printf 'mode\t%s\n' "$mode"
+        printf 'mode_actor\t%s\n' "$mode_actor"
+        printf 'mode_updated_at\t%s\n' "$mode_updated_at"
+        printf 'pipeline\t%s\n' "$pipeline"
+    } >"$tmp_file"
+    chmod 600 "$tmp_file"
+    mv "$tmp_file" "${run_dir}/manifest.tsv"
 }
 
 arena_write_review_manifest() {

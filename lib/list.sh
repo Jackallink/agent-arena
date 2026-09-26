@@ -63,12 +63,14 @@ arena_list_fields() {
     ARENA_LIST_RUN_ID=''; ARENA_LIST_REPOSITORY=''; ARENA_LIST_PROFILE=''; ARENA_LIST_GATE=''
     ARENA_LIST_MODE='human'; ARENA_LIST_RUN_STATUS=''; ARENA_LIST_PHASE=''; ARENA_LIST_PARTY=''
     ARENA_LIST_REASON_CODE=''; ARENA_LIST_WAITING_SINCE=''; ARENA_LIST_AUTHORITY=''; ARENA_LIST_ANOMALY=''
+    ARENA_LIST_PIPELINE=''
 
     ARENA_LIST_RUN_ID="$(awk -F $'\t' '$1 == "run_id" { print $2 }' "${run_dir}/manifest.tsv" | head -1)"
     ARENA_LIST_REPOSITORY="$(awk -F $'\t' '$1 == "repository" { print $2 }' "${run_dir}/manifest.tsv" | head -1)"
     ARENA_LIST_PROFILE="$(awk -F $'\t' '$1 == "profile" { print $2 }' "${run_dir}/manifest.tsv" | head -1)"
     ARENA_LIST_GATE="$(awk -F $'\t' '$1 == "gate_adapter" { print $2 }' "${run_dir}/manifest.tsv" | head -1)"
     ARENA_LIST_MODE="$(awk -F $'\t' '$1 == "mode" { print $2 }' "${run_dir}/manifest.tsv" | head -1)"
+    ARENA_LIST_PIPELINE="$(awk -F $'\t' '$1 == "pipeline" { print $2 }' "${run_dir}/manifest.tsv" | head -1)"
     # v0.1 manifests carry no profile or gate_adapter field; they are
     # Pi-only by definition with the Cursor gate.
     [[ -n "$ARENA_LIST_RUN_ID" ]] || ARENA_LIST_RUN_ID='<unreadable>'
@@ -158,7 +160,7 @@ arena_list_row_text() {
 
 # Render the resolved fields as one JSON object (JSON contract v1).
 arena_list_row_json() {
-    local row_exit=0
+    local row_exit=0 list_first_stage list_stage
     arena_list_fields "$1" "$2" || row_exit=$?
     printf '{"run_id":%s,"repository":%s,"profile":%s,"gate":%s,"mode":%s,' \
         "$(arena_json_string "$ARENA_LIST_RUN_ID")" \
@@ -171,6 +173,16 @@ arena_list_row_json() {
         "$(arena_json_string "$ARENA_LIST_PHASE")" \
         "$(arena_json_string "$ARENA_LIST_PARTY")" \
         "$(arena_json_string "$ARENA_LIST_REASON_CODE")"
+    if [[ -n "$ARENA_LIST_PIPELINE" ]]; then
+        printf '"pipeline":['
+        list_first_stage=1
+        for list_stage in ${ARENA_LIST_PIPELINE//,/ }; do
+            [[ "$list_first_stage" == 1 ]] || printf ','
+            list_first_stage=0
+            printf '%s' "$(arena_json_string "$list_stage")"
+        done
+        printf '],'
+    fi
     printf '"waiting_since":%s,"authority":%s,"anomaly":%s}' \
         "$(arena_json_string "$ARENA_LIST_WAITING_SINCE")" \
         "$(arena_json_string "$ARENA_LIST_AUTHORITY")" \

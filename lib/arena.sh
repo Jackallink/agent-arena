@@ -12,6 +12,11 @@ Commands:
   doctor                         Check required tools and adapter availability
   init [--repo PATH]             Add a minimal project adapter without overwrite
   start RUN_ID [--repo PATH]     Create/resume a writer + gate tmuxp run
+  stage RUN_ID <intent|spec|plan> [--prompt-text T | --prompt-file F]
+                                Generate the next artifact draft (headless,
+                                sandboxed stage session)
+  artifact RUN_ID --stage S (--accept | --reject --summary T)
+                                Human gate over the generated artifact draft
   resume RUN_ID [--repo PATH]    Attach or recreate an existing run
   submit RUN_ID                  Freeze the writer's committed checkpoint for review
   validate RUN_ID                Run the project-defined validation gate
@@ -38,7 +43,7 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "$command_name" in
-    doctor|init|start|submit|validate|decision|escalate|resolve|relay|repair-state|mode|autopilot|status|list)
+    doctor|init|start|stage|artifact|submit|validate|decision|escalate|resolve|relay|repair-state|mode|autopilot|status|list)
         exec "${source_root}/lib/${command_name}.sh" "$@"
         ;;
     dashboard)
