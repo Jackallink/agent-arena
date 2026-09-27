@@ -95,6 +95,27 @@ arena_read_manifest "$run_dir"
 arena_state_read "$run_dir"
 [[ "$ARENA_STATE_RUN_STATUS" == active ]] || \
     arena_die "artifact refused on terminal run: $ARENA_STATE_RUN_STATUS"
+
+# --show is read-only: it skips the phase and gate reason_code checks
+# (accepted artifacts outlive their stage phase) and never mutates state.
+# Resolution: the working draft wins while it exists (pre-gate reading,
+# re-armed rejected drafts), else the accepted artifact.
+if [[ "$show" == 1 ]]; then
+    [[ ",$ARENA_MANIFEST_PIPELINE," == *",$stage_name,"* ]] || \
+        arena_die "stage '$stage_name' is not part of run '$run_id' pipeline: $ARENA_MANIFEST_PIPELINE"
+    draft_path="${run_dir}/${stage_name}-draft.md"
+    artifact_path="${run_dir}/${stage_name}.md"
+    if [[ -f "$draft_path" ]]; then
+        cat "$draft_path"
+        exit 0
+    fi
+    if [[ -f "$artifact_path" ]]; then
+        cat "$artifact_path"
+        exit 0
+    fi
+    arena_die "no draft to show: $draft_path (stage not generated yet?)"
+fi
+
 # Phase match first: the operator-facing mismatch message carries the
 # current phase even when the requested stage is outside the pipeline.
 [[ "$ARENA_STATE_PHASE" == "$stage_name" ]] || \
@@ -105,14 +126,6 @@ arena_state_read "$run_dir"
     arena_die "artifact gate not open (reason_code=$ARENA_STATE_REASON_CODE)"
 
 draft_path="${run_dir}/${stage_name}-draft.md"
-
-# --show is read-only: it skips the gate reason_code check (the draft is
-# inspectable at any point of its stage phase) and never mutates state.
-if [[ "$show" == 1 ]]; then
-    [[ -f "$draft_path" ]] || arena_die "no draft to show: $draft_path (stage not generated yet?)"
-    cat "$draft_path"
-    exit 0
-fi
 
 case "$stage_name" in
     intent) stage_status="${ARENA_STAGE_STATUS[0]}" ;;

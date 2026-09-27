@@ -167,16 +167,16 @@ impl PromptKind {
 /// content is oracle output (`artifact --show`), never a direct file read.
 struct ArtifactViewer {
     run_id: String,
-    stage: String,
+    filename: String,
     content: String,
     lines: usize,
     offset: usize,
 }
 
 impl ArtifactViewer {
-    fn new(run_id: String, stage: String, content: String) -> Self {
+    fn new(run_id: String, filename: String, content: String) -> Self {
         let lines = content.lines().count();
-        Self { run_id, stage, content, lines, offset: 0 }
+        Self { run_id, filename, content, lines, offset: 0 }
     }
 
     fn scroll(&mut self, delta: isize, viewport: usize) {
@@ -307,8 +307,8 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
         let _ = terminal.draw(|f| {
             if let Some(v) = &viewer {
                 let title = format!(
-                    "{} / {}-draft.md  (j/k line, PgUp/PgDn page, Esc back)",
-                    v.run_id, v.stage
+                    "{} / {}  (j/k line, PgUp/PgDn page, Esc back)",
+                    v.run_id, v.filename
                 );
                 let viewport = f.area().height.saturating_sub(2) as usize;
                 let offset = v.offset.min(v.lines.saturating_sub(viewport));
@@ -682,21 +682,30 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
                             }
                         }
                         model::Action::ViewArtifact => {
-                            // Same fresh-fetch resolution as the gate keys.
+                            // Same fresh-fetch resolution as the gate keys:
+                            // awaiting draft first, else the furthest
+                            // accepted artifact (spec 2026-09-27 §2).
                             let fetched = arena
                                 .status_json(&run.run_id, state_root)
                                 .as_deref()
                                 .map_err(Clone::clone)
                                 .and_then(model::parse_status);
-                            let stage = match fetched {
-                                Ok(s) => s.awaiting_stage().map(str::to_string),
+                            let target = match fetched {
+                                Ok(s) => match s.awaiting_stage() {
+                                    Some(stage) => {
+                                        Some((stage.to_string(), format!("{stage}-draft.md")))
+                                    }
+                                    None => s.latest_accepted_stage().map(|stage| {
+                                        (stage.to_string(), format!("{stage}.md"))
+                                    }),
+                                },
                                 Err(e) => {
                                     notice = e;
                                     continue;
                                 }
                             };
-                            let Some(stage) = stage else {
-                                notice = "no artifact awaiting accept".to_string();
+                            let Some((stage, filename)) = target else {
+                                notice = "no artifact to view".to_string();
                                 continue;
                             };
                             match arena
@@ -708,7 +717,7 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
                                 Ok(text) => {
                                     viewer = Some(ArtifactViewer::new(
                                         run.run_id.clone(),
-                                        stage,
+                                        filename,
                                         text,
                                     ));
                                 }

@@ -240,7 +240,8 @@ Keys: `j`/`k` move · `Enter` status digest + writer-pane jump · `a` approve ·
 `r` request changes (`decision --verdict CHANGES_REQUESTED`) · `d` decision
 approve · `l` relay writer · `m` toggle approval mode · `v` validate · `q`
 quit · `g` accept artifact · `G` reject artifact (prompted summary) · `o` read
-the awaiting draft in a scrollable viewer. The
+the awaiting draft (or the furthest accepted artifact) in a scrollable
+viewer. The
 list and the fetched status row (verdict + pipeline stage chain)
 auto-refresh on a ~1.5s tick — no keypress needed to see state changes
 (spec 2026-09-27-tui-live-status). Non-interactive probe:

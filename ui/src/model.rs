@@ -146,6 +146,17 @@ impl StatusDoc {
             .find(|s| s.status == "awaiting_accept")
             .map(|s| s.name.as_str())
     }
+
+    /// The furthest accepted stage in manifest order (post-gate review
+    /// target). None when nothing has been accepted yet.
+    pub fn latest_accepted_stage(&self) -> Option<&str> {
+        self.stages
+            .as_ref()?
+            .iter()
+            .rev()
+            .find(|s| s.status == "accepted")
+            .map(|s| s.name.as_str())
+    }
 }
 
 /// Parse `list --json` output strictly (unknown keys are a contract drift
@@ -869,6 +880,28 @@ mod tests {
                 "needs risk section".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn latest_accepted_stage_picks_the_furthest_progress() {
+        let doc = parse_status(STATUS_WITH_STAGES).unwrap();
+        // intent accepted, spec awaiting, plan pending -> intent
+        assert_eq!(doc.latest_accepted_stage(), Some("intent"));
+        let doc = parse_status(
+            r#"{"schema":1,"run_id":"r","fields":{},"panes":{},"error":null,"stages":[
+                {"name":"intent","status":"accepted","attempts":1},
+                {"name":"spec","status":"accepted","attempts":2}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(doc.latest_accepted_stage(), Some("spec"));
+        let doc = parse_status(
+            r#"{"schema":1,"run_id":"r","fields":{},"panes":{},"error":null,"stages":[
+                {"name":"intent","status":"awaiting_accept","attempts":1}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(doc.latest_accepted_stage(), None);
     }
 
     #[test]

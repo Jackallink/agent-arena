@@ -5263,4 +5263,79 @@ else
     printf '%s\n' '75 tui part skipped: tmux or cargo unavailable'
 fi
 
-printf '%s\n' 'tests: ok'    
+printf '%s\n' '76. --show covers accepted artifacts (spec 2026-09-27-artifact-show-accepted)'
+state_76="${tmp_root}/state76"
+mkdir -p "$state_76"
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena start s76 --repo "$project" --no-attach --pipeline lean --state-root "$state_76" >"${tmp_root}/s76-start.out" 2>&1; then
+    cat "${tmp_root}/s76-start.out" >&2
+    fail 's76 start failed'
+fi
+s76_dir="$(dirname "$(find "${state_76}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s76/manifest.tsv' | head -1)")"
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent FAKE_ZELL_DRAFT_CONTENT='# s76 accepted body' \
+    ARENA_STATE_ROOT="$state_76" PATH="${fake_bin}:${PATH}" FAKE_ZELL_LOG="$fake_zell_log" \
+    FAKE_TMUX_LOG="$fake_tmux_log" FAKE_TMUXP_LOG="$fake_tmuxp_log" FAKE_AGENT_LOG="$fake_agent_log" \
+    FAKE_PI_LOG="$fake_pi_log" FAKE_CODEX_LOG="$fake_codex_log" FAKE_OPENCODE_LOG="$fake_opencode_log" \
+    FAKE_AGY_LOG="$fake_agy_log" FAKE_GEMINI_EXIT="${FAKE_GEMINI_EXIT:-0}" ARENA_WORKTREE_ROOT="$worktree_base" \
+    "$arena" stage s76 intent --prompt-text 'accepted-viewer draft' >"${tmp_root}/s76-stage.out" 2>&1; then
+    cat "${tmp_root}/s76-stage.out" >&2
+    fail 's76 intent stage failed'
+fi
+# A2: draft wins while present
+run_arena artifact s76 --stage intent --show --state-root "$state_76" >"${tmp_root}/s76-show-draft.out" 2>&1
+require_match '# s76 accepted body' "${tmp_root}/s76-show-draft.out"
+# accept via CLI, then A1: --show prints the accepted artifact despite the
+# phase having moved past the stage
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena artifact s76 --stage intent --accept --state-root "$state_76" >"${tmp_root}/s76-accept.out" 2>&1; then
+    cat "${tmp_root}/s76-accept.out" >&2
+    fail 's76 intent accept failed'
+fi
+[[ -f "${s76_dir}/intent.md" && ! -f "${s76_dir}/intent-draft.md" ]] || fail 's76 accept did not rename the draft'
+run_arena artifact s76 --stage intent --show --state-root "$state_76" >"${tmp_root}/s76-show-accepted.out" 2>&1
+require_match '# s76 accepted body' "${tmp_root}/s76-show-accepted.out"
+
+if command -v tmux >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+    (cd "${source_root}/ui" && cargo build --quiet >/dev/null 2>&1) || fail 'cargo build failed for the accepted-viewer section'
+    ui_bin_76="${source_root}/ui/target/debug/agent-arena-ui"
+    [[ -x "$ui_bin_76" ]] || fail 'ui binary missing for the accepted-viewer section'
+    tui76_session="arena-tui-accepted-$$"
+    tui76_capture() {
+        tmux capture-pane -p -t "$1" 2>/dev/null
+    }
+    tui76_wait() {
+        local w=0
+        until tui76_capture "$1" 2>/dev/null | grep -q "$2"; do
+            sleep 1
+            w=$(( w + 1 ))
+            [[ "$w" -lt 40 ]] || return 1
+        done
+    }
+    # v0.6 run (no pipeline) created BEFORE the launch so both rows exist
+    # and selection order is deterministic (composite: s76 < s76n).
+    if ! run_arena start s76n --repo "$project" --no-attach --pipeline none --state-root "$state_76" >"${tmp_root}/s76n-start.out" 2>&1; then
+        cat "${tmp_root}/s76n-start.out" >&2
+        fail 's76n start failed'
+    fi
+    tmux kill-session -t "$tui76_session" 2>/dev/null || true
+    tmux new-session -d -s "$tui76_session" -x 220 -y 50 \
+        "env PATH='${fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin' ARENA_STATE_ROOT='${state_76}' ARENA_WORKTREE_ROOT='${worktree_base}' ARENA_CONFIG_HOME='${ARENA_CONFIG_HOME}' ARENA_ZELL_BIN='zell' FAKE_ZELL_LOG='${fake_zell_log}' FAKE_TMUXP_LOG='${fake_tmuxp_log}' FAKE_TMUX_LOG='${fake_tmux_log}' FAKE_TMUX_MODE='offline' ARENA_TEST_MODE='1' '${ui_bin_76}' --state-root '${state_76}'; sleep 30"
+    tui76_wait "$tui76_session" 'agent-arena runs' \
+        || { tmux capture-pane -p -t "$tui76_session" > /tmp/dbg-pane-76.log 2>&1; fail 'TUI did not render its first frame (76)'; }
+    # A3: o on a run with no awaiting stage opens the accepted artifact.
+    tmux send-keys -t "$tui76_session" o
+    tui76_wait "$tui76_session" 's76 / intent.md' \
+        || { tmux capture-pane -p -t "$tui76_session" > /tmp/dbg-pane-76.log 2>&1; fail 'o did not open the accepted artifact (76)'; }
+    tmux send-keys -t "$tui76_session" Escape
+    tui76_wait "$tui76_session" 'agent-arena runs' \
+        || { tmux capture-pane -p -t "$tui76_session" > /tmp/dbg-pane-76.log 2>&1; fail 'Escape did not return to the list (76)'; }
+    # v0.6 run (no pipeline): o stays inert with the notice.
+    tmux send-keys -t "$tui76_session" j
+    tmux send-keys -t "$tui76_session" o
+    tui76_wait "$tui76_session" 'no artifact to view' \
+        || { tmux capture-pane -p -t "$tui76_session" > /tmp/dbg-pane-76.log 2>&1; fail 'o on a non-pipeline run did not stay inert (76)'; }
+    tmux send-keys -t "$tui76_session" q
+    tmux kill-session -t "$tui76_session" 2>/dev/null || true
+else
+    printf '%s\n' '76 tui part skipped: tmux or cargo unavailable'
+fi
+
+printf '%s\n' 'tests: ok'     
