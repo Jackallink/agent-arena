@@ -1,5 +1,22 @@
 # Release Notes
 
+## v0.7.5 — canceled+intake read-back fix (2026-09-27)
+
+### Fixed
+
+- **canceled runs in the implementation phase are readable again** (found
+  by real usage seconds after using the feature): the legal-combination
+  invariant covered canceled intent/spec/plan/submitted/validated/decided
+  but not `intake` — the exact shape the v0.7.1 orphan cancel writes.
+  State written by orphan cancel was well-formed but every oracle
+  (status/list/repair) refused it. §72 now re-reads via `status --json`.
+
+### Test robustness
+
+- §61 dashboard dispatch probes hide both source-tree UI binaries
+  (debug + release); a repo-local release build previously hijacked the
+  hint/PATH branches.
+
 ## v0.7.4 — Accepted-artifact viewer (2026-09-27)
 
 ### Added
