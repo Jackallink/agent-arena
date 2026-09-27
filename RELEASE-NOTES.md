@@ -1,5 +1,26 @@
 # Release Notes
 
+## v0.7.3 — Artifact viewer (2026-09-27)
+
+The gate is now fully in-dashboard: read the draft, then gate it.
+
+### Added
+
+- **`artifact RUN --stage S --show`** (spec `2026-09-27-tui-artifact-viewer`):
+  read-only oracle verb printing the awaiting draft verbatim; skips the
+  gate reason_code check, mutually exclusive with accept/reject, refuses
+  with the path when no draft exists.
+- **TUI `o` viewer**: opens the awaiting draft full-screen (title
+  `RUN/stage-draft.md`), j/k line scroll, PgUp/PgDn pages, Escape/q back.
+  Resolves the stage from a fresh status fetch — same rule as the gate
+  keys — and pauses the tick scans while open.
+
+### Test additions
+
+- §75: CLI verbatim output + no-draft refusal + read-only proof; tmux
+  smoke (open, content, Escape back). Suite §0–75 green; cargo test (21) +
+  clippy `-D warnings` clean.
+
 ## v0.7.2 — TUI artifact gate (2026-09-27)
 
 The artifact pipeline is now operable from the dashboard.
