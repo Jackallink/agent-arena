@@ -9,7 +9,7 @@ source "${source_root}/lib/bootstrap.sh"
 
 usage() {
     cat <<'EOF'
-Usage: agent-arena artifact RUN_ID --stage <intent|spec|plan> (--accept | --reject --summary T | --show)
+Usage: agent-arena artifact RUN_ID --stage <intent|spec|plan> (--accept | --reject --summary T | --show | --show-previous)
 
 Human gate over one generated artifact draft. --accept records the on-disk
 sha256 digest, renames <stage>-draft.md to <stage>.md, and advances the
@@ -17,6 +17,9 @@ pipeline (the final accept bootstraps the implementation worktree).
 --reject records the summary and re-arms the stage; the summary re-enters
 the next generation attempt as reviewer feedback. --show prints the draft
 verbatim to stdout (read-only; works whenever the draft file exists).
+--show-previous prints the latest regeneration context (regen-<stage>.md:
+the reject summary plus the rejected draft, written by the next stage
+attempt after a reject; read-only).
 EOF
 }
 
@@ -25,6 +28,7 @@ stage_name=''
 accept=0
 reject=0
 show=0
+show_previous=0
 summary=''
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -47,18 +51,27 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --accept)
-            [[ "$reject" == 0 && "$show" == 0 ]] || arena_die '--accept, --reject, and --show are mutually exclusive'
+            [[ "$reject" == 0 && "$show" == 0 && "$show_previous" == 0 ]] || \
+                arena_die '--accept, --reject, --show, and --show-previous are mutually exclusive'
             accept=1
             shift
             ;;
         --reject)
-            [[ "$accept" == 0 && "$show" == 0 ]] || arena_die '--accept, --reject, and --show are mutually exclusive'
+            [[ "$accept" == 0 && "$show" == 0 && "$show_previous" == 0 ]] || \
+                arena_die '--accept, --reject, --show, and --show-previous are mutually exclusive'
             reject=1
             shift
             ;;
         --show)
-            [[ "$accept" == 0 && "$reject" == 0 ]] || arena_die '--accept, --reject, and --show are mutually exclusive'
+            [[ "$accept" == 0 && "$reject" == 0 && "$show_previous" == 0 ]] || \
+                arena_die '--accept, --reject, --show, and --show-previous are mutually exclusive'
             show=1
+            shift
+            ;;
+        --show-previous)
+            [[ "$accept" == 0 && "$reject" == 0 && "$show" == 0 ]] || \
+                arena_die '--accept, --reject, --show, and --show-previous are mutually exclusive'
+            show_previous=1
             shift
             ;;
         --summary)
@@ -79,7 +92,8 @@ done
 [[ -n "$run_id" ]] || arena_die 'artifact requires RUN_ID'
 arena_validate_run_id "$run_id"
 [[ -n "$stage_name" ]] || arena_die 'artifact requires --stage'
-(( accept + reject + show == 1 )) || arena_die 'artifact requires exactly one of --accept, --reject, --show'
+(( accept + reject + show + show_previous == 1 )) || \
+    arena_die 'artifact requires exactly one of --accept, --reject, --show, --show-previous'
 if [[ "$reject" == 1 ]]; then
     [[ -n "$summary" ]] || arena_die '--reject requires --summary'
     (( ${#summary} <= 256 )) || arena_die 'reject summary exceeds 256 characters'
@@ -100,20 +114,28 @@ arena_state_read "$run_dir"
 # (accepted artifacts outlive their stage phase) and never mutates state.
 # Resolution: the working draft wins while it exists (pre-gate reading,
 # re-armed rejected drafts), else the accepted artifact.
-if [[ "$show" == 1 ]]; then
+if [[ "$show" == 1 || "$show_previous" == 1 ]]; then
     [[ ",$ARENA_MANIFEST_PIPELINE," == *",$stage_name,"* ]] || \
         arena_die "stage '$stage_name' is not part of run '$run_id' pipeline: $ARENA_MANIFEST_PIPELINE"
-    draft_path="${run_dir}/${stage_name}-draft.md"
-    artifact_path="${run_dir}/${stage_name}.md"
-    if [[ -f "$draft_path" ]]; then
-        cat "$draft_path"
+    if [[ "$show" == 1 ]]; then
+        draft_path="${run_dir}/${stage_name}-draft.md"
+        artifact_path="${run_dir}/${stage_name}.md"
+        if [[ -f "$draft_path" ]]; then
+            cat "$draft_path"
+            exit 0
+        fi
+        if [[ -f "$artifact_path" ]]; then
+            cat "$artifact_path"
+            exit 0
+        fi
+        arena_die "no draft to show: $draft_path (stage not generated yet?)"
+    fi
+    regen_path="${run_dir}/regen-${stage_name}.md"
+    if [[ -f "$regen_path" ]]; then
+        cat "$regen_path"
         exit 0
     fi
-    if [[ -f "$artifact_path" ]]; then
-        cat "$artifact_path"
-        exit 0
-    fi
-    arena_die "no draft to show: $draft_path (stage not generated yet?)"
+    arena_die "no previous draft to show: $regen_path (written when the stage regenerates after a reject?)"
 fi
 
 # Phase match first: the operator-facing mismatch message carries the

@@ -167,16 +167,30 @@ impl PromptKind {
 /// content is oracle output (`artifact --show`), never a direct file read.
 struct ArtifactViewer {
     run_id: String,
+    stage: String,
     filename: String,
     content: String,
+    previous: Option<String>,
     lines: usize,
     offset: usize,
+    showing_previous: bool,
+    notice: Option<String>,
 }
 
 impl ArtifactViewer {
-    fn new(run_id: String, filename: String, content: String) -> Self {
+    fn new(run_id: String, stage: String, filename: String, content: String) -> Self {
         let lines = content.lines().count();
-        Self { run_id, filename, content, lines, offset: 0 }
+        Self {
+            run_id,
+            stage,
+            filename,
+            content,
+            previous: None,
+            lines,
+            offset: 0,
+            showing_previous: false,
+            notice: None,
+        }
     }
 
     fn scroll(&mut self, delta: isize, viewport: usize) {
@@ -306,14 +320,28 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
 
         let _ = terminal.draw(|f| {
             if let Some(v) = &viewer {
+                let file_label = if v.showing_previous {
+                    format!("regen-{}.md", v.stage)
+                } else {
+                    v.filename.clone()
+                };
                 let title = format!(
-                    "{} / {}  (j/k line, PgUp/PgDn page, Esc back)",
-                    v.run_id, v.filename
+                    "{} / {}  (j/k line, PgUp/PgDn page, p previous, Esc back)",
+                    v.run_id, file_label
                 );
+                let body = if v.showing_previous {
+                    v.previous.as_deref().unwrap_or("")
+                } else {
+                    v.content.as_str()
+                };
                 let viewport = f.area().height.saturating_sub(2) as usize;
                 let offset = v.offset.min(v.lines.saturating_sub(viewport));
-                let para = Paragraph::new(v.content.as_str())
-                    .block(Block::default().title(title).borders(Borders::ALL))
+                let mut block = Block::default().title(title).borders(Borders::ALL);
+                if let Some(msg) = &v.notice {
+                    block = block.title_bottom(ratatui::text::Line::from(msg.clone()));
+                }
+                let para = Paragraph::new(body)
+                    .block(block)
                     .wrap(Wrap { trim: false })
                     .scroll((offset as u16, 0));
                 f.render_widget(para, f.area());
@@ -387,12 +415,39 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
 
         // Artifact viewer owns the keyboard while open (spec §2).
         if let Some(v) = &mut viewer {
+            v.notice = None;
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => viewer = None,
                 KeyCode::Char('j') | KeyCode::Down => v.scroll(1, 1),
                 KeyCode::Char('k') | KeyCode::Up => v.scroll(-1, 1),
                 KeyCode::PageDown => v.scroll(15, 1),
                 KeyCode::PageUp => v.scroll(-15, 1),
+                KeyCode::Char('p') => {
+                    // Previous-version toggle (spec 2026-09-27-tui-artifact-
+                    // viewer §2): one oracle fetch per toggle-in, cached.
+                    if v.showing_previous {
+                        v.showing_previous = false;
+                        v.lines = v.content.lines().count();
+                        v.offset = 0;
+                    } else {
+                        if v.previous.is_none() {
+                            match arena.oracle_output(
+                                &model::artifact_show_previous_argv(&v.run_id, &v.stage),
+                                state_root,
+                            ) {
+                                Ok(text) => v.previous = Some(text),
+                                Err(e) => v.notice = Some(e),
+                            }
+                        }
+                        if v.previous.is_some() {
+                            v.showing_previous = true;
+                            if let Some(prev) = &v.previous {
+                                v.lines = prev.lines().count();
+                            }
+                            v.offset = 0;
+                        }
+                    }
+                }
                 _ => {}
             }
             continue;
@@ -717,6 +772,7 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
                                 Ok(text) => {
                                     viewer = Some(ArtifactViewer::new(
                                         run.run_id.clone(),
+                                        stage,
                                         filename,
                                         text,
                                     ));

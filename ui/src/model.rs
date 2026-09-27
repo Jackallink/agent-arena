@@ -489,6 +489,18 @@ pub fn artifact_show_argv(run_id: &str, stage: &str) -> Vec<String> {
     ]
 }
 
+/// argv for reading the latest regen context (previous-version toggle;
+/// the TUI never reads run files directly — thin-client rule).
+pub fn artifact_show_previous_argv(run_id: &str, stage: &str) -> Vec<String> {
+    vec![
+        "artifact".to_string(),
+        run_id.to_string(),
+        "--stage".to_string(),
+        stage.to_string(),
+        "--show-previous".to_string(),
+    ]
+}
+
 /// argv for the prompted relay action.
 pub fn relay_writer_argv(run_id: &str, message: &str) -> Vec<String> {
     vec![
@@ -878,6 +890,20 @@ mod tests {
                 "--reject".to_string(),
                 "--summary".to_string(),
                 "needs risk section".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn artifact_show_previous_argv_is_verbatim() {
+        assert_eq!(
+            artifact_show_previous_argv("s77", "intent"),
+            vec![
+                "artifact".to_string(),
+                "s77".to_string(),
+                "--stage".to_string(),
+                "intent".to_string(),
+                "--show-previous".to_string(),
             ]
         );
     }

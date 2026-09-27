@@ -167,7 +167,7 @@ agent-arena doctor
 agent-arena init --repo /path/to/project
 agent-arena start RUN_ID --repo /path/to/project [--pipeline none|lean|full|intent,spec,plan]
 agent-arena stage RUN_ID <intent|spec|plan> [--prompt-text T | --prompt-file F]
-agent-arena artifact RUN_ID --stage S (--accept | --reject --summary "...")
+agent-arena artifact RUN_ID --stage S (--accept | --reject --summary "..." | --show | --show-previous)
 agent-arena submit RUN_ID
 agent-arena validate RUN_ID
 agent-arena decision RUN_ID --verdict APPROVE --summary "..." --next "..."

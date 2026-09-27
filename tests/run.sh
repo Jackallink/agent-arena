@@ -5341,4 +5341,133 @@ else
     printf '%s\n' '76 tui part skipped: tmux or cargo unavailable'
 fi
 
-printf '%s\n' 'tests: ok'     
+printf '%s\n' '77. --show-previous + viewer p toggle (spec 2026-09-27-tui-artifact-viewer AC-V5/V6)'
+state_77="${tmp_root}/state77"
+mkdir -p "$state_77"
+if ! run_arena start s77a --repo "$project" --no-attach --pipeline lean --state-root "$state_77" >"${tmp_root}/s77a-start.out" 2>&1; then
+    cat "${tmp_root}/s77a-start.out" >&2
+    fail 's77a start failed'
+fi
+s77a_dir="$(dirname "$(find "${state_77}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s77a/manifest.tsv' | head -1)")"
+# AC-V5 guard: nothing rejected yet, no regen context on disk
+set +e
+run_arena artifact s77a --stage intent --show-previous --state-root "$state_77" >"${tmp_root}/s77a-prev-guard.out" 2>&1
+s77a_prev_guard=$?
+set -e
+[[ "$s77a_prev_guard" != 0 ]] || fail 'artifact --show-previous succeeded without a regen context'
+require_match 'no previous draft to show' "${tmp_root}/s77a-prev-guard.out"
+# generate draft #1, reject it, then regenerate: the stage attempt writes
+# regen-intent.md embedding the reject summary and the previous draft
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent FAKE_ZELL_DRAFT_CONTENT='# s77 previous draft body' \
+    ARENA_STATE_ROOT="$state_77" PATH="${fake_bin}:${PATH}" FAKE_ZELL_LOG="$fake_zell_log" \
+    FAKE_TMUX_LOG="$fake_tmux_log" FAKE_TMUXP_LOG="$fake_tmuxp_log" FAKE_AGENT_LOG="$fake_agent_log" \
+    FAKE_PI_LOG="$fake_pi_log" FAKE_CODEX_LOG="$fake_codex_log" FAKE_OPENCODE_LOG="$fake_opencode_log" \
+    FAKE_AGY_LOG="$fake_agy_log" FAKE_GEMINI_EXIT="${FAKE_GEMINI_EXIT:-0}" ARENA_WORKTREE_ROOT="$worktree_base" \
+    "$arena" stage s77a intent --prompt-text 'previous version draft' >"${tmp_root}/s77a-stage1.out" 2>&1; then
+    cat "${tmp_root}/s77a-stage1.out" >&2
+    fail 's77a intent stage #1 failed'
+fi
+if ! run_arena artifact s77a --stage intent --reject --summary 's77 needs a farewell section' --state-root "$state_77" >"${tmp_root}/s77a-reject.out" 2>&1; then
+    cat "${tmp_root}/s77a-reject.out" >&2
+    fail 's77a intent reject failed'
+fi
+# the regen context is written by the NEXT stage attempt, not by the reject
+[[ -f "${s77a_dir}/regen-intent.md" ]] && fail 'reject itself must not write the regen context'
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent FAKE_ZELL_DRAFT_CONTENT='# s77 regenerated body' \
+    ARENA_STATE_ROOT="$state_77" PATH="${fake_bin}:${PATH}" FAKE_ZELL_LOG="$fake_zell_log" \
+    FAKE_TMUX_LOG="$fake_tmux_log" FAKE_TMUXP_LOG="$fake_tmuxp_log" FAKE_AGENT_LOG="$fake_agent_log" \
+    FAKE_PI_LOG="$fake_pi_log" FAKE_CODEX_LOG="$fake_codex_log" FAKE_OPENCODE_LOG="$fake_opencode_log" \
+    FAKE_AGY_LOG="$fake_agy_log" FAKE_GEMINI_EXIT="${FAKE_GEMINI_EXIT:-0}" ARENA_WORKTREE_ROOT="$worktree_base" \
+    "$arena" stage s77a intent --prompt-text 'regenerated draft' >"${tmp_root}/s77a-stage2.out" 2>&1; then
+    cat "${tmp_root}/s77a-stage2.out" >&2
+    fail 's77a intent stage #2 failed'
+fi
+run_arena artifact s77a --stage intent --show-previous --state-root "$state_77" >"${tmp_root}/s77a-prev.out" 2>&1
+require_match 's77 needs a farewell section' "${tmp_root}/s77a-prev.out"
+require_match '# s77 previous draft body' "${tmp_root}/s77a-prev.out"
+# read-only: the stage is still awaiting the gate
+[[ "$(manifest_value "${s77a_dir}/manifest.tsv" stage_intent_status)" == 'awaiting_accept' ]] || fail '--show-previous mutated the stage status'
+# exclusivity: four actions, exactly one at a time
+set +e
+run_arena artifact s77a --stage intent --show-previous --accept --state-root "$state_77" >"${tmp_root}/s77a-excl.out" 2>&1
+s77a_excl=$?
+set -e
+[[ "$s77a_excl" != 0 ]] || fail '--show-previous combined with --accept succeeded'
+require_match 'mutually exclusive' "${tmp_root}/s77a-excl.out"
+
+if command -v tmux >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+    (cd "${source_root}/ui" && cargo build --quiet >/dev/null 2>&1) || fail 'cargo build failed for the previous-version section'
+    ui_bin_77="${source_root}/ui/target/debug/agent-arena-ui"
+    [[ -x "$ui_bin_77" ]] || fail 'ui binary missing for the previous-version section'
+    # second run (plain draft, never rejected) created BEFORE the launch so
+    # the row order is deterministic (composite: s77a < s77z)
+    if ! run_arena start s77z --repo "$project" --no-attach --pipeline lean --state-root "$state_77" >"${tmp_root}/s77z-start.out" 2>&1; then
+        cat "${tmp_root}/s77z-start.out" >&2
+        fail 's77z start failed'
+    fi
+    if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent FAKE_ZELL_DRAFT_CONTENT='# s77z plain body' \
+        ARENA_STATE_ROOT="$state_77" PATH="${fake_bin}:${PATH}" FAKE_ZELL_LOG="$fake_zell_log" \
+        FAKE_TMUX_LOG="$fake_tmux_log" FAKE_TMUXP_LOG="$fake_tmuxp_log" FAKE_AGENT_LOG="$fake_agent_log" \
+        FAKE_PI_LOG="$fake_pi_log" FAKE_CODEX_LOG="$fake_codex_log" FAKE_OPENCODE_LOG="$fake_opencode_log" \
+        FAKE_AGY_LOG="$fake_agy_log" FAKE_GEMINI_EXIT="${FAKE_GEMINI_EXIT:-0}" ARENA_WORKTREE_ROOT="$worktree_base" \
+        "$arena" stage s77z intent --prompt-text 'plain draft' >"${tmp_root}/s77z-stage.out" 2>&1; then
+        cat "${tmp_root}/s77z-stage.out" >&2
+        fail 's77z intent stage failed'
+    fi
+    tui77_session="arena-tui-prev-$$"
+    tui77_capture() {
+        tmux capture-pane -p -t "$1" 2>/dev/null
+    }
+    tui77_wait() {
+        local w=0
+        until tui77_capture "$1" 2>/dev/null | grep -q "$2"; do
+            sleep 1
+            w=$(( w + 1 ))
+            [[ "$w" -lt 40 ]] || return 1
+        done
+    }
+    tmux kill-session -t "$tui77_session" 2>/dev/null || true
+    tmux new-session -d -s "$tui77_session" -x 220 -y 50 \
+        "env PATH='${fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin' ARENA_STATE_ROOT='${state_77}' ARENA_WORKTREE_ROOT='${worktree_base}' ARENA_CONFIG_HOME='${ARENA_CONFIG_HOME}' ARENA_ZELL_BIN='zell' FAKE_ZELL_LOG='${fake_zell_log}' FAKE_TMUXP_LOG='${fake_tmuxp_log}' FAKE_TMUX_LOG='${fake_tmux_log}' FAKE_TMUX_MODE='offline' ARENA_TEST_MODE='1' '${ui_bin_77}' --state-root '${state_77}'; sleep 30"
+    tui77_wait "$tui77_session" 'agent-arena runs' \
+        || { tmux capture-pane -p -t "$tui77_session" > /tmp/dbg-pane-77.log 2>&1; fail 'TUI did not render its first frame (77)'; }
+    # AC-V6: p toggles current <-> previous inside the viewer
+    tmux send-keys -t "$tui77_session" o
+    tui77_wait "$tui77_session" 's77a / intent-draft.md' \
+        || { tmux capture-pane -p -t "$tui77_session" > /tmp/dbg-pane-77.log 2>&1; fail 'o did not open the s77a viewer (77)'; }
+    tmux send-keys -t "$tui77_session" p
+    tui77_wait "$tui77_session" 's77a / regen-intent.md' \
+        || { tmux capture-pane -p -t "$tui77_session" > /tmp/dbg-pane-77.log 2>&1; fail 'p did not switch to the regen context (77)'; }
+    tui77_capture "$tui77_session" | grep -q '# s77 previous draft body' \
+        || { tmux capture-pane -p -t "$tui77_session" > /tmp/dbg-pane-77.log 2>&1; fail 'regen content not rendered (77)'; }
+    tmux send-keys -t "$tui77_session" p
+    tui77_wait "$tui77_session" 's77a / intent-draft.md' \
+        || { tmux capture-pane -p -t "$tui77_session" > /tmp/dbg-pane-77.log 2>&1; fail 'p did not switch back to the draft (77)'; }
+    tui77_capture "$tui77_session" | grep -q '# s77 regenerated body' \
+        || { tmux capture-pane -p -t "$tui77_session" > /tmp/dbg-pane-77.log 2>&1; fail 'draft content not restored (77)'; }
+    tmux send-keys -t "$tui77_session" Escape
+    tui77_wait "$tui77_session" 'agent-arena runs' \
+        || { tmux capture-pane -p -t "$tui77_session" > /tmp/dbg-pane-77.log 2>&1; fail 'Escape did not return to the list (77)'; }
+    # refusal path: a run without regen context keeps the viewer open and
+    # surfaces the refusal as the viewer bottom border
+    tmux send-keys -t "$tui77_session" j
+    tmux send-keys -t "$tui77_session" o
+    tui77_wait "$tui77_session" 's77z / intent-draft.md' \
+        || { tmux capture-pane -p -t "$tui77_session" > /tmp/dbg-pane-77.log 2>&1; fail 'o did not open the s77z viewer (77)'; }
+    tmux send-keys -t "$tui77_session" p
+    tui77_wait "$tui77_session" 'no previous draft to show' \
+        || { tmux capture-pane -p -t "$tui77_session" > /tmp/dbg-pane-77.log 2>&1; fail 'p refusal not surfaced (77)'; }
+    tui77_capture "$tui77_session" | grep -q 's77z / intent-draft.md' \
+        || { tmux capture-pane -p -t "$tui77_session" > /tmp/dbg-pane-77.log 2>&1; fail 'refusal killed the viewer (77)'; }
+    tui77_capture "$tui77_session" | grep -q '# s77 previous draft body' \
+        && fail 'refused toggle leaked the s77a regen content into s77z view (77)'
+    tmux send-keys -t "$tui77_session" Escape
+    tui77_wait "$tui77_session" 'agent-arena runs' \
+        || { tmux capture-pane -p -t "$tui77_session" > /tmp/dbg-pane-77.log 2>&1; fail 'Escape did not return to the list after refusal (77)'; }
+    tmux send-keys -t "$tui77_session" q
+    tmux kill-session -t "$tui77_session" 2>/dev/null || true
+else
+    printf '%s\n' '77 tui part skipped: tmux or cargo unavailable'
+fi
+
+printf '%s\n' 'tests: ok'      
