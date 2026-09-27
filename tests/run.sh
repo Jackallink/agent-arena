@@ -5573,4 +5573,102 @@ else
     printf '%s\n' '78 tui part skipped: tmux or cargo unavailable'
 fi
 
-printf '%s\n' 'tests: ok'       
+printf '%s\n' '79. viewer search + g/G (spec 2026-09-27-tui-artifact-viewer AC-V7/V8)'
+state_79="${tmp_root}/state79"
+mkdir -p "$state_79"
+if ! run_arena start s79 --repo "$project" --no-attach --pipeline lean --state-root "$state_79" >"${tmp_root}/s79-start.out" 2>&1; then
+    cat "${tmp_root}/s79-start.out" >&2
+    fail 's79 start failed'
+fi
+# A draft taller than the viewport so jump keys are observable: 60 filler
+# lines, two PAPAYA markers deep in the body, a sentinel last line.
+s79_content='# s79 long draft'
+i=1
+while (( i <= 60 )); do
+    s79_content+=$'\n'"filler line $i"
+    i=$(( i + 1 ))
+done
+s79_content+=$'\nPAPAYA-MARK line one'
+s79_content+=$'\nfiller after first marker'
+s79_content+=$'\nPAPAYA-SECOND line'
+s79_content+=$'\nlast line of the draft'
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent FAKE_ZELL_DRAFT_CONTENT="$s79_content" \
+    ARENA_STATE_ROOT="$state_79" PATH="${fake_bin}:${PATH}" FAKE_ZELL_LOG="$fake_zell_log" \
+    FAKE_TMUX_LOG="$fake_tmux_log" FAKE_TMUXP_LOG="$fake_tmuxp_log" FAKE_AGENT_LOG="$fake_agent_log" \
+    FAKE_PI_LOG="$fake_pi_log" FAKE_CODEX_LOG="$fake_codex_log" FAKE_OPENCODE_LOG="$fake_opencode_log" \
+    FAKE_AGY_LOG="$fake_agy_log" FAKE_GEMINI_EXIT="${FAKE_GEMINI_EXIT:-0}" ARENA_WORKTREE_ROOT="$worktree_base" \
+    "$arena" stage s79 intent --prompt-text 'search smoke draft' >"${tmp_root}/s79-stage.out" 2>&1; then
+    cat "${tmp_root}/s79-stage.out" >&2
+    fail 's79 intent stage failed'
+fi
+if command -v tmux >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+    (cd "${source_root}/ui" && cargo build --quiet >/dev/null 2>&1) || fail 'cargo build failed for the search section'
+    ui_bin_79="${source_root}/ui/target/debug/agent-arena-ui"
+    [[ -x "$ui_bin_79" ]] || fail 'ui binary missing for the search section'
+    tui79_session="arena-tui-search-$$"
+    tui79_capture() {
+        tmux capture-pane -p -t "$1" 2>/dev/null
+    }
+    tui79_wait() {
+        local w=0
+        until tui79_capture "$1" 2>/dev/null | grep -q "$2"; do
+            sleep 1
+            w=$(( w + 1 ))
+            [[ "$w" -lt 40 ]] || return 1
+        done
+    }
+    tmux kill-session -t "$tui79_session" 2>/dev/null || true
+    tmux new-session -d -s "$tui79_session" -x 220 -y 50 \
+        "env PATH='${fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin' ARENA_STATE_ROOT='${state_79}' ARENA_WORKTREE_ROOT='${worktree_base}' ARENA_CONFIG_HOME='${ARENA_CONFIG_HOME}' ARENA_ZELL_BIN='zell' FAKE_ZELL_LOG='${fake_zell_log}' FAKE_TMUXP_LOG='${fake_tmuxp_log}' FAKE_TMUX_LOG='${fake_tmux_log}' FAKE_TMUX_MODE='offline' ARENA_TEST_MODE='1' '${ui_bin_79}' --state-root '${state_79}'; sleep 30"
+    tui79_wait "$tui79_session" 'agent-arena runs' \
+        || { tmux capture-pane -p -t "$tui79_session" > /tmp/dbg-pane-79.log 2>&1; fail 'TUI did not render its first frame (79)'; }
+    tmux send-keys -t "$tui79_session" o
+    tui79_wait "$tui79_session" 's79 / intent-draft.md' \
+        || { tmux capture-pane -p -t "$tui79_session" > /tmp/dbg-pane-79.log 2>&1; fail 'o did not open the s79 viewer (79)'; }
+    tui79_capture "$tui79_session" | grep -q '# s79 long draft' \
+        || { tmux capture-pane -p -t "$tui79_session" > /tmp/dbg-pane-79.log 2>&1; fail 'viewer does not start at the top (79)'; }
+    tui79_capture "$tui79_session" | grep -q 'PAPAYA-MARK' \
+        && fail 'marker visible before any jump (79)'
+    # AC-V8: / opens the modal input in the bottom border
+    tmux send-keys -t "$tui79_session" /
+    tmux send-keys -t "$tui79_session" PAPAYA
+    tui79_wait "$tui79_session" 'search: PAPAYA' \
+        || { tmux capture-pane -p -t "$tui79_session" > /tmp/dbg-pane-79.log 2>&1; fail 'search input not rendered (79)'; }
+    tmux send-keys -t "$tui79_session" Enter
+    tui79_wait "$tui79_session" 'PAPAYA-MARK line one' \
+        || { tmux capture-pane -p -t "$tui79_session" > /tmp/dbg-pane-79.log 2>&1; fail 'commit did not jump to the first match (79)'; }
+    tui79_wait "$tui79_session" 'match 1/2' \
+        || { tmux capture-pane -p -t "$tui79_session" > /tmp/dbg-pane-79.log 2>&1; fail 'match counter not rendered (79)'; }
+    tmux send-keys -t "$tui79_session" n
+    tui79_wait "$tui79_session" 'PAPAYA-SECOND line' \
+        || { tmux capture-pane -p -t "$tui79_session" > /tmp/dbg-pane-79.log 2>&1; fail 'n did not advance to the second match (79)'; }
+    tui79_wait "$tui79_session" 'match 2/2' \
+        || { tmux capture-pane -p -t "$tui79_session" > /tmp/dbg-pane-79.log 2>&1; fail 'counter did not advance (79)'; }
+    tmux send-keys -t "$tui79_session" N
+    tui79_wait "$tui79_session" 'PAPAYA-MARK line one' \
+        || { tmux capture-pane -p -t "$tui79_session" > /tmp/dbg-pane-79.log 2>&1; fail 'N did not wrap back (79)'; }
+    # g/G: top/bottom jumps
+    tmux send-keys -t "$tui79_session" G
+    tui79_wait "$tui79_session" 'last line of the draft' \
+        || { tmux capture-pane -p -t "$tui79_session" > /tmp/dbg-pane-79.log 2>&1; fail 'G did not jump to the bottom (79)'; }
+    tmux send-keys -t "$tui79_session" g
+    tui79_wait "$tui79_session" '# s79 long draft' \
+        || { tmux capture-pane -p -t "$tui79_session" > /tmp/dbg-pane-79.log 2>&1; fail 'g did not jump to the top (79)'; }
+    # no-match refusal: bottom-border notice, viewer stays open
+    tmux send-keys -t "$tui79_session" /
+    tmux send-keys -t "$tui79_session" zzz
+    tmux send-keys -t "$tui79_session" Enter
+    tui79_wait "$tui79_session" 'no match: zzz' \
+        || { tmux capture-pane -p -t "$tui79_session" > /tmp/dbg-pane-79.log 2>&1; fail 'no-match refusal not surfaced (79)'; }
+    tui79_capture "$tui79_session" | grep -q 's79 / intent-draft.md' \
+        || { tmux capture-pane -p -t "$tui79_session" > /tmp/dbg-pane-79.log 2>&1; fail 'no-match search closed the viewer (79)'; }
+    tmux send-keys -t "$tui79_session" Escape
+    tui79_wait "$tui79_session" 'agent-arena runs' \
+        || { tmux capture-pane -p -t "$tui79_session" > /tmp/dbg-pane-79.log 2>&1; fail 'Escape did not return to the list (79)'; }
+    tmux send-keys -t "$tui79_session" q
+    tmux kill-session -t "$tui79_session" 2>/dev/null || true
+else
+    printf '%s\n' '79 tui part skipped: tmux or cargo unavailable'
+fi
+
+printf '%s\n' 'tests: ok'        

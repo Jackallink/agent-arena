@@ -489,6 +489,20 @@ pub fn artifact_show_argv(run_id: &str, stage: &str) -> Vec<String> {
     ]
 }
 
+/// Line indices (0-based) of case-insensitive substring matches, one
+/// hit per line, in order. Empty queries yield no matches.
+pub fn find_matches(body: &str, query: &str) -> Vec<usize> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let needle = query.to_lowercase();
+    body.lines()
+        .enumerate()
+        .filter(|(_, line)| line.to_lowercase().contains(&needle))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
 /// Deterministic full-screen render of a status document for the TUI
 /// run-detail screen: every field as `key  value` (sorted, empties
 /// skipped), the pane liveness line, and the pipeline stage chain when
@@ -957,6 +971,16 @@ mod tests {
             render_detail(&doc),
             "panes              reviewer=false writer=false"
         );
+    }
+
+    #[test]
+    fn find_matches_is_case_insensitive_one_hit_per_line() {
+        let body = "alpha Beta\nnothing here\nGAMMA beta\nbeta";
+        assert_eq!(find_matches(body, "beta"), vec![0, 2, 3]);
+        assert_eq!(find_matches(body, "BETA"), vec![0, 2, 3]);
+        assert_eq!(find_matches(body, "zzz"), Vec::<usize>::new());
+        assert_eq!(find_matches(body, ""), Vec::<usize>::new());
+        assert_eq!(find_matches("", "x"), Vec::<usize>::new());
     }
 
     #[test]

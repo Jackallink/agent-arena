@@ -175,6 +175,11 @@ struct ArtifactViewer {
     offset: usize,
     showing_previous: bool,
     notice: Option<String>,
+    // search state (spec 2026-09-27-tui-artifact-viewer AC-V7/V8)
+    search_input: Option<String>,
+    query: Option<String>,
+    matches: Vec<usize>,
+    match_idx: usize,
 }
 
 impl ArtifactViewer {
@@ -190,6 +195,38 @@ impl ArtifactViewer {
             offset: 0,
             showing_previous: false,
             notice: None,
+            search_input: None,
+            query: None,
+            matches: Vec::new(),
+            match_idx: 0,
+        }
+    }
+
+    /// The body currently rendered (current file or the regen context).
+    fn body(&self) -> &str {
+        if self.showing_previous {
+            self.previous.as_deref().unwrap_or("")
+        } else {
+            self.content.as_str()
+        }
+    }
+
+    /// Recompute matches for the current body and snap to the first
+    /// match at or after the offset (wrap to the first).
+    fn recompute_matches(&mut self) {
+        self.matches = match &self.query {
+            Some(q) => model::find_matches(self.body(), q),
+            None => Vec::new(),
+        };
+        if self.matches.is_empty() {
+            self.match_idx = 0;
+        } else {
+            self.match_idx = self
+                .matches
+                .iter()
+                .position(|&line| line >= self.offset)
+                .unwrap_or(0);
+            self.offset = self.matches[self.match_idx];
         }
     }
 
@@ -378,19 +415,32 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
                     v.filename.clone()
                 };
                 let title = format!(
-                    "{} / {}  (j/k line, PgUp/PgDn page, p previous, Esc back)",
+                    "{} / {}  (j/k line, PgUp/PgDn page, / search, g/G ends, p previous, Esc back)",
                     v.run_id, file_label
                 );
-                let body = if v.showing_previous {
-                    v.previous.as_deref().unwrap_or("")
-                } else {
-                    v.content.as_str()
-                };
+                let body = v.body();
                 let viewport = f.area().height.saturating_sub(2) as usize;
                 let offset = v.offset.min(v.lines.saturating_sub(viewport));
                 let mut block = Block::default().title(title).borders(Borders::ALL);
-                if let Some(msg) = &v.notice {
-                    block = block.title_bottom(ratatui::text::Line::from(msg.clone()));
+                let bottom = if let Some(input) = &v.search_input {
+                    Some(format!("search: {input}▌  (Enter jump, Esc cancel)"))
+                } else if let Some(msg) = &v.notice {
+                    Some(msg.clone())
+                } else if let Some(q) = &v.query {
+                    if v.matches.is_empty() {
+                        Some(format!("/{q} · no match"))
+                    } else {
+                        Some(format!(
+                            "/{q} · match {}/{}",
+                            v.match_idx + 1,
+                            v.matches.len()
+                        ))
+                    }
+                } else {
+                    None
+                };
+                if let Some(line) = bottom {
+                    block = block.title_bottom(ratatui::text::Line::from(line));
                 }
                 let para = Paragraph::new(body)
                     .block(block)
@@ -467,6 +517,37 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
 
         // Artifact viewer owns the keyboard while open (spec §2).
         if let Some(v) = &mut viewer {
+            if v.search_input.is_some() {
+                // Modal search input owns the keyboard (AC-V8).
+                match key.code {
+                    KeyCode::Esc => v.search_input = None,
+                    KeyCode::Enter => {
+                        let query = v.search_input.take().unwrap_or_default();
+                        if query.is_empty() {
+                            // Empty commit = cancel, no state change.
+                        } else {
+                            v.query = Some(query);
+                            v.recompute_matches();
+                            if v.matches.is_empty() {
+                                let q = v.query.as_deref().unwrap_or("");
+                                v.notice = Some(format!("no match: {q}"));
+                            }
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(input) = v.search_input.as_mut() {
+                            input.pop();
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        if let Some(input) = v.search_input.as_mut() {
+                            input.push(c);
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             v.notice = None;
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => viewer = None,
@@ -474,6 +555,22 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
                 KeyCode::Char('k') | KeyCode::Up => v.scroll(-1, 1),
                 KeyCode::PageDown => v.scroll(15, 1),
                 KeyCode::PageUp => v.scroll(-15, 1),
+                KeyCode::Char('g') => v.offset = 0,
+                KeyCode::Char('G') => v.offset = usize::MAX,
+                KeyCode::Char('/') => v.search_input = Some(String::new()),
+                KeyCode::Char('n') | KeyCode::Char('N') => {
+                    if v.matches.is_empty() {
+                        v.notice = Some("no search query".to_string());
+                    } else {
+                        let len = v.matches.len();
+                        if key.code == KeyCode::Char('n') {
+                            v.match_idx = (v.match_idx + 1) % len;
+                        } else {
+                            v.match_idx = (v.match_idx + len - 1) % len;
+                        }
+                        v.offset = v.matches[v.match_idx];
+                    }
+                }
                 KeyCode::Char('p') => {
                     // Previous-version toggle (spec 2026-09-27-tui-artifact-
                     // viewer §2): one oracle fetch per toggle-in, cached.
@@ -481,6 +578,7 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
                         v.showing_previous = false;
                         v.lines = v.content.lines().count();
                         v.offset = 0;
+                        v.recompute_matches();
                     } else {
                         if v.previous.is_none() {
                             match arena.oracle_output(
@@ -497,6 +595,7 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
                                 v.lines = prev.lines().count();
                             }
                             v.offset = 0;
+                            v.recompute_matches();
                         }
                     }
                 }

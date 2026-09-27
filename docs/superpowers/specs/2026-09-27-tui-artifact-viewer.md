@@ -31,10 +31,26 @@
   keys; never the auto-refresh cache) → capture `artifact RUN --stage S
   --show` → full-screen bordered viewer titled `RUN/stage-draft.md`.
 - Keys inside the viewer: `j`/`Down` line down, `k`/`Up` line up,
-  `PageDown`/`PageUp` page, `p` toggle to the previous version and back,
+  `PageDown`/`PageUp` page, `g` top, `G` bottom, `p` toggle to the
+  previous version and back, `/` search, `n`/`N` next/previous match,
   `Esc`/`q` back to the list. The list scan and
   status refresh pause while the viewer is open (static content, no
   subprocess churn).
+- Search (`/`, AC-V7/V8 below):
+  - `/` opens a modal input rendered in the viewer's bottom border
+    (`search: <typed>▌`); while it is open every `Char` key appends,
+    `Backspace` pops, `Enter` commits, `Esc` cancels (the viewer stays
+    open; the input closes).
+  - Commit: case-insensitive substring matches over the currently
+    rendered body, one hit per line. An empty input commits as a
+    cancel (no state change). No match → bottom-border notice
+    `no match: <query>`, no jump. Otherwise jump to the first match at
+    or after the current offset (wrap to the first), and the bottom
+    border carries `/<query> · match i/n` until replaced.
+  - `n`/`N` cycle matches with wrap; without a query they are a
+    bottom-border notice. A `p` toggle recomputes the matches against
+    the newly rendered body (same query) and snaps to the first match
+    at or after the offset.
 - `p` (previous-version toggle): first press captures `artifact RUN
   --stage S --show-previous` and renders it under the title
   `RUN/regen-<stage>.md`; the next press returns to the current file.
@@ -58,10 +74,16 @@
 | AC-V4 | gate keys unchanged; wizard intact | existing cargo tests + §69/§74 |
 | AC-V5 | `--show-previous` prints the latest regen context; missing file refuses with the regen-specific hint | §77 (CLI part) |
 | AC-V6 | viewer `p` toggles current ↔ previous (title + content swap, offset reset); refusal keeps the viewer open on the current file | §77 (tmux smoke) |
+| AC-V7 | `find_matches` is case-insensitive, one hit per line, order-stable | cargo unit tests |
+| AC-V8 | `/` input modal renders and commits; match jump + `n`/`N` wrap; no-match and empty-query refusals render on the bottom border; `g`/`G` jump top/bottom | §79 (tmux smoke) |
 
 ## 4. Non-goals
 
 - A rejected-drafts *history browser*: only the latest regen context is
   reachable (`regen-<stage>.md` is overwritten by every regeneration —
   older drafts are not on disk to show).
+- Line numbers: the paragraph wraps, so a logical line spans multiple
+  visual rows and a gutter would misnumber; search jumps make absolute
+  positions less relevant.
+- Search inside the run-detail screen (short content, fits one screen).
 - Syntax highlighting / wrapping toggles.
