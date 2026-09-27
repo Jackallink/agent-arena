@@ -1,5 +1,23 @@
 # Release Notes
 
+## v0.7.4 — Accepted-artifact viewer (2026-09-27)
+
+### Added
+
+- **`artifact --show` covers accepted artifacts** (spec
+  `2026-09-27-artifact-show-accepted`): the working draft wins while it
+  exists; otherwise the accepted `<stage>.md` prints. The phase/gate
+  checks now gate accept/reject only — accepted artifacts outlive their
+  stage phase.
+- **TUI `o` falls back to the furthest accepted stage** when no stage is
+  awaiting; the viewer title carries the real filename.
+
+### Test additions
+
+- §76: CLI draft-preferred + post-accept view; tmux smoke for the
+  accepted title and the inert non-pipeline path. Suite §0–76 green;
+  cargo test (22) + clippy `-D warnings` clean.
+
 ## v0.7.3 — Artifact viewer (2026-09-27)
 
 The gate is now fully in-dashboard: read the draft, then gate it.
