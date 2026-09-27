@@ -1,5 +1,39 @@
 # Release Notes
 
+## v0.7.1 — Live status & orphan-run recovery (2026-09-27)
+
+Patch release born from real dogfooding (run `s2ui` drove both changes).
+
+### Fixed
+
+- **Orphan-run cancel** (spec `2026-09-27-orphan-run-cancel`): a writer-owned
+  implementation run whose writer tmux session died (never submitted) had no
+  sanctioned human exit — `resolve --action cancel` now admits that shape
+  (party=writer, phase=intake, reason=none, session gone) with the ordinary
+  cancel delta. Live session still refuses with an actionable message.
+  live8 was the stuck run that motivated this; closed with the feature.
+- **TUI error-document adoption** (found by the §73 smoke): a tick refetch
+  that returned an oracle error document (empty `fields`) used to be
+  adopted into the status cache; the last good status is now kept.
+
+### Added
+
+- **TUI live status** (spec `2026-09-27-tui-live-status`): the dashboard
+  polls with a 1.5s tick — the run list and the fetched status row
+  (verdict + pipeline stage chain) refresh without keypresses, making the
+  v0.7.0 stages chain actually watchable. Keymap unchanged; Input/Confirm
+  modes still never spawn on tick.
+- **`status --json` stage chain** (from run s2ui, merged from the writer
+  branch): pipeline runs expose `stages: [{name,status,attempts}]` in
+  manifest order; the TUI renders the chain; non-pipeline and error-path
+  documents omit the key; `list --json` unchanged.
+
+### Test additions
+
+- §72 (orphan cancel: success + live-session refusal), §73 (tmux smoke:
+  no-keypress refresh, field preservation, vanished-run cache drop);
+  suite §0–73 green; cargo test + clippy `-D warnings` clean.
+
 ## v0.7.0 — Multi-stage artifact pipeline (2026-09-26)
 
 Feature release: pre-implementation runs gain a human-gated artifact
