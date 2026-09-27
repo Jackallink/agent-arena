@@ -135,6 +135,17 @@ impl StatusDoc {
                 .join(" -> "),
         )
     }
+
+    /// The artifact gate target: the first stage in manifest order whose
+    /// status is `awaiting_accept`. None when the document carries no
+    /// stages array, or no stage is awaiting the human gate.
+    pub fn awaiting_stage(&self) -> Option<&str> {
+        self.stages
+            .as_ref()?
+            .iter()
+            .find(|s| s.status == "awaiting_accept")
+            .map(|s| s.name.as_str())
+    }
 }
 
 /// Parse `list --json` output strictly (unknown keys are a contract drift
@@ -180,6 +191,8 @@ pub enum Action {
     ToggleMode,
     Validate,
     NewRun,
+    ArtifactAccept,
+    ArtifactReject,
     JumpWriterPane,
     Quit,
 }
@@ -194,6 +207,8 @@ pub fn keymap_action(key: char) -> Option<Action> {
         'm' => Some(Action::ToggleMode),
         'v' => Some(Action::Validate),
         'n' => Some(Action::NewRun),
+        'g' => Some(Action::ArtifactAccept),
+        'G' => Some(Action::ArtifactReject),
         'q' => Some(Action::Quit),
         _ => None,
     }
@@ -421,6 +436,31 @@ pub fn decision_approve_argv(run_id: &str, input: &str) -> Vec<String> {
         summary.to_string(),
         "--next".to_string(),
         next.to_string(),
+    ]
+}
+
+/// argv for the artifact accept gate: no prompt needed, the confirm line
+/// shows this verbatim and `y` spawns exactly it.
+pub fn artifact_accept_argv(run_id: &str, stage: &str) -> Vec<String> {
+    vec![
+        "artifact".to_string(),
+        run_id.to_string(),
+        "--stage".to_string(),
+        stage.to_string(),
+        "--accept".to_string(),
+    ]
+}
+
+/// argv for the artifact reject gate: the summary is required by the CLI.
+pub fn artifact_reject_argv(run_id: &str, stage: &str, summary: &str) -> Vec<String> {
+    vec![
+        "artifact".to_string(),
+        run_id.to_string(),
+        "--stage".to_string(),
+        stage.to_string(),
+        "--reject".to_string(),
+        "--summary".to_string(),
+        summary.to_string(),
     ]
 }
 
@@ -769,4 +809,61 @@ mod tests {
         assert!(w.argv().is_none());
         assert!(!w.finished());
     }
+    #[test]
+    fn awaiting_stage_picks_the_first_gate_target_in_manifest_order() {
+        let doc = parse_status(STATUS_WITH_STAGES).unwrap();
+        assert_eq!(doc.awaiting_stage(), Some("spec"));
+    }
+
+    #[test]
+    fn awaiting_stage_is_none_without_a_gate_target() {
+        let doc = parse_status(
+            r#"{"schema":1,"run_id":"r","fields":{},"panes":{},"error":null,"stages":[
+                {"name":"intent","status":"accepted","attempts":1}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(doc.awaiting_stage(), None);
+        let doc = parse_status(
+            r#"{"schema":1,"run_id":"r","fields":{},"panes":{},"error":null}"#,
+        )
+        .unwrap();
+        assert_eq!(doc.awaiting_stage(), None);
+    }
+
+    #[test]
+    fn artifact_gate_argvs_are_verbatim() {
+        assert_eq!(
+            artifact_accept_argv("s74", "intent"),
+            vec![
+                "artifact".to_string(),
+                "s74".to_string(),
+                "--stage".to_string(),
+                "intent".to_string(),
+                "--accept".to_string(),
+            ]
+        );
+        assert_eq!(
+            artifact_reject_argv("s74", "spec", "needs risk section"),
+            vec![
+                "artifact".to_string(),
+                "s74".to_string(),
+                "--stage".to_string(),
+                "spec".to_string(),
+                "--reject".to_string(),
+                "--summary".to_string(),
+                "needs risk section".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn keymap_maps_g_and_shift_g_to_the_artifact_gate() {
+        assert_eq!(keymap_action('g'), Some(Action::ArtifactAccept));
+        assert_eq!(keymap_action('G'), Some(Action::ArtifactReject));
+        // status-dependent actions are never built from the run id alone
+        assert_eq!(action_argv(Action::ArtifactAccept, "s74"), None);
+        assert_eq!(action_argv(Action::ArtifactReject, "s74"), None);
+    }
+
 }

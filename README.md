@@ -239,7 +239,8 @@ agent-arena dashboard        # execs the built binary, or dies with the hint
 Keys: `j`/`k` move · `Enter` status digest + writer-pane jump · `a` approve ·
 `r` request changes (`decision --verdict CHANGES_REQUESTED`) · `d` decision
 approve · `l` relay writer · `m` toggle approval mode · `v` validate · `q`
-quit. The list and the fetched status row (verdict + pipeline stage chain)
+quit · `g` accept artifact · `G` reject artifact (prompted summary). The
+list and the fetched status row (verdict + pipeline stage chain)
 auto-refresh on a ~1.5s tick — no keypress needed to see state changes
 (spec 2026-09-27-tui-live-status). Non-interactive probe:
 `agent-arena-ui --selftest --state-root PATH`

@@ -5094,4 +5094,106 @@ else
     printf '%s\n' '73 skipped: tmux or cargo unavailable'
 fi
 
-printf '%s\n' 'tests: ok'  
+printf '%s\n' '74. tui: artifact gate accept/reject through the confirm flow (spec 2026-09-27)'
+if command -v tmux >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+    (cd "${source_root}/ui" && cargo build --quiet >/dev/null 2>&1) || fail 'cargo build failed for the artifact-gate section'
+    ui_bin_74="${source_root}/ui/target/debug/agent-arena-ui"
+    [[ -x "$ui_bin_74" ]] || fail 'ui binary missing for the artifact-gate section'
+    state_74="${tmp_root}/state74"
+    mkdir -p "$state_74"
+    tui74_session="arena-tui-gate-$$"
+    tui74_capture() {
+        tmux capture-pane -p -t "$1" 2>/dev/null
+    }
+    tui74_wait() {
+        local w=0
+        until tui74_capture "$1" 2>/dev/null | grep -q "$2"; do
+            sleep 1
+            w=$(( w + 1 ))
+            [[ "$w" -lt 40 ]] || return 1
+        done
+    }
+    tui74_spawn_wait() {
+        # poll a shell condition for up to 40s (the TUI spawn is async)
+        local w=0
+        until eval "$1"; do
+            sleep 1
+            w=$(( w + 1 ))
+            [[ "$w" -lt 40 ]] || return 1
+        done
+    }
+    launch_tui74() {
+        tmux kill-session -t "$tui74_session" 2>/dev/null || true
+        tmux new-session -d -s "$tui74_session" -x 220 -y 50 \
+            "env PATH='${fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin' ARENA_STATE_ROOT='${state_74}' ARENA_WORKTREE_ROOT='${worktree_base}' ARENA_CONFIG_HOME='${ARENA_CONFIG_HOME}' ARENA_ZELL_BIN='zell' FAKE_ZELL_LOG='${fake_zell_log}' FAKE_TMUXP_LOG='${fake_tmuxp_log}' FAKE_TMUX_LOG='${fake_tmux_log}' FAKE_TMUX_MODE='offline' ARENA_TEST_MODE='1' '${ui_bin_74}' --state-root '${state_74}'; sleep 30"
+        tui74_wait "$tui74_session" 'agent-arena runs' \
+            || { tmux capture-pane -p -t "$tui74_session" > /tmp/dbg-pane-74.log 2>&1; fail 'TUI did not render its first frame (74)'; }
+    }
+
+    # 74a: g accepts the awaiting intent artifact through the confirm line.
+    if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena start s74 --repo "$project" --no-attach --pipeline lean --state-root "$state_74" >"${tmp_root}/s74-start.out" 2>&1; then
+        cat "${tmp_root}/s74-start.out" >&2
+        fail 's74 start failed'
+    fi
+    s74_dir="$(dirname "$(find "${state_74}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s74/manifest.tsv' | head -1)")"
+    if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent ARENA_STATE_ROOT="$state_74" \
+        PATH="${fake_bin}:${PATH}" FAKE_TMUX_LOG="$fake_tmux_log" FAKE_TMUXP_LOG="$fake_tmuxp_log" \
+        FAKE_AGENT_LOG="$fake_agent_log" FAKE_PI_LOG="$fake_pi_log" FAKE_CODEX_LOG="$fake_codex_log" \
+        FAKE_OPENCODE_LOG="$fake_opencode_log" FAKE_AGY_LOG="$fake_agy_log" FAKE_ZELL_LOG="$fake_zell_log" \
+        FAKE_GEMINI_EXIT="${FAKE_GEMINI_EXIT:-0}" ARENA_WORKTREE_ROOT="$worktree_base" \
+        "$arena" stage s74 intent --prompt-text 'gate smoke draft' >"${tmp_root}/s74-stage.out" 2>&1; then
+        cat "${tmp_root}/s74-stage.out" >&2
+        fail 's74 intent stage failed'
+    fi
+    [[ "$(manifest_value "${s74_dir}/manifest.tsv" stage_intent_status)" == 'awaiting_accept' ]] || fail 's74 stage did not land in awaiting_accept'
+    launch_tui74
+    tmux send-keys -t "$tui74_session" g
+    tui74_wait "$tui74_session" 'run: agent-arena artifact s74 --stage intent --accept' \
+        || { tmux capture-pane -p -t "$tui74_session" > /tmp/dbg-pane-74.log 2>&1; fail 'g did not confirm the verbatim accept argv (74)'; }
+    tmux send-keys -t "$tui74_session" y
+    tui74_spawn_wait "[[ -f '${s74_dir}/intent.md' ]]" \
+        || { tmux capture-pane -p -t "$tui74_session" > /tmp/dbg-pane-74.log 2>&1; fail 'accept spawn did not rename the draft (74)'; }
+    [[ -n "$(manifest_value "${s74_dir}/manifest.tsv" stage_intent_digest)" ]] || fail 'accept spawn did not record the digest (74)'
+    # 74c: gate target consumed — g only sets the notice now.
+    tmux send-keys -t "$tui74_session" g
+    tui74_wait "$tui74_session" 'no artifact awaiting accept' \
+        || { tmux capture-pane -p -t "$tui74_session" > /tmp/dbg-pane-74.log 2>&1; fail 'g after the final accept did not stay inert (74)'; }
+    tmux send-keys -t "$tui74_session" q
+
+    # 74b: G prompts, records the reject summary, and re-arms the stage.
+    if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena start s74r --repo "$project" --no-attach --pipeline lean --state-root "$state_74" >"${tmp_root}/s74r-start.out" 2>&1; then
+        cat "${tmp_root}/s74r-start.out" >&2
+        fail 's74r start failed'
+    fi
+    s74r_dir="$(dirname "$(find "${state_74}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s74r/manifest.tsv' | head -1)")"
+    if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent ARENA_STATE_ROOT="$state_74" \
+        PATH="${fake_bin}:${PATH}" FAKE_TMUX_LOG="$fake_tmux_log" FAKE_TMUXP_LOG="$fake_tmuxp_log" \
+        FAKE_AGENT_LOG="$fake_agent_log" FAKE_PI_LOG="$fake_pi_log" FAKE_CODEX_LOG="$fake_codex_log" \
+        FAKE_OPENCODE_LOG="$fake_opencode_log" FAKE_AGY_LOG="$fake_agy_log" FAKE_ZELL_LOG="$fake_zell_log" \
+        FAKE_GEMINI_EXIT="${FAKE_GEMINI_EXIT:-0}" ARENA_WORKTREE_ROOT="$worktree_base" \
+        "$arena" stage s74r intent --prompt-text 'gate smoke draft two' >"${tmp_root}/s74r-stage.out" 2>&1; then
+        cat "${tmp_root}/s74r-stage.out" >&2
+        fail 's74r intent stage failed'
+    fi
+    launch_tui74
+    # Both runs are needs-human (writer party counts), so composite order
+    # puts s74 first; move the selection down to s74r before gating.
+    tmux send-keys -t "$tui74_session" j
+    tmux send-keys -t "$tui74_session" G
+    tui74_wait "$tui74_session" 'artifact s74r --stage intent --reject --summary' \
+        || { tmux capture-pane -p -t "$tui74_session" > /tmp/dbg-pane-74.log 2>&1; fail 'G did not open the reject summary prompt (74)'; }
+    tmux send-keys -t "$tui74_session" 'needs risk section'
+    tmux send-keys -t "$tui74_session" Enter
+    tui74_wait "$tui74_session" 'run: agent-arena artifact s74r --stage intent --reject --summary needs risk section' \
+        || { tmux capture-pane -p -t "$tui74_session" > /tmp/dbg-pane-74.log 2>&1; fail 'reject confirm line is not the verbatim argv (74)'; }
+    tmux send-keys -t "$tui74_session" y
+    tui74_spawn_wait "[[ \"\$(manifest_value \"${s74r_dir}/manifest.tsv\" stage_intent_reject_summary)\" == 'needs risk section' ]]" \
+        || { tmux capture-pane -p -t "$tui74_session" > /tmp/dbg-pane-74.log 2>&1; fail 'reject spawn did not record the summary (74)'; }
+    [[ "$(manifest_value "${s74r_dir}/run-state.tsv" reason_code)" == 'awaiting_stage_start' ]] || fail 'reject spawn did not re-arm the stage (74)'
+    tmux send-keys -t "$tui74_session" q
+    tmux kill-session -t "$tui74_session" 2>/dev/null || true
+else
+    printf '%s\n' '74 skipped: tmux or cargo unavailable'
+fi
+
+printf '%s\n' 'tests: ok'   

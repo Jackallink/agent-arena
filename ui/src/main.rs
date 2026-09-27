@@ -126,6 +126,9 @@ enum PromptKind {
     DecisionSummary,
     RelayMessage,
     NewRun,
+    /// Artifact reject gate: the stage name is resolved from the fresh
+    /// status fetch at keypress time and carried here until submit.
+    ArtifactRejectSummary { stage: String },
 }
 
 impl PromptKind {
@@ -142,6 +145,12 @@ impl PromptKind {
             }
             PromptKind::RelayMessage => {
                 format!("relay {} --to writer --message <type>, Enter submit, Esc cancel", run_id)
+            }
+            PromptKind::ArtifactRejectSummary { stage } => {
+                format!(
+                    "artifact {} --stage {} --reject --summary <type>, Enter submit, Esc cancel",
+                    run_id, stage
+                )
             }
             PromptKind::NewRun => String::new(),
         }
@@ -206,7 +215,7 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
     }
 
     let mut runs: Vec<model::RunSummary> = Vec::new();
-    let mut notice = String::from("q quit · Enter status/jump · j/k move · a approve · r reject · d decision · l relay · m mode · v validate");
+    let mut notice = String::from("q quit · Enter status/jump · j/k move · a approve · r reject · d decision · l relay · m mode · v validate · g accept artifact · G reject artifact");
     let mut selected: usize = 0;
     let mut list_state = ListState::default();
     let mut input_mode = InputMode::Normal;
@@ -453,6 +462,9 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
                         PromptKind::RelayMessage => {
                             model::relay_writer_argv(&run_id, &text)
                         }
+                        PromptKind::ArtifactRejectSummary { stage } => {
+                            model::artifact_reject_argv(&run_id, stage, &text)
+                        }
                     };
                     input_mode = InputMode::Confirm { argv };
                 }
@@ -582,6 +594,40 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
                                 kind: PromptKind::RelayMessage,
                                 buffer: String::new(),
                             };
+                        }
+                        model::Action::ArtifactAccept | model::Action::ArtifactReject => {
+                            // Gate target resolution happens at keypress
+                            // time from a FRESH fetch — never from the
+                            // auto-refresh cache (spec 2026-09-27 §2).
+                            let fetched = arena
+                                .status_json(&run.run_id, state_root)
+                                .as_deref()
+                                .map_err(Clone::clone)
+                                .and_then(model::parse_status);
+                            let stage = match fetched {
+                                Ok(s) => s.awaiting_stage().map(str::to_string),
+                                Err(e) => {
+                                    notice = e;
+                                    continue;
+                                }
+                            };
+                            let Some(stage) = stage else {
+                                notice = "no artifact awaiting accept".to_string();
+                                continue;
+                            };
+                            match action {
+                                model::Action::ArtifactAccept => {
+                                    input_mode = InputMode::Confirm {
+                                        argv: model::artifact_accept_argv(&run.run_id, &stage),
+                                    };
+                                }
+                                _ => {
+                                    input_mode = InputMode::Input {
+                                        kind: PromptKind::ArtifactRejectSummary { stage },
+                                        buffer: String::new(),
+                                    };
+                                }
+                            }
                         }
                         model::Action::NewRun => {
                             wizard = Some(model::RunWizard::new());
