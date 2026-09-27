@@ -5037,4 +5037,61 @@ require_match 'writer session still alive' "${tmp_root}/s72l-cancel.out"
 require_match "$(printf 'run_status\tactive')" "${s72l_dir}/run-state.tsv"
 export FAKE_TMUX_MODE=offline
 
-printf '%s\n' 'tests: ok' 
+printf '%s\n' '73. tui: live status refresh without keypresses (spec 2026-09-27)'
+if command -v tmux >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+    (cd "${source_root}/ui" && cargo build --quiet >/dev/null 2>&1) || fail 'cargo build failed for the live-status section'
+    ui_bin_73="${source_root}/ui/target/debug/agent-arena-ui"
+    [[ -x "$ui_bin_73" ]] || fail 'ui binary missing for the live-status section'
+    # Dedicated state root: exactly one run, so selection 0 is deterministic.
+    state_73="${tmp_root}/state73"
+    mkdir -p "$state_73"
+    if ! run_arena start s73 --repo "$project" --no-attach --pipeline none --state-root "$state_73" >"${tmp_root}/s73-start.out" 2>&1; then
+        cat "${tmp_root}/s73-start.out" >&2
+        fail 's73 start failed'
+    fi
+    s73_manifest="$(find "${state_73}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s73/manifest.tsv' | head -1)"
+    [[ -n "$s73_manifest" ]] || fail 's73 manifest missing'
+    s73_dir="$(dirname "$s73_manifest")"
+    tui73_session="arena-tui-s73-$$"
+    tui73_capture() {
+        tmux capture-pane -p -t "$1" 2>/dev/null
+    }
+    tui73_wait() {
+        local w=0
+        until tui73_capture "$1" 2>/dev/null | grep -q "$2"; do
+            sleep 1
+            w=$(( w + 1 ))
+            [[ "$w" -lt 40 ]] || return 1
+        done
+    }
+    tmux kill-session -t "$tui73_session" 2>/dev/null || true
+    tmux new-session -d -s "$tui73_session" -x 220 -y 50 \
+        "env PATH='${fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin' ARENA_STATE_ROOT='${state_73}' ARENA_WORKTREE_ROOT='${worktree_base}' ARENA_CONFIG_HOME='${ARENA_CONFIG_HOME}' ARENA_ZELL_BIN='zell' FAKE_ZELL_LOG='${fake_zell_log}' FAKE_TMUXP_LOG='${fake_tmuxp_log}' FAKE_TMUX_LOG='${fake_tmux_log}' FAKE_TMUX_MODE='offline' ARENA_TEST_MODE='1' '${ui_bin_73}' --state-root '${state_73}'; sleep 30"
+    tui73_wait "$tui73_session" 'agent-arena runs' \
+        || { tmux capture-pane -p -t "$tui73_session" > /tmp/dbg-pane-73.log 2>&1; fail 'TUI did not render its first frame (73)'; }
+    # Enter fetches the status document for the single run (mode=human,
+    # verdict empty — intake carries no verdict by state-machine invariant).
+    tmux send-keys -t "$tui73_session" Enter
+    tui73_wait "$tui73_session" 'verdict not recorded' \
+        || { tmux capture-pane -p -t "$tui73_session" > /tmp/dbg-pane-73.log 2>&1; fail 'Enter did not surface the status digest (73)'; }
+    # External manifest change: the status row must pick it up on a tick,
+    # with no keypress after this point. (Manifest keys are loose; the
+    # run-state invariants would rightly refuse a fake verdict at intake.)
+    awk -F'\t' 'BEGIN{OFS="\t"} $1=="mode"{$2="turbo"} {print}' \
+        "$s73_manifest" >"${s73_manifest}.next"
+    mv "${s73_manifest}.next" "$s73_manifest"
+    tui73_wait "$tui73_session" 'mode turbo' \
+        || { tmux capture-pane -p -t "$tui73_session" > /tmp/dbg-pane-73.log 2>&1; fail 'status row did not refresh without keypresses (73)'; }
+    tui73_capture "$tui73_session" | grep -q 'verdict not recorded' \
+        || fail 'refresh clobbered an unchanged field (73)'
+    # Run vanishes from the state root: the cache drops with the notice.
+    rm -rf "$s73_dir"
+    tui73_wait "$tui73_session" 'run gone from the state root' \
+        || { tmux capture-pane -p -t "$tui73_session" > /tmp/dbg-pane-73.log 2>&1; fail 'vanished run did not drop the status cache (73)'; }
+    tmux send-keys -t "$tui73_session" q
+    tmux kill-session -t "$tui73_session" 2>/dev/null || true
+else
+    printf '%s\n' '73 skipped: tmux or cargo unavailable'
+fi
+
+printf '%s\n' 'tests: ok'  

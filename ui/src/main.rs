@@ -12,6 +12,7 @@ use model::{parse_list, sort_runs};
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 struct Options {
     selftest: bool,
@@ -213,6 +214,12 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
     let mut status_cache: Option<model::StatusDoc> = None;
     let result = ExitCode::SUCCESS;
 
+    // Live status (spec 2026-09-27): poll with a timeout instead of a
+    // blocking read. A tick falls through to the loop top, whose Normal-mode
+    // re-scan (list + status_cache refetch) is the refresh; input modes
+    // never pay a subprocess on tick (guard below).
+    const TICK: Duration = Duration::from_millis(1500);
+
     loop {
         // Re-scan only in Normal mode: typing into the input line must not
         // pay a subprocess per keystroke, and staged confirms render the
@@ -238,6 +245,30 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
             selected = runs.len().saturating_sub(1);
         }
         list_state.select(Some(selected));
+
+        // Live status: keep the Enter-fetched status document fresh on
+        // every Normal-mode iteration (including ticks). An oracle failure
+        // or error document keeps the last good cache; a run that vanished
+        // from the list drops it with an explanatory notice.
+        if matches!(input_mode, InputMode::Normal) {
+            if let Some(s) = &status_cache {
+                if !runs.iter().any(|r| r.run_id == s.run_id) {
+                    notice = format!("{}: run gone from the state root", s.run_id);
+                    status_cache = None;
+                } else if let Ok(fetched) = arena
+                    .status_json(&s.run_id, state_root)
+                    .as_deref()
+                    .map_err(Clone::clone)
+                    .and_then(model::parse_status)
+                {
+                    if fetched.error.is_none() {
+                        status_cache = Some(fetched);
+                    } else {
+                        notice = format!("{}: oracle error document; keeping the last good status", s.run_id);
+                    }
+                }
+            }
+        }
 
         let _ = terminal.draw(|f| {
             let chunks = Layout::vertical([
@@ -293,6 +324,13 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
             }
         });
 
+        let has_input = match event::poll(TICK) {
+            Ok(b) => b,
+            Err(_) => break,
+        };
+        if !has_input {
+            continue;
+        }
         let event = match event::read() {
             Ok(ev) => ev,
             Err(_) => break,
