@@ -1,5 +1,25 @@
 # Release Notes
 
+## v0.7.6 — previous-version toggle (2026-09-27)
+
+### Added
+
+- **`artifact --show-previous`** (spec `2026-09-27-tui-artifact-viewer`
+  AC-V5): prints the latest regeneration context — the reject summary
+  plus the rejected draft, written by the next stage attempt after a
+  reject. Read-only, same guard family as `--show`; the four actions
+  are mutually exclusive.
+- **TUI `p` inside the artifact viewer** (AC-V6): toggles current ↔
+  previous with one oracle call per toggle-in; refusals render as the
+  viewer's bottom border (the list notice area is not visible while the
+  full-screen viewer is open) and never close the view.
+
+### Notes
+
+- The spec's non-goal is narrowed: only the latest regen snapshot is
+  reachable — a full rejected-draft history browser remains out of
+  scope (older drafts are overwritten on disk).
+
 ## v0.7.5 — canceled+intake read-back fix (2026-09-27)
 
 ### Fixed
