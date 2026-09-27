@@ -11,7 +11,9 @@ Usage: agent-arena resolve RUN_ID --action approve|reject|recover|cancel --reaso
 Human disposition. Allowed only when responsible_party=human. reject/recover/
 cancel require --reason. approve only after a reviewer APPROVE; recover only
 after an operational escalation with a reachable reviewer pane; BLOCKED admits
-only reject or cancel in v1.
+only reject or cancel in v1. Orphan exception (2026-09-27 spec): cancel is
+also admitted for a writer-owned implementation run (phase=intake,
+reason=none) whose manifest tmux session no longer exists.
 
 Options:
   --action ACTION       approve, reject, recover, or cancel
@@ -197,6 +199,14 @@ arena_resolve_apply() {
         cancel)
             case "$ARENA_STATE_REASON_CODE" in
                 approval_pending|block_resolution_required|reviewer_unreachable) ;;
+                none)
+                    # Orphan rule (spec 2026-09-27): a writer-owned
+                    # implementation run whose tmux session is gone admits
+                    # human cancel. ARENA_ORPHAN_CANCEL gates it — a
+                    # plain human/none state must not cancel here.
+                    [[ "${ARENA_ORPHAN_CANCEL:-0}" == 1 ]] || \
+                        arena_state_die 'cancel is not allowed from this state'
+                    ;;
                 *) arena_state_die 'cancel is not allowed from this state' ;;
             esac
             ARENA_STATE_RUN_STATUS='canceled'
@@ -210,8 +220,26 @@ arena_resolve_apply() {
 
 if [[ -f "${run_dir}/run-state.tsv" ]]; then
     arena_state_read "$run_dir"
-    [[ "$ARENA_STATE_RESPONSIBLE_PARTY" == human ]] || arena_state_die \
-        "resolve requires human responsibility (current: ${ARENA_STATE_RESPONSIBLE_PARTY})"
+    # Orphan rule (spec 2026-09-27): a writer-owned implementation holding
+    # (phase=intake, reason_code=none) whose manifest tmux session is gone
+    # admits human cancel through the ordinary cancel delta. tmux absent
+    # counts as gone (no writer can be alive); a live session refuses with
+    # the actionable two-step message. The stage-cancel path above already
+    # owns phase intent/spec/plan; every other writer state keeps the
+    # generic refusal.
+    ARENA_ORPHAN_CANCEL=0
+    if [[ "$action" == cancel && "$ARENA_STATE_RESPONSIBLE_PARTY" == writer && \
+        "$ARENA_STATE_PHASE" == intake && "$ARENA_STATE_REASON_CODE" == none ]]; then
+        if [[ -n "$ARENA_MANIFEST_SESSION_NAME" ]] && command -v tmux >/dev/null 2>&1 && \
+            tmux has-session -t "=${ARENA_MANIFEST_SESSION_NAME}" 2>/dev/null; then
+            arena_state_die "writer session still alive (tmux: ${ARENA_MANIFEST_SESSION_NAME}); relay the writer or stop its session first"
+        fi
+        ARENA_ORPHAN_CANCEL=1
+    fi
+    if [[ "$ARENA_STATE_RESPONSIBLE_PARTY" != human && "$ARENA_ORPHAN_CANCEL" != 1 ]]; then
+        arena_state_die \
+            "resolve requires human responsibility (current: ${ARENA_STATE_RESPONSIBLE_PARTY})"
+    fi
     arena_resolve_apply
     ARENA_STATE_REVISION=$((ARENA_STATE_REVISION + 1))
 else

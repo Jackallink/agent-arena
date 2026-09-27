@@ -4972,4 +4972,69 @@ set -e
 [[ "$s2ui_list_exit" == "$s2ui_list_human_exit" ]] || fail "s2ui list --json exited $s2ui_list_exit, human list exited $s2ui_list_human_exit"
 require_no_match '"stages"' "${tmp_root}/s2ui-list.out"
 
-printf '%s\n' 'tests: ok'
+printf '%s\n' '72. orphan-run cancel: dead writer session admits human cancel (spec 2026-09-27)'
+
+# Orphan shape writer: implementation holding (bootstrap leaves
+# phase=intake / party=writer / reason=none) whose tmux session is gone.
+s72_orphan_state() {
+    {
+        printf 'schema_version\t1\n'
+        printf 'state_revision\t3\n'
+        printf 'run_status\tactive\n'
+        printf 'phase\tintake\n'
+        printf 'responsible_party\twriter\n'
+        printf 'reason_code\tnone\n'
+        printf 'reason_detail\t\n'
+        printf 'verdict\t\n'
+        printf 'validation_result\t\n'
+        printf 'checkpoint_round\t0\n'
+        printf 'checkpoint_sha\t\n'
+        printf 'waiting_since\t1790000000\n'
+        printf 'last_transition_at\t1790000000\n'
+        printf 'last_transition_actor\tsystem\n'
+        printf 'last_transition_action\tbootstrap\n'
+        printf 'validation_digest\t\n'
+    } >"$1"
+}
+
+# 72a: gone session (fake tmux offline => has-session exits 1) admits
+# cancel with the ordinary cancel delta; the run directory is kept.
+export FAKE_TMUX_MODE=offline
+if ! run_arena start s72o --repo "$project" --no-attach --pipeline none >"${tmp_root}/s72o-start.out" 2>&1; then
+    cat "${tmp_root}/s72o-start.out" >&2
+    fail 's72o start failed'
+fi
+s72o_manifest="$(find "${state_base}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s72o/manifest.tsv' | head -1)"
+[[ -n "$s72o_manifest" ]] || fail 's72o manifest missing'
+s72o_dir="$(dirname "$s72o_manifest")"
+s72_orphan_state "${s72o_dir}/run-state.tsv"
+if ! run_arena resolve s72o --action cancel --reason 'writer session gone; orphan cancel' >"${tmp_root}/s72o-cancel.out" 2>&1; then
+    cat "${tmp_root}/s72o-cancel.out" >&2
+    fail 's72o orphan cancel was refused (expected success)'
+fi
+require_match "$(printf 'run_status\tcanceled')" "${s72o_dir}/run-state.tsv"
+require_match "$(printf 'responsible_party\tnone')" "${s72o_dir}/run-state.tsv"
+require_match "$(printf 'reason_detail\twriter session gone; orphan cancel')" "${s72o_dir}/run-state.tsv"
+require_match "$(printf 'last_transition_action\tresolve-cancel')" "${s72o_dir}/run-state.tsv"
+[[ -f "$s72o_manifest" ]] || fail 'orphan cancel removed the run directory'
+
+# 72b: live session refusal keeps the state untouched and is actionable.
+export FAKE_TMUX_MODE=live
+if ! run_arena start s72l --repo "$project" --no-attach --pipeline none >"${tmp_root}/s72l-start.out" 2>&1; then
+    cat "${tmp_root}/s72l-start.out" >&2
+    fail 's72l start failed'
+fi
+s72l_manifest="$(find "${state_base}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s72l/manifest.tsv' | head -1)"
+[[ -n "$s72l_manifest" ]] || fail 's72l manifest missing'
+s72l_dir="$(dirname "$s72l_manifest")"
+s72_orphan_state "${s72l_dir}/run-state.tsv"
+set +e
+run_arena resolve s72l --action cancel --reason 'must refuse while alive' >"${tmp_root}/s72l-cancel.out" 2>&1
+s72l_exit=$?
+set -e
+[[ "$s72l_exit" == 2 ]] || fail "s72l cancel with a live writer session exited $s72l_exit (expected 2)"
+require_match 'writer session still alive' "${tmp_root}/s72l-cancel.out"
+require_match "$(printf 'run_status\tactive')" "${s72l_dir}/run-state.tsv"
+export FAKE_TMUX_MODE=offline
+
+printf '%s\n' 'tests: ok' 
