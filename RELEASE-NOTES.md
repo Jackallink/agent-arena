@@ -1,5 +1,26 @@
 # Release Notes
 
+## v0.7.2 — TUI artifact gate (2026-09-27)
+
+The artifact pipeline is now operable from the dashboard.
+
+### Added
+
+- **`g` / `G` artifact gate keys** (spec `2026-09-27-tui-artifact-gate`):
+  `g` accepts the awaiting artifact, `G` rejects it with a prompted
+  summary. The gate target (first `awaiting_accept` stage in manifest
+  order) is resolved at keypress time from a fresh `status --json` fetch —
+  never from the auto-refresh cache — and every spawn is the verbatim
+  `artifact RUN --stage S ...` argv on a confirm line. No awaiting stage
+  stays inert with a notice.
+
+### Test additions
+
+- §74 tmux smoke: accept through the confirm line renames the draft and
+  records the digest; reject records `stage_intent_reject_summary` and
+  re-arms; the gate is inert after consumption. Suite §0–74 green; cargo
+  test (20) + clippy `-D warnings` clean.
+
 ## v0.7.1 — Live status & orphan-run recovery (2026-09-27)
 
 Patch release born from real dogfooding (run `s2ui` drove both changes).
