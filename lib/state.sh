@@ -211,7 +211,7 @@ arena_state_validate() {
             [[ "$ARENA_STATE_RESPONSIBLE_PARTY" == none && "$ARENA_STATE_REASON_CODE" == none && -z "$ARENA_STATE_WAITING_SINCE" ]] || \
                 arena_state_die 'corrupted state file: illegal canceled combination'
             case "$ARENA_STATE_PHASE" in
-                intent|spec|plan) \
+                intent|spec|plan|intake) \
                     [[ -z "$ARENA_STATE_VERDICT" && -z "$ARENA_STATE_VALIDATION_RESULT" && \
                         -z "$ARENA_STATE_VALIDATION_DIGEST" && -z "$ARENA_STATE_CHECKPOINT_SHA" ]] || \
                     arena_state_die 'corrupted state file: illegal canceled stage combination' ;;

@@ -4385,40 +4385,35 @@ set -e
 [[ "$esc_list_exit" == 0 ]] || fail "esc list --json exited $esc_list_exit"
 require_match 'weird\"repo' "${tmp_root}/list-json-weird.out"
 # u3: dashboard dispatch — missing binary dies with the build hint; with
-#     the binary present but no tty, the TUI itself refuses interactively
-#     (a minimal PATH keeps a developer-installed agent-arena-ui out of the
-#     lookup so the hint path is actually exercised)
-ui_bin="${source_root}/ui/target/debug/agent-arena-ui"
-ui_bin_hidden=''
-if [[ -x "$ui_bin" ]]; then
-    ui_bin_hidden="${ui_bin}.hidden"
-    mv "$ui_bin" "$ui_bin_hidden"
-fi
+# Hide EVERY source-tree dashboard binary: the dispatch tries debug then
+# release, so leaving one in place would take the tty branch instead of
+# the hint / PATH branches these probes exercise.
+arena_suite_ui_hidden=()
+for ui_candidate in \
+    "${source_root}/ui/target/debug/agent-arena-ui" \
+    "${source_root}/ui/target/release/agent-arena-ui"; do
+    if [[ -x "$ui_candidate" ]]; then
+        mv "$ui_candidate" "${ui_candidate}.hidden"
+        arena_suite_ui_hidden+=("$ui_candidate")
+    fi
+done
 PATH="/usr/bin:/bin" run_arena dashboard </dev/null >"${tmp_root}/dashboard.out" 2>&1 || true
-if [[ -n "$ui_bin_hidden" ]]; then mv "$ui_bin_hidden" "$ui_bin"; fi
 require_match 'cargo build' "${tmp_root}/dashboard.out"
 # u3: with no source-tree binary but a PATH-installed agent-arena-ui, the
 #     dispatch execs it (this is how install.sh --with-ui / dist binaries work)
-if [[ -x "${source_root}/ui/target/debug/agent-arena-ui" || -x "${source_root}/ui/target/release/agent-arena-ui" ]]; then
-    ui_bin="${source_root}/ui/target/debug/agent-arena-ui"
-    [[ -x "$ui_bin" ]] || ui_bin="${source_root}/ui/target/release/agent-arena-ui"
-    ui_bin_hidden="${ui_bin}.hidden"
-    mv "$ui_bin" "$ui_bin_hidden"
-    path_restored=1
-else
-    path_restored=0
-fi
 printf '#!/usr/bin/env bash
-printf "installed-ui-artifact\\n"
+printf "installed-ui-artifact\n"
 ' >"${fake_bin}/agent-arena-ui"
 chmod 755 "${fake_bin}/agent-arena-ui"
 run_arena dashboard </dev/null >"${tmp_root}/dashboard-path.out" 2>&1 || true
 require_match 'installed-ui-artifact' "${tmp_root}/dashboard-path.out"
-if [[ "$path_restored" == 1 ]]; then mv "$ui_bin_hidden" "$ui_bin"; fi
 rm -f "${fake_bin}/agent-arena-ui"
-# u3: with the real binary restored, the dispatch prefers the source-tree
-#     build over PATH
-if [[ "$path_restored" == 1 ]]; then
+# restore; with a source-tree binary back in place the dispatch prefers it
+#     over PATH and the TUI itself refuses a non-tty run
+for ui_candidate in "${arena_suite_ui_hidden[@]}"; do
+    mv "${ui_candidate}.hidden" "$ui_candidate"
+done
+if [[ "${#arena_suite_ui_hidden[@]}" -gt 0 ]]; then
     run_arena dashboard </dev/null >"${tmp_root}/dashboard-tty.out" 2>&1 || true
     require_match 'requires a tty' "${tmp_root}/dashboard-tty.out"
 fi
@@ -5017,6 +5012,14 @@ require_match "$(printf 'responsible_party\tnone')" "${s72o_dir}/run-state.tsv"
 require_match "$(printf 'reason_detail\twriter session gone; orphan cancel')" "${s72o_dir}/run-state.tsv"
 require_match "$(printf 'last_transition_action\tresolve-cancel')" "${s72o_dir}/run-state.tsv"
 [[ -f "$s72o_manifest" ]] || fail 'orphan cancel removed the run directory'
+# Read-back regression (found by real usage): the canceled+intake shape
+# must stay readable by the oracles, not just well-formed on disk.
+if ! run_arena status s72o --json --state-root "$state_base" >"${tmp_root}/s72o-status.out" 2>&1; then
+    cat "${tmp_root}/s72o-status.out" >&2
+    fail 'status --json refused a canceled intake run (orphan read-back)'
+fi
+require_match '"error":null' "${tmp_root}/s72o-status.out"
+require_no_match '"stages"' "${tmp_root}/s72o-status.out"
 
 # 72b: live session refusal keeps the state untouched and is actionable.
 export FAKE_TMUX_MODE=live
