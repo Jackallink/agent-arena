@@ -1,5 +1,25 @@
 # Release Notes
 
+## v0.7.7 — run detail screen + status JSON trap fix (2026-09-27)
+
+### Added
+
+- **TUI run detail screen** (spec `2026-09-27-tui-run-detail`): `Enter`
+  on a run row opens a full-screen render of a fresh `status --json` —
+  all fields sorted, pane liveness, stage chain with attempt counts.
+  `w` jumps to the writer pane (refusals render on the bottom border,
+  never closing the screen). §78 + cargo tests; §73 moved to the new
+  Enter contract.
+
+### Fixed
+
+- **`status --json` emitted NOTHING for early dies** (locked runs): the
+  EXIT-trap error document crashed on Bash 3.2 (`set -u` + empty array
+  expansion), leaving stdout empty — a direct violation of the
+  documented "every exit emits the document" contract. Locked runs now
+  emit `{"error":"locked"}` with exit 4. Found by the detail-screen
+  test itself.
+
 ## v0.7.6 — previous-version toggle (2026-09-27)
 
 ### Added
