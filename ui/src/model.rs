@@ -489,6 +489,35 @@ pub fn artifact_show_argv(run_id: &str, stage: &str) -> Vec<String> {
     ]
 }
 
+/// Deterministic full-screen render of a status document for the TUI
+/// run-detail screen: every field as `key  value` (sorted, empties
+/// skipped), the pane liveness line, and the pipeline stage chain when
+/// the document carries a stages array.
+pub fn render_detail(doc: &StatusDoc) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for (key, value) in doc.fields.iter() {
+        let Some(text) = value.as_str() else { continue };
+        if text.is_empty() {
+            continue;
+        }
+        lines.push(format!("{key:<18} {text}"));
+    }
+    lines.push(format!(
+        "{:<18} reviewer={} writer={}",
+        "panes", doc.panes.reviewer, doc.panes.writer
+    ));
+    if let Some(stages) = &doc.stages {
+        for (idx, stage) in stages.iter().enumerate() {
+            let label = if idx == 0 { "stages" } else { "" };
+            lines.push(format!(
+                "{:<18} {}: {} (attempts {})",
+                label, stage.name, stage.status, stage.attempts
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
 /// argv for reading the latest regen context (previous-version toggle;
 /// the TUI never reads run files directly — thin-client rule).
 pub fn artifact_show_previous_argv(run_id: &str, stage: &str) -> Vec<String> {
@@ -891,6 +920,42 @@ mod tests {
                 "--summary".to_string(),
                 "needs risk section".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn render_detail_is_deterministic_and_skips_empties() {
+        let doc = parse_status(
+            r#"{"schema":1,"run_id":"s78","fields":{
+                "run_id":"s78","repository":"/repo","verdict":"","mode":"human",
+                "run_status":"active","phase":"intent"
+            },"panes":{"reviewer":false,"writer":true},"error":null,
+            "stages":[{"name":"intent","status":"awaiting_accept","attempts":2}]}"#,
+        )
+        .unwrap();
+        let text = render_detail(&doc);
+        // sorted fields, empty verdict skipped
+        let expected = concat!(
+            "mode               human\n",
+            "phase              intent\n",
+            "repository         /repo\n",
+            "run_id             s78\n",
+            "run_status         active\n",
+            "panes              reviewer=false writer=true\n",
+            "stages             intent: awaiting_accept (attempts 2)"
+        );
+        assert_eq!(text, expected);
+    }
+
+    #[test]
+    fn render_detail_minimal_on_error_path_documents() {
+        let doc = parse_status(
+            r#"{"schema":1,"run_id":"r","fields":{},"panes":{},"error":"locked"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            render_detail(&doc),
+            "panes              reviewer=false writer=false"
         );
     }
 

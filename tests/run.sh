@@ -264,6 +264,9 @@ case "$command_name" in
     send-keys)
         printf '%s\n' "$*" >>"${FAKE_TMUX_LOG:?}"
         ;;
+    select-window)
+        printf 'select-window %s\n' "$*" >>"${FAKE_TMUX_LOG:?}"
+        ;;
     set-environment)
         printf 'set-environment %s\n' "$*" >>"${FAKE_TMUX_LOG:?}"
         ;;
@@ -5072,11 +5075,16 @@ if command -v tmux >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
         "env PATH='${fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin' ARENA_STATE_ROOT='${state_73}' ARENA_WORKTREE_ROOT='${worktree_base}' ARENA_CONFIG_HOME='${ARENA_CONFIG_HOME}' ARENA_ZELL_BIN='zell' FAKE_ZELL_LOG='${fake_zell_log}' FAKE_TMUXP_LOG='${fake_tmuxp_log}' FAKE_TMUX_LOG='${fake_tmux_log}' FAKE_TMUX_MODE='offline' ARENA_TEST_MODE='1' '${ui_bin_73}' --state-root '${state_73}'; sleep 30"
     tui73_wait "$tui73_session" 'agent-arena runs' \
         || { tmux capture-pane -p -t "$tui73_session" > /tmp/dbg-pane-73.log 2>&1; fail 'TUI did not render its first frame (73)'; }
-    # Enter fetches the status document for the single run (mode=human,
-    # verdict empty — intake carries no verdict by state-machine invariant).
+    # Enter opens the run detail screen (spec 2026-09-27-tui-run-detail):
+    # fresh status document, verdict empty at intake by state-machine
+    # invariant.
     tmux send-keys -t "$tui73_session" Enter
-    tui73_wait "$tui73_session" 'verdict not recorded' \
-        || { tmux capture-pane -p -t "$tui73_session" > /tmp/dbg-pane-73.log 2>&1; fail 'Enter did not surface the status digest (73)'; }
+    tui73_wait "$tui73_session" 'not recorded' \
+        || { tmux capture-pane -p -t "$tui73_session" > /tmp/dbg-pane-73.log 2>&1; fail 'Enter did not open the run detail screen (73)'; }
+    # Back to the list: the tick assertions below watch the status row.
+    tmux send-keys -t "$tui73_session" Escape
+    tui73_wait "$tui73_session" 'agent-arena runs' \
+        || { tmux capture-pane -p -t "$tui73_session" > /tmp/dbg-pane-73.log 2>&1; fail 'Escape did not return to the list (73)'; }
     # External manifest change: the status row must pick it up on a tick,
     # with no keypress after this point. (Manifest keys are loose; the
     # run-state invariants would rightly refuse a fake verdict at intake.)
@@ -5085,7 +5093,7 @@ if command -v tmux >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
     mv "${s73_manifest}.next" "$s73_manifest"
     tui73_wait "$tui73_session" 'mode turbo' \
         || { tmux capture-pane -p -t "$tui73_session" > /tmp/dbg-pane-73.log 2>&1; fail 'status row did not refresh without keypresses (73)'; }
-    tui73_capture "$tui73_session" | grep -q 'verdict not recorded' \
+    tui73_capture "$tui73_session" | grep -q 'not recorded' \
         || fail 'refresh clobbered an unchanged field (73)'
     # Run vanishes from the state root: the cache drops with the notice.
     rm -rf "$s73_dir"
@@ -5470,4 +5478,99 @@ else
     printf '%s\n' '77 tui part skipped: tmux or cargo unavailable'
 fi
 
-printf '%s\n' 'tests: ok'      
+printf '%s\n' '78. run detail screen (spec 2026-09-27-tui-run-detail)'
+state_78="${tmp_root}/state78"
+mkdir -p "$state_78"
+if ! run_arena start s78 --repo "$project" --no-attach --pipeline lean --state-root "$state_78" >"${tmp_root}/s78-start.out" 2>&1; then
+    cat "${tmp_root}/s78-start.out" >&2
+    fail 's78 start failed'
+fi
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent FAKE_ZELL_DRAFT_CONTENT='# s78 draft body' \
+    ARENA_STATE_ROOT="$state_78" PATH="${fake_bin}:${PATH}" FAKE_ZELL_LOG="$fake_zell_log" \
+    FAKE_TMUX_LOG="$fake_tmux_log" FAKE_TMUXP_LOG="$fake_tmuxp_log" FAKE_AGENT_LOG="$fake_agent_log" \
+    FAKE_PI_LOG="$fake_pi_log" FAKE_CODEX_LOG="$fake_codex_log" FAKE_OPENCODE_LOG="$fake_opencode_log" \
+    FAKE_AGY_LOG="$fake_agy_log" FAKE_GEMINI_EXIT="${FAKE_GEMINI_EXIT:-0}" ARENA_WORKTREE_ROOT="$worktree_base" \
+    "$arena" stage s78 intent --prompt-text 'detail smoke draft' >"${tmp_root}/s78-stage.out" 2>&1; then
+    cat "${tmp_root}/s78-stage.out" >&2
+    fail 's78 intent stage failed'
+fi
+# second run: locked with a live owner so status renders the error-path
+# document (no fields, no tmux_session) — the only honest way to reach the
+# detail-screen jump refusal, since every real manifest records a session
+if ! run_arena start s78n --repo "$project" --no-attach --pipeline none --state-root "$state_78" >"${tmp_root}/s78n-start.out" 2>&1; then
+    cat "${tmp_root}/s78n-start.out" >&2
+    fail 's78n start failed'
+fi
+s78n_dir="$(dirname "$(find "${state_78}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s78n/manifest.tsv' | head -1)")"
+mkdir -p "${s78n_dir}/.run-lock"
+printf 'pid=%s\ntoken=live\ncreated_at=1\n' "$$" >"${s78n_dir}/.run-lock/owner"
+
+if command -v tmux >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+    (cd "${source_root}/ui" && cargo build --quiet >/dev/null 2>&1) || fail 'cargo build failed for the detail section'
+    ui_bin_78="${source_root}/ui/target/debug/agent-arena-ui"
+    [[ -x "$ui_bin_78" ]] || fail 'ui binary missing for the detail section'
+    tui78_session="arena-tui-detail-$$"
+    tui78_capture() {
+        tmux capture-pane -p -t "$1" 2>/dev/null
+    }
+    tui78_wait() {
+        local w=0
+        until tui78_capture "$1" 2>/dev/null | grep -q "$2"; do
+            sleep 1
+            w=$(( w + 1 ))
+            [[ "$w" -lt 40 ]] || return 1
+        done
+    }
+    tmux kill-session -t "$tui78_session" 2>/dev/null || true
+    tmux new-session -d -s "$tui78_session" -x 220 -y 50 \
+        "env PATH='${fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin' ARENA_STATE_ROOT='${state_78}' ARENA_WORKTREE_ROOT='${worktree_base}' ARENA_CONFIG_HOME='${ARENA_CONFIG_HOME}' ARENA_ZELL_BIN='zell' FAKE_ZELL_LOG='${fake_zell_log}' FAKE_TMUXP_LOG='${fake_tmuxp_log}' FAKE_TMUX_LOG='${fake_tmux_log}' FAKE_TMUX_MODE='offline' ARENA_TEST_MODE='1' '${ui_bin_78}' --state-root '${state_78}'; sleep 30"
+    tui78_wait "$tui78_session" 'agent-arena runs' \
+        || { tmux capture-pane -p -t "$tui78_session" > /tmp/dbg-pane-78.log 2>&1; fail 'TUI did not render its first frame (78)'; }
+    # AC-D2: Enter opens the detail screen with fresh data
+    tmux send-keys -t "$tui78_session" Enter
+    tui78_wait "$tui78_session" 's78 / detail' \
+        || { tmux capture-pane -p -t "$tui78_session" > /tmp/dbg-pane-78.log 2>&1; fail 'Enter did not open the detail screen (78)'; }
+    tui78_capture "$tui78_session" | grep -q 'awaiting_accept' \
+        || { tmux capture-pane -p -t "$tui78_session" > /tmp/dbg-pane-78.log 2>&1; fail 'detail does not show the stage chain (78)'; }
+    # AC-D3: w jumps to the recorded writer pane (fake tmux logs it)
+    : > "$fake_tmux_log"
+    tmux send-keys -t "$tui78_session" w
+    sleep 2
+    grep -q "select-window -t agent-arena-" "$fake_tmux_log" \
+        || { tmux capture-pane -p -t "$tui78_session" > /tmp/dbg-pane-78.log 2>&1; fail 'w did not jump to the writer pane (78)'; }
+    tui78_capture "$tui78_session" | grep -q 's78 / detail' \
+        || { tmux capture-pane -p -t "$tui78_session" > /tmp/dbg-pane-78.log 2>&1; fail 'jump closed the detail screen (78)'; }
+    tmux send-keys -t "$tui78_session" Escape
+    tui78_wait "$tui78_session" 'agent-arena runs' \
+        || { tmux capture-pane -p -t "$tui78_session" > /tmp/dbg-pane-78.log 2>&1; fail 'Escape did not return to the list (78)'; }
+    # fresh fetch: a CLI gate action is visible without restarting the TUI
+    if ! run_arena artifact s78 --stage intent --accept --state-root "$state_78" >"${tmp_root}/s78-accept.out" 2>&1; then
+        cat "${tmp_root}/s78-accept.out" >&2
+        fail 's78 intent accept failed'
+    fi
+    tmux send-keys -t "$tui78_session" Enter
+    tui78_wait "$tui78_session" 'intent: accepted (attempts 1)' \
+        || { tmux capture-pane -p -t "$tui78_session" > /tmp/dbg-pane-78.log 2>&1; fail 'detail did not reflect the CLI accept (78)'; }
+    tmux send-keys -t "$tui78_session" Escape
+    tui78_wait "$tui78_session" 'agent-arena runs' \
+        || { tmux capture-pane -p -t "$tui78_session" > /tmp/dbg-pane-78.log 2>&1; fail 'Escape did not return after the accept check (78)'; }
+    # refusal path: no tmux_session field -> bottom-border notice, screen stays
+    tmux send-keys -t "$tui78_session" j
+    tmux send-keys -t "$tui78_session" Enter
+    tui78_wait "$tui78_session" 's78n / detail' \
+        || { tmux capture-pane -p -t "$tui78_session" > /tmp/dbg-pane-78.log 2>&1; fail 'Enter did not open the s78n detail (78)'; }
+    tmux send-keys -t "$tui78_session" w
+    tui78_wait "$tui78_session" 'no tmux session recorded for s78n' \
+        || { tmux capture-pane -p -t "$tui78_session" > /tmp/dbg-pane-78.log 2>&1; fail 'w refusal not surfaced (78)'; }
+    tui78_capture "$tui78_session" | grep -q 's78n / detail' \
+        || { tmux capture-pane -p -t "$tui78_session" > /tmp/dbg-pane-78.log 2>&1; fail 'refusal closed the detail screen (78)'; }
+    tmux send-keys -t "$tui78_session" Escape
+    tui78_wait "$tui78_session" 'agent-arena runs' \
+        || { tmux capture-pane -p -t "$tui78_session" > /tmp/dbg-pane-78.log 2>&1; fail 'Escape did not return after the refusal (78)'; }
+    tmux send-keys -t "$tui78_session" q
+    tmux kill-session -t "$tui78_session" 2>/dev/null || true
+else
+    printf '%s\n' '78 tui part skipped: tmux or cargo unavailable'
+fi
+
+printf '%s\n' 'tests: ok'       

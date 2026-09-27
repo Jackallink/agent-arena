@@ -200,6 +200,39 @@ impl ArtifactViewer {
     }
 }
 
+/// Full-screen render of one run's fresh `status --json` document
+/// (spec 2026-09-27-tui-run-detail). Read-only: `w` performs the same
+/// inert writer-pane jump the list Enter used to do.
+struct DetailScreen {
+    run_id: String,
+    session: String,
+    content: String,
+    lines: usize,
+    offset: usize,
+    notice: Option<String>,
+}
+
+impl DetailScreen {
+    fn new(doc: &model::StatusDoc) -> Self {
+        let content = model::render_detail(doc);
+        let lines = content.lines().count();
+        Self {
+            run_id: doc.run_id.clone(),
+            session: doc.field_str("tmux_session").unwrap_or("").to_string(),
+            content,
+            lines,
+            offset: 0,
+            notice: None,
+        }
+    }
+
+    fn scroll(&mut self, delta: isize, viewport: usize) {
+        let max = self.lines.saturating_sub(viewport);
+        let next = self.offset as isize + delta;
+        self.offset = next.clamp(0, max as isize) as usize;
+    }
+}
+
 /// Interactive v0: alternate-screen list, j/k selection, Enter for the
 /// status digest / writer-pane jump, keymap actions through the confirm
 /// line, q quits. Terminal discipline: raw mode only inside this function,
@@ -252,13 +285,14 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
     }
 
     let mut runs: Vec<model::RunSummary> = Vec::new();
-    let mut notice = String::from("q quit · Enter status/jump · j/k move · a approve · r reject · d decision · l relay · m mode · v validate · g accept artifact · G reject artifact · o view artifact");
+    let mut notice = String::from("q quit · Enter detail · j/k move · a approve · r reject · d decision · l relay · m mode · v validate · g accept artifact · G reject artifact · o view artifact");
     let mut selected: usize = 0;
     let mut list_state = ListState::default();
     let mut input_mode = InputMode::Normal;
     let mut wizard: Option<model::RunWizard> = None;
     let mut status_cache: Option<model::StatusDoc> = None;
     let mut viewer: Option<ArtifactViewer> = None;
+    let mut detail: Option<DetailScreen> = None;
     let result = ExitCode::SUCCESS;
 
     // Live status (spec 2026-09-27): poll with a timeout instead of a
@@ -272,7 +306,7 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
         // input line must not pay a subprocess per keystroke, staged
         // confirms render the already-fetched list, and the artifact
         // viewer shows static oracle output.
-        if matches!(input_mode, InputMode::Normal) && viewer.is_none() {
+        if matches!(input_mode, InputMode::Normal) && viewer.is_none() && detail.is_none() {
             let doc = arena
                 .list_json(state_root)
                 .as_deref()
@@ -298,7 +332,7 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
         // every Normal-mode iteration (including ticks). An oracle failure
         // or error document keeps the last good cache; a run that vanished
         // from the list drops it with an explanatory notice.
-        if matches!(input_mode, InputMode::Normal) && viewer.is_none() {
+        if matches!(input_mode, InputMode::Normal) && viewer.is_none() && detail.is_none() {
             if let Some(s) = &status_cache {
                 if !runs.iter().any(|r| r.run_id == s.run_id) {
                     notice = format!("{}: run gone from the state root", s.run_id);
@@ -319,6 +353,24 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
         }
 
         let _ = terminal.draw(|f| {
+            if let Some(d) = &detail {
+                let title = format!(
+                    "{} / detail  (w writer pane, Esc back)",
+                    d.run_id
+                );
+                let viewport = f.area().height.saturating_sub(2) as usize;
+                let offset = d.offset.min(d.lines.saturating_sub(viewport));
+                let mut block = Block::default().title(title).borders(Borders::ALL);
+                if let Some(msg) = &d.notice {
+                    block = block.title_bottom(ratatui::text::Line::from(msg.clone()));
+                }
+                let para = Paragraph::new(d.content.as_str())
+                    .block(block)
+                    .wrap(Wrap { trim: false })
+                    .scroll((offset as u16, 0));
+                f.render_widget(para, f.area());
+                return;
+            }
             if let Some(v) = &viewer {
                 let file_label = if v.showing_previous {
                     format!("regen-{}.md", v.stage)
@@ -445,6 +497,34 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
                                 v.lines = prev.lines().count();
                             }
                             v.offset = 0;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        if let Some(d) = &mut detail {
+            d.notice = None;
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => detail = None,
+                KeyCode::Char('j') | KeyCode::Down => d.scroll(1, 1),
+                KeyCode::Char('k') | KeyCode::Up => d.scroll(-1, 1),
+                KeyCode::PageDown => d.scroll(15, 1),
+                KeyCode::PageUp => d.scroll(-15, 1),
+                KeyCode::Char('w') => {
+                    // The inert window-focus jump the list Enter used to
+                    // perform, now scoped to the open run's detail.
+                    if d.session.is_empty() {
+                        d.notice =
+                            Some(format!("no tmux session recorded for {}", d.run_id));
+                    } else {
+                        let session = d.session.clone();
+                        let jumped = with_suspended_terminal(&mut terminal, || {
+                            arena.jump_writer_pane(&session)
+                        });
+                        if let Err(e) = jumped {
+                            d.notice = Some(e);
                         }
                     }
                 }
@@ -600,6 +680,8 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
             }
             KeyCode::Enter => {
                 let Some(run) = runs.get(selected) else { continue };
+                // Fresh fetch on every open (same discipline as `o` and
+                // the gate keys; never the auto-refresh cache).
                 let fetched = arena
                     .status_json(&run.run_id, state_root)
                     .as_deref()
@@ -607,29 +689,7 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
                     .and_then(model::parse_status);
                 match fetched {
                     Ok(status) => {
-                        let session = status
-                            .field_str("tmux_session")
-                            .unwrap_or("")
-                            .to_string();
-                        notice = format!(
-                            "{}: mode {} verdict {} (reviewer {}, writer {})",
-                            status.run_id,
-                            status.field_str("mode").unwrap_or("-"),
-                            status.field_str("verdict").unwrap_or("-"),
-                            status.panes.reviewer,
-                            status.panes.writer
-                        );
-                        // The jump is the only non-arena spawn; it is
-                        // inert (window focus) and needs no confirm.
-                        if !session.is_empty() {
-                            let jumped =
-                                with_suspended_terminal(&mut terminal, || {
-                                    arena.jump_writer_pane(&session)
-                                });
-                            if let Err(e) = jumped {
-                                notice = e;
-                            }
-                        }
+                        detail = Some(DetailScreen::new(&status));
                         status_cache = Some(status);
                     }
                     Err(e) => notice = e,

@@ -68,9 +68,14 @@ arena_status_finish() {  # EXIT_CODE  (error name comes from ARENA_STATUS_ERROR)
         ARENA_STATUS_FINISHED=1
         local fields="" kv panes_out status_err stages_out=''
         [[ "$1" == 0 ]] && status_err='null' || status_err="$ARENA_STATUS_ERROR"
-        for kv in "${status_kvs[@]}"; do
-            fields="${fields:+$fields,}$kv"
-        done
+        # Bash 3.2 + set -u: expanding an EMPTY array errors as unbound,
+        # which would crash this trap and leave the oracle contract
+        # (every exit emits the document) broken for early dies.
+        if [[ "${#status_kvs[@]}" -gt 0 ]]; then
+            for kv in "${status_kvs[@]}"; do
+                fields="${fields:+$fields,}$kv"
+            done
+        fi
         panes_out="$ARENA_STATUS_PANES"
         [[ -n "$panes_out" ]] || panes_out='{}'
         # The pipeline stage chain is a success-path-only additive field:
