@@ -1,5 +1,22 @@
 # Release Notes
 
+## v0.7.8 — viewer search + end jumps (2026-09-27)
+
+### Added
+
+- **`/` search in the artifact viewer** (spec
+  `2026-09-27-tui-artifact-viewer` AC-V7/V8): modal input in the bottom
+  border; case-insensitive matches jump with wrap; the counter
+  (`/query · match i/n`) persists on the bottom border. `n`/`N` cycle;
+  the `p` previous-version toggle recomputes matches so one query can
+  contrast the rejected draft with the regeneration.
+- **`g`/`G` jump top/bottom.**
+
+### Notes
+
+- Line numbers remain a non-goal: wrapped logical lines would
+  misnumber.
+
 ## v0.7.7 — run detail screen + status JSON trap fix (2026-09-27)
 
 ### Added
