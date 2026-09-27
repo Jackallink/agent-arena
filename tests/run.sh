@@ -5196,4 +5196,71 @@ else
     printf '%s\n' '74 skipped: tmux or cargo unavailable'
 fi
 
-printf '%s\n' 'tests: ok'   
+printf '%s\n' '75. artifact --show + tui viewer (spec 2026-09-27-tui-artifact-viewer)'
+state_75="${tmp_root}/state75"
+mkdir -p "$state_75"
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent run_arena start s75 --repo "$project" --no-attach --pipeline lean --state-root "$state_75" >"${tmp_root}/s75-start.out" 2>&1; then
+    cat "${tmp_root}/s75-start.out" >&2
+    fail 's75 start failed'
+fi
+s75_dir="$(dirname "$(find "${state_75}/runs" -mindepth 3 -maxdepth 3 -type f -name manifest.tsv -path '*/s75/manifest.tsv' | head -1)")"
+# CLI guard: no draft yet → actionable refusal
+set +e
+run_arena artifact s75 --stage intent --show --state-root "$state_75" >"${tmp_root}/s75-show-guard.out" 2>&1
+s75_show_guard=$?
+set -e
+[[ "$s75_show_guard" != 0 ]] || fail 'artifact --show succeeded without a draft'
+require_match 'no draft to show' "${tmp_root}/s75-show-guard.out"
+# generate, then --show prints the draft verbatim
+if ! ARENA_STAGE_SANDBOX_BIN=/nonexistent FAKE_ZELL_DRAFT_CONTENT='# s75 intent draft body' \
+    ARENA_STATE_ROOT="$state_75" PATH="${fake_bin}:${PATH}" FAKE_ZELL_LOG="$fake_zell_log" \
+    FAKE_TMUX_LOG="$fake_tmux_log" FAKE_TMUXP_LOG="$fake_tmuxp_log" FAKE_AGENT_LOG="$fake_agent_log" \
+    FAKE_PI_LOG="$fake_pi_log" FAKE_CODEX_LOG="$fake_codex_log" FAKE_OPENCODE_LOG="$fake_opencode_log" \
+    FAKE_AGY_LOG="$fake_agy_log" FAKE_GEMINI_EXIT="${FAKE_GEMINI_EXIT:-0}" ARENA_WORKTREE_ROOT="$worktree_base" \
+    "$arena" stage s75 intent --prompt-text 'viewer smoke draft' >"${tmp_root}/s75-stage.out" 2>&1; then
+    cat "${tmp_root}/s75-stage.out" >&2
+    fail 's75 intent stage failed'
+fi
+run_arena artifact s75 --stage intent --show --state-root "$state_75" >"${tmp_root}/s75-show.out" 2>&1
+require_match '# s75 intent draft body' "${tmp_root}/s75-show.out"
+# --show stays exclusive and read-only: state unchanged after the read
+[[ "$(manifest_value "${s75_dir}/manifest.tsv" stage_intent_status)" == 'awaiting_accept' ]] || fail '--show mutated the stage status'
+
+if command -v tmux >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+    (cd "${source_root}/ui" && cargo build --quiet >/dev/null 2>&1) || fail 'cargo build failed for the viewer section'
+    ui_bin_75="${source_root}/ui/target/debug/agent-arena-ui"
+    [[ -x "$ui_bin_75" ]] || fail 'ui binary missing for the viewer section'
+    tui75_session="arena-tui-viewer-$$"
+    tui75_capture() {
+        tmux capture-pane -p -t "$1" 2>/dev/null
+    }
+    tui75_wait() {
+        local w=0
+        until tui75_capture "$1" 2>/dev/null | grep -q "$2"; do
+            sleep 1
+            w=$(( w + 1 ))
+            [[ "$w" -lt 40 ]] || return 1
+        done
+    }
+    tmux kill-session -t "$tui75_session" 2>/dev/null || true
+    tmux new-session -d -s "$tui75_session" -x 220 -y 50 \
+        "env PATH='${fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin' ARENA_STATE_ROOT='${state_75}' ARENA_WORKTREE_ROOT='${worktree_base}' ARENA_CONFIG_HOME='${ARENA_CONFIG_HOME}' ARENA_ZELL_BIN='zell' FAKE_ZELL_LOG='${fake_zell_log}' FAKE_TMUXP_LOG='${fake_tmuxp_log}' FAKE_TMUX_LOG='${fake_tmux_log}' FAKE_TMUX_MODE='offline' ARENA_TEST_MODE='1' '${ui_bin_75}' --state-root '${state_75}'; sleep 30"
+    tui75_wait "$tui75_session" 'agent-arena runs' \
+        || { tmux capture-pane -p -t "$tui75_session" > /tmp/dbg-pane-75.log 2>&1; fail 'TUI did not render its first frame (75)'; }
+    tmux send-keys -t "$tui75_session" o
+    tui75_wait "$tui75_session" 's75 / intent-draft.md' \
+        || { tmux capture-pane -p -t "$tui75_session" > /tmp/dbg-pane-75.log 2>&1; fail 'o did not open the artifact viewer (75)'; }
+    tui75_capture "$tui75_session" | grep -q '# s75 intent draft body' \
+        || { tmux capture-pane -p -t "$tui75_session" > /tmp/dbg-pane-75.log 2>&1; fail 'viewer does not show the draft content (75)'; }
+    # tmux send-keys types literal text for unknown names: the Escape key
+    # is named Escape, not Esc (Esc types the three letters E-s-c).
+    tmux send-keys -t "$tui75_session" Escape
+    tui75_wait "$tui75_session" 'agent-arena runs' \
+        || { tmux capture-pane -p -t "$tui75_session" > /tmp/dbg-pane-75.log 2>&1; fail 'Esc did not return to the list (75)'; }
+    tmux send-keys -t "$tui75_session" q
+    tmux kill-session -t "$tui75_session" 2>/dev/null || true
+else
+    printf '%s\n' '75 tui part skipped: tmux or cargo unavailable'
+fi
+
+printf '%s\n' 'tests: ok'    

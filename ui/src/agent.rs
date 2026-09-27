@@ -42,6 +42,12 @@ impl Arena {
         self.capture_json(&["list".into(), "--json".into()], state_root)
     }
 
+    /// Generic oracle capture for verbatim argv (artifact --show): the
+    /// same every-exit-path contract as the JSON wrappers.
+    pub fn oracle_output(&self, args: &[String], state_root: &Path) -> Result<String, String> {
+        self.capture_json(args, state_root)
+    }
+
     /// `status RUN --json` — same every-exit-path contract.
     pub fn status_json(&self, run_id: &str, state_root: &Path) -> Result<String, String> {
         self.capture_json(

@@ -193,6 +193,7 @@ pub enum Action {
     NewRun,
     ArtifactAccept,
     ArtifactReject,
+    ViewArtifact,
     JumpWriterPane,
     Quit,
 }
@@ -209,6 +210,7 @@ pub fn keymap_action(key: char) -> Option<Action> {
         'n' => Some(Action::NewRun),
         'g' => Some(Action::ArtifactAccept),
         'G' => Some(Action::ArtifactReject),
+        'o' => Some(Action::ViewArtifact),
         'q' => Some(Action::Quit),
         _ => None,
     }
@@ -461,6 +463,18 @@ pub fn artifact_reject_argv(run_id: &str, stage: &str, summary: &str) -> Vec<Str
         "--reject".to_string(),
         "--summary".to_string(),
         summary.to_string(),
+    ]
+}
+
+/// argv for reading the awaiting draft through the oracle verb (the TUI
+/// never reads run files directly — thin-client rule).
+pub fn artifact_show_argv(run_id: &str, stage: &str) -> Vec<String> {
+    vec![
+        "artifact".to_string(),
+        run_id.to_string(),
+        "--stage".to_string(),
+        stage.to_string(),
+        "--show".to_string(),
     ]
 }
 
@@ -855,6 +869,22 @@ mod tests {
                 "needs risk section".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn artifact_show_argv_is_verbatim_and_keyed_on_o() {
+        assert_eq!(
+            artifact_show_argv("s75", "intent"),
+            vec![
+                "artifact".to_string(),
+                "s75".to_string(),
+                "--stage".to_string(),
+                "intent".to_string(),
+                "--show".to_string(),
+            ]
+        );
+        assert_eq!(keymap_action('o'), Some(Action::ViewArtifact));
+        assert_eq!(action_argv(Action::ViewArtifact, "s75"), None);
     }
 
     #[test]

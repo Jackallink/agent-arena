@@ -163,6 +163,29 @@ impl PromptKind {
     }
 }
 
+/// Full-screen draft reader (spec 2026-09-27-tui-artifact-viewer). The
+/// content is oracle output (`artifact --show`), never a direct file read.
+struct ArtifactViewer {
+    run_id: String,
+    stage: String,
+    content: String,
+    lines: usize,
+    offset: usize,
+}
+
+impl ArtifactViewer {
+    fn new(run_id: String, stage: String, content: String) -> Self {
+        let lines = content.lines().count();
+        Self { run_id, stage, content, lines, offset: 0 }
+    }
+
+    fn scroll(&mut self, delta: isize, viewport: usize) {
+        let max = self.lines.saturating_sub(viewport);
+        let next = self.offset as isize + delta;
+        self.offset = next.clamp(0, max as isize) as usize;
+    }
+}
+
 /// Interactive v0: alternate-screen list, j/k selection, Enter for the
 /// status digest / writer-pane jump, keymap actions through the confirm
 /// line, q quits. Terminal discipline: raw mode only inside this function,
@@ -181,7 +204,7 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
     };
     use ratatui::backend::CrosstermBackend;
     use ratatui::layout::{Constraint, Layout, Rect};
-    use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+    use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
     use ratatui::Terminal;
 
     if enable_raw_mode().is_err() {
@@ -215,12 +238,13 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
     }
 
     let mut runs: Vec<model::RunSummary> = Vec::new();
-    let mut notice = String::from("q quit · Enter status/jump · j/k move · a approve · r reject · d decision · l relay · m mode · v validate · g accept artifact · G reject artifact");
+    let mut notice = String::from("q quit · Enter status/jump · j/k move · a approve · r reject · d decision · l relay · m mode · v validate · g accept artifact · G reject artifact · o view artifact");
     let mut selected: usize = 0;
     let mut list_state = ListState::default();
     let mut input_mode = InputMode::Normal;
     let mut wizard: Option<model::RunWizard> = None;
     let mut status_cache: Option<model::StatusDoc> = None;
+    let mut viewer: Option<ArtifactViewer> = None;
     let result = ExitCode::SUCCESS;
 
     // Live status (spec 2026-09-27): poll with a timeout instead of a
@@ -230,10 +254,11 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
     const TICK: Duration = Duration::from_millis(1500);
 
     loop {
-        // Re-scan only in Normal mode: typing into the input line must not
-        // pay a subprocess per keystroke, and staged confirms render the
-        // already-fetched list.
-        if matches!(input_mode, InputMode::Normal) {
+        // Re-scan only in Normal mode with no viewer open: typing into the
+        // input line must not pay a subprocess per keystroke, staged
+        // confirms render the already-fetched list, and the artifact
+        // viewer shows static oracle output.
+        if matches!(input_mode, InputMode::Normal) && viewer.is_none() {
             let doc = arena
                 .list_json(state_root)
                 .as_deref()
@@ -259,7 +284,7 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
         // every Normal-mode iteration (including ticks). An oracle failure
         // or error document keeps the last good cache; a run that vanished
         // from the list drops it with an explanatory notice.
-        if matches!(input_mode, InputMode::Normal) {
+        if matches!(input_mode, InputMode::Normal) && viewer.is_none() {
             if let Some(s) = &status_cache {
                 if !runs.iter().any(|r| r.run_id == s.run_id) {
                     notice = format!("{}: run gone from the state root", s.run_id);
@@ -280,6 +305,20 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
         }
 
         let _ = terminal.draw(|f| {
+            if let Some(v) = &viewer {
+                let title = format!(
+                    "{} / {}-draft.md  (j/k line, PgUp/PgDn page, Esc back)",
+                    v.run_id, v.stage
+                );
+                let viewport = f.area().height.saturating_sub(2) as usize;
+                let offset = v.offset.min(v.lines.saturating_sub(viewport));
+                let para = Paragraph::new(v.content.as_str())
+                    .block(Block::default().title(title).borders(Borders::ALL))
+                    .wrap(Wrap { trim: false })
+                    .scroll((offset as u16, 0));
+                f.render_widget(para, f.area());
+                return;
+            }
             let chunks = Layout::vertical([
                 Constraint::Min(3),
                 Constraint::Length(2),
@@ -345,6 +384,19 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
             Err(_) => break,
         };
         let Event::Key(key) = event else { continue };
+
+        // Artifact viewer owns the keyboard while open (spec §2).
+        if let Some(v) = &mut viewer {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => viewer = None,
+                KeyCode::Char('j') | KeyCode::Down => v.scroll(1, 1),
+                KeyCode::Char('k') | KeyCode::Up => v.scroll(-1, 1),
+                KeyCode::PageDown => v.scroll(15, 1),
+                KeyCode::PageUp => v.scroll(-15, 1),
+                _ => {}
+            }
+            continue;
+        }
         if key.kind != KeyEventKind::Press {
             continue;
         }
@@ -627,6 +679,40 @@ fn run_tui(arena: &Arena, state_root: &Path) -> ExitCode {
                                         buffer: String::new(),
                                     };
                                 }
+                            }
+                        }
+                        model::Action::ViewArtifact => {
+                            // Same fresh-fetch resolution as the gate keys.
+                            let fetched = arena
+                                .status_json(&run.run_id, state_root)
+                                .as_deref()
+                                .map_err(Clone::clone)
+                                .and_then(model::parse_status);
+                            let stage = match fetched {
+                                Ok(s) => s.awaiting_stage().map(str::to_string),
+                                Err(e) => {
+                                    notice = e;
+                                    continue;
+                                }
+                            };
+                            let Some(stage) = stage else {
+                                notice = "no artifact awaiting accept".to_string();
+                                continue;
+                            };
+                            match arena
+                                .oracle_output(
+                                    &model::artifact_show_argv(&run.run_id, &stage),
+                                    state_root,
+                                )
+                            {
+                                Ok(text) => {
+                                    viewer = Some(ArtifactViewer::new(
+                                        run.run_id.clone(),
+                                        stage,
+                                        text,
+                                    ));
+                                }
+                                Err(e) => notice = e,
                             }
                         }
                         model::Action::NewRun => {

@@ -9,13 +9,14 @@ source "${source_root}/lib/bootstrap.sh"
 
 usage() {
     cat <<'EOF'
-Usage: agent-arena artifact RUN_ID --stage <intent|spec|plan> (--accept | --reject --summary T)
+Usage: agent-arena artifact RUN_ID --stage <intent|spec|plan> (--accept | --reject --summary T | --show)
 
 Human gate over one generated artifact draft. --accept records the on-disk
 sha256 digest, renames <stage>-draft.md to <stage>.md, and advances the
 pipeline (the final accept bootstraps the implementation worktree).
 --reject records the summary and re-arms the stage; the summary re-enters
-the next generation attempt as reviewer feedback.
+the next generation attempt as reviewer feedback. --show prints the draft
+verbatim to stdout (read-only; works whenever the draft file exists).
 EOF
 }
 
@@ -23,6 +24,7 @@ run_id=''
 stage_name=''
 accept=0
 reject=0
+show=0
 summary=''
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -45,13 +47,18 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --accept)
-            [[ "$reject" == 0 ]] || arena_die '--accept and --reject are mutually exclusive'
+            [[ "$reject" == 0 && "$show" == 0 ]] || arena_die '--accept, --reject, and --show are mutually exclusive'
             accept=1
             shift
             ;;
         --reject)
-            [[ "$accept" == 0 ]] || arena_die '--accept and --reject are mutually exclusive'
+            [[ "$accept" == 0 && "$show" == 0 ]] || arena_die '--accept, --reject, and --show are mutually exclusive'
             reject=1
+            shift
+            ;;
+        --show)
+            [[ "$accept" == 0 && "$reject" == 0 ]] || arena_die '--accept, --reject, and --show are mutually exclusive'
+            show=1
             shift
             ;;
         --summary)
@@ -72,7 +79,7 @@ done
 [[ -n "$run_id" ]] || arena_die 'artifact requires RUN_ID'
 arena_validate_run_id "$run_id"
 [[ -n "$stage_name" ]] || arena_die 'artifact requires --stage'
-[[ "$accept" == 1 || "$reject" == 1 ]] || arena_die 'artifact requires --accept or --reject'
+(( accept + reject + show == 1 )) || arena_die 'artifact requires exactly one of --accept, --reject, --show'
 if [[ "$reject" == 1 ]]; then
     [[ -n "$summary" ]] || arena_die '--reject requires --summary'
     (( ${#summary} <= 256 )) || arena_die 'reject summary exceeds 256 characters'
@@ -97,14 +104,22 @@ arena_state_read "$run_dir"
 [[ "$ARENA_STATE_REASON_CODE" == awaiting_stage_accept || "$ARENA_STATE_REASON_CODE" == awaiting_stage_start ]] || \
     arena_die "artifact gate not open (reason_code=$ARENA_STATE_REASON_CODE)"
 
+draft_path="${run_dir}/${stage_name}-draft.md"
+
+# --show is read-only: it skips the gate reason_code check (the draft is
+# inspectable at any point of its stage phase) and never mutates state.
+if [[ "$show" == 1 ]]; then
+    [[ -f "$draft_path" ]] || arena_die "no draft to show: $draft_path (stage not generated yet?)"
+    cat "$draft_path"
+    exit 0
+fi
+
 case "$stage_name" in
     intent) stage_status="${ARENA_STAGE_STATUS[0]}" ;;
     spec) stage_status="${ARENA_STAGE_STATUS[1]}" ;;
     plan) stage_status="${ARENA_STAGE_STATUS[2]}" ;;
 esac
 last_stage="${ARENA_MANIFEST_PIPELINE##*,}"
-
-draft_path="${run_dir}/${stage_name}-draft.md"
 
 if [[ "$stage_status" == accepted ]]; then
     # Crash recovery: bookkeeping committed, bootstrap did not run.
