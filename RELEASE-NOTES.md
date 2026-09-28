@@ -1,5 +1,15 @@
 # Release Notes
 
+## v0.7.10 — bare \`agent-arena dashboard\` (2026-09-28)
+
+### Fixed
+
+- The README-documented bare \`agent-arena dashboard\` errored with
+  "—state-root is required": the UI binary demands a state root while
+  the dispatch passed nothing. The dispatch now injects the CLI's
+  default (env-aware) when no flag is given, and the UI refusal points
+  at the default path. Found on first real launch.
+
 ## v0.7.9 — the w jump actually jumps (2026-09-28)
 
 ### Fixed
