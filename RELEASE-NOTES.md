@@ -1,5 +1,22 @@
 # Release Notes
 
+## v0.7.9 — the w jump actually jumps (2026-09-28)
+
+### Fixed
+
+- **`w` in the run-detail screen was a silent no-op on real tmux**:
+  `select-window -t <session>` never moves a client. The verb is now
+  `switch-client -t <session>` (verified end to end with a live run
+  session and a real attached client), and outside tmux the jump
+  refuses with the manual attach command instead of spawning a doomed
+  command. TUI-attach itself stays a non-goal.
+
+### Release-process note
+
+- `package.sh --check` does not refresh `ui/target/release`; installs
+  with `--with-ui` must point at a freshly built binary (check for a
+  feature string like `Enter detail` via strings).
+
 ## v0.7.8 — viewer search + end jumps (2026-09-27)
 
 ### Added
