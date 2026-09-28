@@ -561,7 +561,7 @@ pub fn relay_writer_argv(run_id: &str, message: &str) -> Vec<String> {
 /// tmux argv to jump to the run's writer pane: focus the session window.
 pub fn jump_tmux_argv(session_name: &str) -> Vec<String> {
     vec![
-        "select-window".to_string(),
+        "switch-client".to_string(),
         "-t".to_string(),
         session_name.to_string(),
     ]
@@ -793,7 +793,7 @@ mod tests {
             relay_writer_argv("r", "hello"),
             vec!["relay", "r", "--to", "writer", "--from", "reviewer", "--message", "hello"]
         );
-        assert_eq!(jump_tmux_argv("sess"), vec!["select-window", "-t", "sess"]);
+        assert_eq!(jump_tmux_argv("sess"), vec!["switch-client", "-t", "sess"]);
     }
 
     #[test]

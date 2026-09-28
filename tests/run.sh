@@ -267,6 +267,9 @@ case "$command_name" in
     select-window)
         printf 'select-window %s\n' "$*" >>"${FAKE_TMUX_LOG:?}"
         ;;
+    switch-client)
+        printf 'switch-client %s\n' "$*" >>"${FAKE_TMUX_LOG:?}"
+        ;;
     set-environment)
         printf 'set-environment %s\n' "$*" >>"${FAKE_TMUX_LOG:?}"
         ;;
@@ -5536,7 +5539,7 @@ if command -v tmux >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
     : > "$fake_tmux_log"
     tmux send-keys -t "$tui78_session" w
     sleep 2
-    grep -q "select-window -t agent-arena-" "$fake_tmux_log" \
+    grep -q "switch-client -t agent-arena-" "$fake_tmux_log" \
         || { tmux capture-pane -p -t "$tui78_session" > /tmp/dbg-pane-78.log 2>&1; fail 'w did not jump to the writer pane (78)'; }
     tui78_capture "$tui78_session" | grep -q 's78 / detail' \
         || { tmux capture-pane -p -t "$tui78_session" > /tmp/dbg-pane-78.log 2>&1; fail 'jump closed the detail screen (78)'; }

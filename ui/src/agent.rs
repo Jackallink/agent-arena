@@ -129,6 +129,11 @@ impl Arena {
     /// Jump to the writer pane: `tmux select-window -t SESSION`. The only
     /// non-agent-arena spawn the thin-client rule permits.
     pub fn jump_writer_pane(&self, session_name: &str) -> Result<(), String> {
+        if std::env::var("TMUX").is_err() {
+            return Err(format!(
+                "not inside tmux; attach manually: tmux attach -t {session_name}"
+            ));
+        }
         let mut cmd = Command::new("tmux");
         Self::isolate_env(&mut cmd);
         let status = cmd

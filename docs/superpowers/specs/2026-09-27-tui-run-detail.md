@@ -33,11 +33,22 @@
 
 ## 2. `w` jumps to the writer pane from the detail screen
 
-- Non-empty `tmux_session` field → the same inert window-focus spawn the
-  list Enter used (`jump_writer_pane` under a suspended terminal).
-- Empty/absent session → refusal rendered as the screen's bottom-border
-  title (`no tmux session recorded for RUN`); the screen stays open.
-  Any next keypress clears it. A refused jump never closes the screen.
+- Real-machine verification (2026-09-28, tmux via a real attached
+  client): the original verb `tmux select-window -t <session>` NEVER
+  moves a client — it only retargets the current window inside its own
+  session, so from the dashboard pane it was a silent no-op. The verb
+  is `tmux switch-client -t <session>`.
+- Inside tmux (`TMUX` set): the current client switches into the run's
+  session (writer/gate panes). Return path is the standard tmux one:
+  prefix-s / `tmux switch-client -t <dashboard-session>`; a plain
+  detach drops the client out of tmux entirely.
+- Outside tmux: refusal rendered as the screen's bottom-border title
+  (`not inside tmux; attach manually: tmux attach -t <session>`); the
+  screen stays open. The other refusal — a run with no recorded session
+  (error-path documents) — renders `no tmux session recorded for RUN`
+  the same way. Any next keypress clears either. A refused jump never
+  closes the screen. Foreground attach from the TUI remains a non-goal
+  (see §4).
 
 ## 3. Acceptance criteria → test mapping
 
@@ -54,4 +65,6 @@
   stay on the list keymap / CLI).
 - Cross-run navigation inside the screen (Esc back to the list first).
 - Attaching the run's tmux session from the TUI (nested-attach target
-  semantics unresolved — future work).
+  semantics + unbounded takeover; the manual path via the recorded
+  session name stays the sanctioned route unless real usage proves
+  otherwise).
