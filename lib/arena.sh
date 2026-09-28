@@ -71,6 +71,12 @@ case "$command_name" in
             fi
             arena_die "dashboard binary missing; install it with: bash packaging/install.sh --with-ui <agent-arena-ui binary> (or put agent-arena-ui on PATH)"
         fi
+        # README promises a bare `agent-arena dashboard`: the UI binary
+        # requires a state root explicitly, so inject the CLI's default
+        # (env-aware) when the caller did not pass one.
+        if [[ " $* " != *" --state-root "* ]]; then
+            set -- "$@" --state-root "$(arena_state_root)"
+        fi
         exec "$dashboard_bin" "$@"
         ;;
     resume)

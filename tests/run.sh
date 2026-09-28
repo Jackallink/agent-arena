@@ -4423,6 +4423,32 @@ if [[ "${#arena_suite_ui_hidden[@]}" -gt 0 ]]; then
     run_arena dashboard </dev/null >"${tmp_root}/dashboard-tty.out" 2>&1 || true
     require_match 'requires a tty' "${tmp_root}/dashboard-tty.out"
 fi
+# u4: bare `agent-arena dashboard` (the README form) injects the CLI's
+#     default state root — the UI binary requires one explicitly. Source
+#     binaries hidden (the dispatch prefers them over PATH); direct bin
+#     call because run_arena pins ARENA_STATE_ROOT.
+arena_suite_ui_hidden=()
+for ui_candidate in \
+    "${source_root}/ui/target/debug/agent-arena-ui" \
+    "${source_root}/ui/target/release/agent-arena-ui"; do
+    if [[ -x "$ui_candidate" ]]; then
+        mv "$ui_candidate" "${ui_candidate}.hidden"
+        arena_suite_ui_hidden+=("$ui_candidate")
+    fi
+done
+printf '#!/usr/bin/env bash
+printf "%%s\\n" "$@"
+' >"${fake_bin}/agent-arena-ui"
+chmod 755 "${fake_bin}/agent-arena-ui"
+env -u ARENA_STATE_ROOT PATH="${fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin" \
+    "${source_root}/bin/agent-arena" dashboard </dev/null \
+    >"${tmp_root}/dashboard-default.out" 2>&1 || true
+rm -f "${fake_bin}/agent-arena-ui"
+for ui_candidate in "${arena_suite_ui_hidden[@]}"; do
+    mv "${ui_candidate}.hidden" "$ui_candidate"
+done
+require_match 'state-root' "${tmp_root}/dashboard-default.out"
+require_match '/.local/state/agent-arena' "${tmp_root}/dashboard-default.out"
 # u1/u2: with the Rust toolchain present, run cargo test and the --selftest
 # probe (strict serde parse = strongest schema check) end-to-end
 if command -v cargo >/dev/null 2>&1; then

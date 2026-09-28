@@ -44,7 +44,10 @@ fn parse_args() -> Result<Options, String> {
         }
     }
     if opts.state_root.as_os_str().is_empty() {
-        return Err("--state-root is required (or set ARENA_STATE_ROOT)".to_string());
+        return Err(
+            "--state-root is required (or set ARENA_STATE_ROOT); the CLI default is ~/.local/state/agent-arena"
+                .to_string(),
+        );
     }
     Ok(opts)
 }
